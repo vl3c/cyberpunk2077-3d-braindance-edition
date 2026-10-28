@@ -190,6 +190,8 @@ function Invoke-SetupProcess {
     $all = @('-NoProfile', '-NonInteractive')
     if ($script:IsWin) { $all += @('-ExecutionPolicy', 'Bypass') }
     $all += @('-File', $Script) + $Arguments
+    # Windows PowerShell 5.1 turns a child's stderr into error records, which throw under 'Stop'.
+    $ErrorActionPreference = 'Continue'
     if ($OutFile) { & $Exe @all *> $OutFile } else { & $Exe @all *> $null }
     return $LASTEXITCODE
 }
