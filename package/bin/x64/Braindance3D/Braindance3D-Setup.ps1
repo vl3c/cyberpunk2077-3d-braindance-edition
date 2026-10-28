@@ -44,7 +44,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$script:Version = '0.1.0'
+$script:Version = '0.1.1'
 $script:ProductName = '3D Braindance Edition'
 $script:SettingsFile = 'Braindance3D-Settings.ini'
 $script:MarkerName = 'Braindance3D_InstalledBy'

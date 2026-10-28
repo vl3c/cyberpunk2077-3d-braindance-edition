@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-10-28)
+
+- Fixed: `Install-Braindance3D.bat` and `Uninstall-Braindance3D.bat` couldn't find the mod's folder under
+  Windows PowerShell 5.1 and stopped with "The SDK stand-in is missing". Only setups without RED4ext use them;
+  the RED4ext auto-setup (Vortex installs) wasn't affected.
+
 ## 0.1.0 (2026-10-28)
 
 First release.
