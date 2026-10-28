@@ -9,7 +9,7 @@ half-SBS mode should work but are untested.
 
 **Not VR: no head tracking, no motion controls!** You look at a 3D screen.
 
-Download: [Nexus Mods](https://www.nexusmods.com/cyberpunk2077) or
+Download: [Nexus Mods](https://www.nexusmods.com/cyberpunk2077/mods/36323) or
 [GitHub releases](https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/releases).
 
 ## What it is
