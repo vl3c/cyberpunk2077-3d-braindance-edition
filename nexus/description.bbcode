@@ -1,0 +1,71 @@
+[size=4][b]Description[/b][/size]
+Play Cyberpunk 2077 in [b]real stereoscopic 3D[/b] using the game's own 3D renderer, shown side by side for any [b]3D / VR headset with SBS support[/b] (half-SBS for now, full SBS planned). The game appears on a big virtual screen with real depth.
+
+[b]Not VR: no head tracking, no motion controls![/b] You look at a 3D screen.
+
+Patch 2.5 added a 3D Mode made for a glasses-free 3D monitor. The game renders a separate image for each eye, with real depth for the world, the HUD and your weapon, but it only switches that on when the monitor's own software is installed. For everyone else the option is greyed out. This mod:
+[list=1]
+[*]Provides a small stand-in for that software, so the game unlocks [b]3D Mode[/b] on a normal monitor.
+[*]Turns on a hidden engine option so the game draws the left and right eye [b]side by side[/b].
+[/list]
+View that in half-SBS and you see the game in 3D. It's the game's own stereo renderer, not a depth-map effect.
+
+[size=4][b]Installation instructions[/b][/size]
+[list=1]
+[*]Install [url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url] if you don't have it yet.
+[*]Install this mod with Vortex (or extract it into the game folder, the one with [i]bin[/i], [i]engine[/i] and [i]red4ext[/i]).
+[*]Start the game and turn on [b]3D Mode[/b] in the video settings. The screen now shows two images side by side.
+[*]In your headset, show the PC screen in [b]half side-by-side[/b] 3D (in Virtual Desktop: the desktop screen's 3D mode). The game must run on the monitor the headset shows.
+[/list]
+That's it: the mod sets itself up automatically every time the game starts.
+
+[b]Uninstall:[/b] remove the mod in Vortex. Mod Organizer 2 isn't supported yet.
+
+[size=4][b]Main features[/b][/size]
+[list]
+[*]Real stereo 3D from the game's own renderer: separate left and right images, not a depth-map fake.
+[*]Correct depth for the world, the HUD and your weapon, tuned with the game's own settings: [b]3D Mode[/b], [b]Preset[/b], [b]Depth[/b], [b]Weapon Depth[/b] and [b]Motion Comfort[/b]. Depth 0.5 to 1.0 works well in a headset.
+[*][b]No hooks or memory patches, no game files modified.[/b] The game loads the stand-in DLL itself through its own 3D support.
+[*]Sets itself up automatically at game start. Nothing to run or configure.
+[*]Open source (MIT), with logs for easy troubleshooting.
+[/list]
+Good to know: each eye gets half the horizontal resolution, so a higher game resolution looks sharper. The game renders every frame twice, so expect a lower frame rate than in 2D. Stereo 3D can cause eye strain: take breaks, and lower Depth if your eyes get tired.
+
+[size=4][b]Requirements[/b][/size]
+[list]
+[*]Cyberpunk 2077 [b]2.5[/b] on Windows 10 or 11. Tested on 2.5 (Epic). Steam and GOG should behave the same but are untested.
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url].
+[*]A 3D / VR headset with half-SBS support (a 3D TV or monitor with an SBS mode works too). Tested: Quest 3 with [url=https://www.vrdesktop.net/]Virtual Desktop[/url].
+[*]If 3D Mode stays greyed out, turn off Frame Generation.
+[*][b]Own a glasses-free 3D monitor that the game supports? Don't install this mod:[/b] it switches the game to side-by-side output.
+[/list]
+
+[size=4][b]Shout outs[/b][/size]
+[list]
+[*][b]CD PROJEKT RED[/b], for building a full stereo 3D renderer into Cyberpunk 2077.
+[*][b]Guy Godin[/b], for Virtual Desktop and its SBS mode.
+[*][b]Claude[/b] (Anthropic's AI), my co-pilot on this one: reverse engineering the game's 3D interface, writing the stand-in and the RED4ext plugin, and testing it with me.
+[/list]
+
+[size=4][b]Troubleshooting[/b][/size]
+[list]
+[*][b]Crash or no start after installing or after a game update:[/b] disable the mod and report it with your game version.
+[*][b]3D Mode greyed out:[/b] check that RED4ext is installed and read [i]bin\x64\Braindance3D\Braindance3D-autosetup.log[/i]. With several monitors, try [i]Monitor = primary[/i] in [i]Braindance3D-Settings.ini[/i].
+[*][b]Logs:[/b] [i]bin\x64\Braindance3D\braindance3d.log[/i] and [i]Braindance3D-autosetup.log[/i] (or [i]%LOCALAPPDATA%\Braindance3D[/i]). Set [i]Level = 2[/i] in [i]Braindance3D-Settings.ini[/i] for bug reports.
+[*][b]Depth inside out:[/b] use your viewer's swap-eyes option.
+[/list]
+
+[size=4][b]Known limitations[/b][/size]
+[list]
+[*]Half resolution per eye (half-SBS); full SBS is planned. No head tracking.
+[*]Untested: Steam and GOG builds, Mod Organizer 2, multi-monitor setups, Frame Generation, viewers other than Virtual Desktop.
+[/list]
+
+[size=4][b]Bugs[/b][/size]
+Use the Bugs tab or [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues]GitHub issues[/url]. Include your game version and store, GPU, how you view the 3D, and the logs (with Level = 2). The logs contain folder paths, which can include your Windows user name.
+
+[size=4][b]Source[/b][/size]
+Open source (MIT): [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition]github.com/vl3c/cyberpunk2077-3d-braindance-edition[/url]
+
+[size=4][b]Legal[/b][/size]
+[i]This is an unofficial fan work and is not approved or endorsed by CD PROJEKT RED, and it is not affiliated with Samsung. Use it at your own risk: it changes how the game renders. The SDK DLL in this mod is an independent program written from scratch, so that the game can work with it; it contains no code from CD PROJEKT RED or Samsung. CD PROJEKT®, Cyberpunk® and Cyberpunk 2077® are registered trademarks of CD PROJEKT S.A. All other trademarks belong to their owners.[/i]

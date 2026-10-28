@@ -1,0 +1,6 @@
+build/
+dist/
+*.o
+*.log
+package/bin/x64/Braindance3D/GameLauncherData/core/*.dll
+package/red4ext/plugins/Braindance3D/*.dll

@@ -1,0 +1,105 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Branch protection requires a check named "tests": keep this job's id and name.
+  tests:
+    name: tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      # .gitattributes makes .ps1/.bat/.ini CRLF; everything else (build.sh, tests/*.sh) must stay LF for bash.
+      - name: Keep LF line endings for shell scripts
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+
+      - name: MinGW toolchain
+        shell: bash
+        run: |
+          if ! command -v gcc > /dev/null || ! command -v windres > /dev/null; then
+            for d in /c/mingw64/bin /c/msys64/mingw64/bin /c/ProgramData/mingw64/mingw64/bin; do
+              if [[ -x "$d/gcc.exe" ]]; then echo "$(cygpath -w "$d")" >> "$GITHUB_PATH"; export PATH="$d:$PATH"; break; fi
+            done
+          fi
+          gcc --version | head -n1
+          windres --version | head -n1
+
+      - name: Build the DLL
+        id: build
+        shell: bash
+        env:
+          CC: gcc
+          WINDRES: windres
+        run: ./build.sh
+
+      - name: Native tests (C)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        env:
+          CC: gcc
+          WINDRES: windres
+        run: tests/run-native-tests.sh --skip-build
+
+      - name: Pester tests (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tests/Run-PesterTests.ps1 -CI -OutputFile build/test-results/pester-pwsh.xml
+
+      - name: Pester tests (Windows PowerShell 5.1)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+            -File tests\Run-PesterTests.ps1 -CI -OutputFile build\test-results\pester-windows-powershell.xml
+          exit $LASTEXITCODE
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/test-results/
+          if-no-files-found: ignore
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64 zip unzip
+
+      - name: Build the release zip
+        run: ./build.sh dist
+
+      - name: Check the release zip
+        run: tests/check-dist.sh --repro
+
+      - name: Upload the release zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-zip
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
