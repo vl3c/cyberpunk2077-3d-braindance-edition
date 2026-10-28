@@ -36,7 +36,7 @@ param(
     [switch]$NoPause,
     # Internal, for the test suite: the registry key, install folder, log file and Samsung's default folder.
     [string]$RegistryPath = 'HKCU:\SOFTWARE\Samsung\Odyssey3DHub',
-    [string]$InstallDir = $PSScriptRoot,
+    [string]$InstallDir = '',
     [string]$LogPath = '',
     [string]$SamsungDefaultDir = ''
 )
@@ -422,6 +422,10 @@ function Invoke-Main {
 
 # Run unless dot-sourced (the tests dot-source this file to call the functions directly).
 if ($MyInvocation.InvocationName -ne '.') {
+    # The script's own folder, resolved here: $PSScriptRoot can be empty in a param default.
+    if (-not $InstallDir) { $InstallDir = $PSScriptRoot }
+    if (-not $InstallDir -and $PSCommandPath) { $InstallDir = Split-Path -Parent $PSCommandPath }
+    if (-not $InstallDir -and $MyInvocation.MyCommand.Path) { $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
     $code = Invoke-Main -Action $Action -Key $RegistryPath -Dir $InstallDir -Force:$Force -AnyFolder:$AnyFolder -Log $LogPath -SamsungDir $SamsungDefaultDir
     if ($script:LogFile) { Write-Host "Log: $script:LogFile" }
     if (-not $NoPause) {
