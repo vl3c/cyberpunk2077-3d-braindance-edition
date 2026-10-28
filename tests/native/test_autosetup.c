@@ -793,17 +793,48 @@ TEST(auto_replaces_a_dead_install_path_and_saves_it_for_uninstall)
     check_installed(c->hub, c->target, empty);
 }
 
-TEST(auto_dead_install_path_is_replaced_even_with_samsung_in_its_default_folder)
+TEST(auto_dead_install_path_is_kept_when_samsung_is_in_its_default_folder)
 {
-    // Like the installer: Samsung's default folder only matters when no InstallPath is set.
+    // With InstallPath gone the game may fall back to Samsung's default folder, so that SDK wins.
     Ctx *c = ctx_new(L"deadsam", 1);
     REQUIRE(tu_mkdirs(c->samsung));
     put_sdk(c->samsung, SDK_FOREIGN_NO_VERSION);
     wchar_t gone[TU_PATH];
     sub_dir(gone, c->tmp, L"deleted", 0);
     kset_sz(c->hub, VALUE_INSTALL_PATH, gone);
-    CHECK_EQ_INT(run_auto(c, c->target, c->samsung), AUTO_INSTALLED);
-    check_installed(c->hub, c->target, gone);
+    CHECK_EQ_INT(run_auto(c, c->target, c->samsung), AUTO_SAMSUNG_DEFAULT);
+    wchar_t got[TU_PATH];
+    kget(c->hub, VALUE_INSTALL_PATH, got, TU_PATH);
+    CHECK_EQ_WSTR(got, gone);
+}
+
+TEST(auto_install_path_on_a_missing_drive_is_not_replaced)
+{
+    // An offline USB or network drive looks like "not found": that must never count as "gone".
+    Ctx *c = ctx_new(L"nodrive", 1);
+    const wchar_t *candidates = L"QRSTUVWXYJKLMNOP";
+    wchar_t path[64] = L"";
+    for (const wchar_t *d = candidates; *d; d++) {
+        wchar_t root[4] = { *d, L':', L'\\', 0 };
+        if (GetFileAttributesW(root) == INVALID_FILE_ATTRIBUTES) {
+            _snwprintf(path, 64, L"%lc:\\Odyssey 3D Hub", *d);
+            break;
+        }
+    }
+    if (!path[0]) SKIP("no free drive letter");
+    kset_sz(c->hub, VALUE_INSTALL_PATH, path);
+    CHECK_EQ_INT(run_auto(c, c->target, c->samsung), AUTO_FOREIGN_SDK);
+    wchar_t got[TU_PATH];
+    kget(c->hub, VALUE_INSTALL_PATH, got, TU_PATH);
+    CHECK_EQ_WSTR(got, path);
+}
+
+TEST(auto_quoted_install_path_is_not_replaced)
+{
+    Ctx *c = ctx_new(L"quoted", 1);
+    const wchar_t *v = L"\"C:\\Program Files\\Odyssey 3D Hub\"";
+    kset_sz(c->hub, VALUE_INSTALL_PATH, v);
+    CHECK_EQ_INT(run_auto(c, c->target, c->samsung), AUTO_FOREIGN_SDK);
 }
 
 TEST(auto_replaces_another_copy_of_the_mod_and_keeps_what_it_saved)

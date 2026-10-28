@@ -18,6 +18,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 
 #include "version.h"
 
@@ -106,6 +107,23 @@ static int file_exists(const wchar_t *path)
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// Whether a path is definitely gone: "not found" on a local fixed drive that is there. An offline USB
+// drive, a network share, a quoted path or an access error is "unknown", never "gone", so the plugin
+// can't take over someone else's SDK because its drive happens to be unavailable.
+static int definitely_missing(const wchar_t *path)
+{
+    if (!path || !path[0] || wcschr(path, L'"')) return 0;
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return 0;
+    DWORD err = GetLastError();
+    if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) return 0;
+    wchar_t full[MAX_PATH];
+    DWORD n = GetFullPathNameW(path, MAX_PATH, full, NULL);
+    if (n == 0 || n >= MAX_PATH) return 0;
+    if (!iswalpha(full[0]) || full[1] != L':' || full[2] != L'\\') return 0; // UNC and device paths
+    wchar_t root[4] = { full[0], L':', L'\\', 0 };
+    return GetDriveTypeW(root) == DRIVE_FIXED && GetFileAttributesW(root) != INVALID_FILE_ATTRIBUTES;
+}
+
 // Full path without a trailing backslash (except for a drive root). Returns 0 on failure.
 static int normalize(const wchar_t *in, wchar_t *out)
 {
@@ -156,14 +174,15 @@ static void product_name(const wchar_t *dll, wchar_t *out, int size)
     HeapFree(GetProcessHeap(), 0, data);
 }
 
-typedef struct { int exists; int ours; wchar_t product[128]; } SdkInfo;
+typedef struct { int exists; int ours; int gone; wchar_t product[128]; } SdkInfo;
 
 // Whether a folder holds an SDK DLL, and whether that DLL is this mod's.
 static SdkInfo sdk_info(const wchar_t *dir)
 {
     SdkInfo info = {0};
     wchar_t dll[MAX_PATH], settings[MAX_PATH];
-    if (!dir || !dir[0] || !sdk_path(dir, dll) || !file_exists(dll)) return info;
+    if (!dir || !dir[0] || !sdk_path(dir, dll)) return info;
+    if (!file_exists(dll)) { info.gone = definitely_missing(dll); return info; }
     info.exists = 1;
     product_name(dll, info.product, 128);
     if (wcscmp(info.product, PRODUCT_NAME) == 0) info.ours = 1;
@@ -225,7 +244,12 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
 
     HKEY key = NULL;
     wchar_t current[MAX_PATH] = L"", own[MAX_PATH] = L"", previous[MAX_PATH] = L"", marker[MAX_PATH] = L"";
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+    LONG openRc = RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &key);
+    if (openRc != ERROR_SUCCESS && openRc != ERROR_FILE_NOT_FOUND) {
+        alog("Couldn't read HKCU\\%s (error %ld). Nothing changed.", utf8(subkey, b1, sizeof(b1)), openRc);
+        return AUTO_ERROR;
+    }
+    if (openRc == ERROR_SUCCESS) {
         int rcCurrent = reg_get(key, VALUE_INSTALL_PATH, current);
         reg_get(key, VALUE_OWN_PATH, own);
         int rcPrevious = reg_get(key, VALUE_PREVIOUS, previous);
@@ -259,10 +283,21 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
         if ((own[0] && same_path(current, own)) || other.ours) {
             alog("Replacing another copy of this mod at %s.", utf8(current, b1, sizeof(b1)));
             if (previous[0]) keep = previous;
-        } else if (!other.exists) {
+        } else if (!other.exists && other.gone) {
+            SdkInfo samsung = samsungDir && samsungDir[0] ? sdk_info(samsungDir) : (SdkInfo){0};
+            if (samsung.exists && !samsung.ours) {
+                alog("The current InstallPath %s is gone, but Samsung's Odyssey 3D Hub is installed in %s. Not "
+                     "changing anything. To use this mod anyway, run Install-Braindance3D.bat -Force.",
+                     utf8(current, b1, sizeof(b1)), utf8(samsungDir, b2, sizeof(b2)));
+                return AUTO_SAMSUNG_DEFAULT;
+            }
             alog("The current InstallPath %s has no SDK in it, so nothing uses it. Saving it for the uninstaller.",
                  utf8(current, b1, sizeof(b1)));
             keep = current;
+        } else if (!other.exists) {
+            alog("The current InstallPath %s can't be checked right now (offline or network drive, or no access). "
+                 "It may be Samsung's Odyssey 3D Hub, so nothing changed.", utf8(current, b1, sizeof(b1)));
+            return AUTO_FOREIGN_SDK;
         } else {
             alog("Another Odyssey 3D SDK is registered at %s (product '%s'), probably Samsung's Odyssey 3D Hub. "
                  "Not changing it. To use this mod anyway, run Install-Braindance3D.bat -Force.",

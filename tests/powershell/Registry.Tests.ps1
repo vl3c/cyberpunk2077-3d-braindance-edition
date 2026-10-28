@@ -257,17 +257,54 @@ Describe 'Registry' -Skip:(-not $HasRegistry) {
             Test-Path -LiteralPath $script:Key | Should -BeFalse
         }
 
-        It 'replaces an InstallPath on a drive that no longer exists' {
+        It 'leaves an InstallPath on a drive that is not there alone (code 3); -Force replaces it' {
             $missing = Get-MissingDrivePath
             if (-not $missing) { Set-ItResult -Skipped -Because 'no free drive letter'; return }
             $mod = New-ModFolder -Root $script:Root -Name 'missing drive'
             Set-TestValues $script:Key @{ InstallPath = $missing }
-            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung) 0
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung) 3
+            Get-TestValues $script:Key | Should -BeExactly "InstallPath=$missing"
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung -Force) 0
             Get-TestValue $script:Key 'Braindance3D_PreviousInstallPath' | Should -BeExactly $missing
+        }
+
+        It 'leaves a network InstallPath alone (code 3)' {
+            $mod = New-ModFolder -Root $script:Root -Name 'unc'
+            Set-TestValues $script:Key @{ InstallPath = '\\nas\apps\Odyssey 3D Hub' }
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung) 3
+            Get-TestValues $script:Key | Should -BeExactly 'InstallPath=\\nas\apps\Odyssey 3D Hub'
+        }
+
+        It 'refuses a stale InstallPath when Samsung''s default folder has an SDK (code 3)' {
+            $hub = New-ForeignSdk -Root $script:Root -Name 'Hub-default-stale'
+            $stale = Join-Path $script:Root 'gone Hub'
+            $mod = New-ModFolder -Root $script:Root -Name 'stale with samsung'
+            Set-TestValues $script:Key @{ InstallPath = $stale }
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $hub) 3
+            Get-TestValues $script:Key | Should -BeExactly "InstallPath=$stale"
+        }
+
+        It 'refuses an InstallPath that is not a text value (code 3), even with -Force' {
+            $mod = New-ModFolder -Root $script:Root -Name 'dword'
+            if (-not (Test-Path -LiteralPath $script:Key)) { New-Item -Path $script:Key -Force | Out-Null }
+            New-ItemProperty -LiteralPath $script:Key -Name InstallPath -Value 7 -PropertyType DWord | Out-Null
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung) 3
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung -Force) 3
+            Get-TestValue $script:Key 'Braindance3D_InstallPath' | Should -BeNullOrEmpty
         }
     }
 
     Context 'Invoke-Uninstall' {
+        It 'warns that the RED4ext plugin registers the mod again' {
+            $mod = New-ModFolder -Root $script:Root -Name 'u-red4ext'
+            $plugin = Get-Red4extPluginPath $mod
+            New-File $plugin 'MZ plugin stand-in'
+            Assert-Code (Invoke-Install -Key $script:Key -Dir $mod -SamsungDir $script:NoSamsung) 0
+            Mock Write-Log {}
+            Assert-Code (Invoke-Uninstall -Key $script:Key -Dir $mod) 0
+            Should -Invoke Write-Log -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'RED4ext plugin is still installed' }
+        }
+
         It 'does nothing when the key is missing' {
             $mod = New-ModFolder -Root $script:Root -Name 'u-none'
             Assert-Code (Invoke-Uninstall -Key $script:Key -Dir $mod) 0
@@ -417,7 +454,7 @@ Describe 'Registry' -Skip:(-not $HasRegistry) {
             Set-TestValues $script:Key @{ InstallPath = 'C:\x' }
             New-ItemProperty -LiteralPath $script:Key -Name Number -Value 5 -PropertyType DWord | Out-Null
             Get-RegistryValue $script:Key 'InstallPath' | Should -BeExactly 'C:\x'
-            Get-RegistryValue $script:Key 'Number' | Should -BeExactly '5'
+            Get-RegistryValue $script:Key 'Number' | Should -BeExactly '<not a text value>'
             Get-RegistryValue $script:Key 'Missing' | Should -BeNullOrEmpty
             Get-RegistryValue ($script:Key + '\Nope') 'InstallPath' | Should -BeNullOrEmpty
         }

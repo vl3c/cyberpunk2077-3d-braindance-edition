@@ -42,6 +42,9 @@ echo "built build/Odyssey3DSDK.dll ($VERSION) sha256 $(sha256sum build/Odyssey3D
 echo "built build/Braindance3D.dll ($VERSION) sha256 $(sha256sum build/Braindance3D.dll | cut -d' ' -f1)"
 
 if [[ "${1:-}" == "dist" ]]; then
+    # Same zip on any machine: UTC timestamps, fixed permissions.
+    export TZ=UTC
+    umask 022
     # Stage an explicit file list, so nothing else in package/ (logs from testing) can ship.
     STAGE=$(mktemp -d)
     trap 'rm -rf "$STAGE"' EXIT
@@ -67,11 +70,24 @@ if [[ "${1:-}" == "dist" ]]; then
     # Fixed timestamps and order, so the zip is reproducible.
     EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 1767225600)}
     find "$STAGE" -exec touch -h -d "@$EPOCH" {} +
+    find "$STAGE" -type f -exec chmod 644 {} +
+    find "$STAGE" -type d -exec chmod 755 {} +
     mkdir -p dist
-    ZIP="$PWD/dist/3D-Braindance-Edition-$VERSION.zip"
-    rm -f "$ZIP"
-    (cd "$STAGE" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | zip -q -X -@ "$ZIP")
-    (cd dist && sha256sum "$(basename "$ZIP")" > "$(basename "$ZIP").sha256")
-    echo "wrote $ZIP"
-    unzip -l "$ZIP"
+    make_zip() { # zip name, then files to leave out
+        local zip="$PWD/dist/$1"
+        shift
+        rm -f "$zip" "$zip.sha256"
+        (cd "$STAGE" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | grep -v -x -F -f <(printf '%s\n' "$@" "") |
+            zip -q -X -@ "$zip")
+        (cd dist && sha256sum "$(basename "$zip")" > "$(basename "$zip").sha256")
+        echo "wrote $zip"
+        unzip -l "$zip"
+    }
+    # Full zip (GitHub): includes the setup script and .bat files for installs without RED4ext.
+    make_zip "3D-Braindance-Edition-$VERSION.zip"
+    # Nexus zip: RED4ext installs only, without the scripts.
+    make_zip "3D-Braindance-Edition-$VERSION-Nexus.zip" \
+        bin/x64/Braindance3D/Braindance3D-Setup.ps1 \
+        bin/x64/Braindance3D/Install-Braindance3D.bat \
+        bin/x64/Braindance3D/Uninstall-Braindance3D.bat
 fi

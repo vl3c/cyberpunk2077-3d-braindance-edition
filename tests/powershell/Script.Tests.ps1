@@ -182,6 +182,28 @@ Describe 'Running the script as a process (like the .bat files)' {
         $code | Should -Be 5
     }
 
+    It 'status and install checks work in Constrained Language Mode (<HostName>)' -TestCases $Hosts {
+        # Objects are built without [pscustomobject] casts, which Constrained Language Mode rejects.
+        $key = 'HKCU:\SOFTWARE\Braindance3D-Tests\' + [guid]::NewGuid().ToString('N')
+        $cases = @(
+            @{ Mod = (New-ModFolder -Root $script:Root -Name ('proc clm status ' + $HostName)); Action = 'status'; Code = 0 }
+            @{ Mod = (New-ModFolder -Root $script:Root -Name ('proc clm nogame ' + $HostName) -NoGame); Action = 'install'; Code = 6 }
+        )
+        foreach ($case in $cases) {
+            $script = (Join-Path $case.Mod 'Braindance3D-Setup.ps1').Replace("'", "''")
+            $samsung = $script:NoSamsung.Replace("'", "''")
+            $cmd = "`$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; & '$script' -Action $($case.Action) -NoPause -RegistryPath '$key' -SamsungDefaultDir '$samsung'; exit `$LASTEXITCODE"
+            $all = @('-NoProfile', '-NonInteractive')
+            if ($script:IsWin) { $all += @('-ExecutionPolicy', 'Bypass') }
+            $ErrorActionPreference = 'Continue'
+            & $Exe @all -Command $cmd *> $null
+            $LASTEXITCODE | Should -Be $case.Code -Because "action $($case.Action)"
+            $log = Join-Path $case.Mod 'Braindance3D-setup.log'
+            Select-String -LiteralPath $log -Pattern 'ConstrainedLanguage' -SimpleMatch -Quiet | Should -BeTrue
+            Select-String -LiteralPath $log -Pattern 'Failed:' -SimpleMatch -Quiet | Should -BeFalse
+        }
+    }
+
     It 'an unknown action fails (<HostName>)' -TestCases $Hosts {
         $mod = New-ModFolder -Root $script:Root -Name ('proc bad ' + $HostName)
         $code = Invoke-SetupProcess -Exe $Exe -Script (Join-Path $mod 'Braindance3D-Setup.ps1') -Arguments @('-Action', 'reinstall', '-NoPause', '-RegistryPath', 'HKCU:\SOFTWARE\Braindance3D-Tests\x')
@@ -315,7 +337,7 @@ Describe 'Test coverage of the script' {
         $tested = @('Initialize-Log', 'Write-Log', 'Get-NormalizedPath', 'Test-SamePath', 'Test-PathUnder', 'Get-ParentPath',
             'Get-RegistryValue', 'Get-SdkPath', 'Get-SdkInfo', 'Get-RegistryState', 'Test-InstallPathIsOurs', 'Get-GameInfo',
             'Test-MinimumVersion', 'Get-SamsungDefaultDir', 'Test-IsElevated', 'Remove-EmptyKey', 'Remove-Bookkeeping',
-            'Show-Status', 'Invoke-Install', 'Invoke-Uninstall', 'Invoke-Main')
+            'Show-Status', 'Invoke-Install', 'Invoke-Uninstall', 'Invoke-Main', 'Test-PathIsCheckable', 'Get-Red4extPluginPath')
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:SetupScript, [ref]$null, [ref]$null)
         $defined = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
         $untested = @($defined | Where-Object { $tested -notcontains $_ })

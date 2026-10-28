@@ -281,16 +281,50 @@ Describe 'Get-SamsungDefaultDir' {
     It 'uses the override when given' {
         Get-SamsungDefaultDir 'X:\Hub' | Should -BeExactly 'X:\Hub'
     }
-    It 'uses %ProgramFiles%\Odyssey 3D Hub otherwise' {
+    It 'uses %ProgramFiles%\Odyssey 3D Hub otherwise, preferring the 64-bit %ProgramW6432%' {
         $saved = $env:ProgramFiles
+        $saved64 = $env:ProgramW6432
         try {
+            if (Test-Path Env:\ProgramW6432) { Remove-Item Env:\ProgramW6432 }
             $env:ProgramFiles = $script:Root
             (Get-SamsungDefaultDir '').Replace('/', '\') | Should -BeLike '*\Odyssey 3D Hub'
+            $env:ProgramW6432 = Join-Path $script:Root 'pf64'
+            (Get-SamsungDefaultDir '').Replace('/', '\') | Should -BeLike '*\pf64\Odyssey 3D Hub'
+            Remove-Item Env:\ProgramW6432
             Remove-Item Env:\ProgramFiles
             Get-SamsungDefaultDir '' | Should -BeExactly ''
         } finally {
             $env:ProgramFiles = $saved
+            if ($saved64) { $env:ProgramW6432 = $saved64 }
         }
+    }
+}
+
+Describe 'Test-PathIsCheckable' {
+    It 'accepts a local path on a drive that is there' {
+        Test-PathIsCheckable (Join-Path $script:Root 'gone') | Should -BeTrue
+    }
+    It 'rejects network, quoted and empty paths' {
+        Test-PathIsCheckable '\\server\share\Odyssey 3D Hub' | Should -BeFalse
+        Test-PathIsCheckable '"C:\Program Files\Odyssey 3D Hub"' | Should -BeFalse
+        Test-PathIsCheckable '' | Should -BeFalse
+        Test-PathIsCheckable 'relative\path' | Should -BeFalse
+    }
+    It 'rejects a drive that is not there' {
+        $missing = Get-MissingDrivePath
+        if (-not $missing) { Set-ItResult -Skipped -Because 'no free drive letter'; return }
+        Test-PathIsCheckable $missing | Should -BeFalse
+    }
+}
+
+Describe 'Get-Red4extPluginPath' {
+    It 'finds the plugin DLL under the game folder' {
+        if (-not $IsWin) { Set-ItResult -Skipped -Because 'Windows paths'; return }
+        $mod = New-ModFolder -Root $script:Root -Name 'r4e path'
+        (Get-Red4extPluginPath $mod).Replace('/', '\') | Should -BeLike '*\r4e path\red4ext\plugins\Braindance3D\Braindance3D.dll'
+    }
+    It 'returns an empty string for an empty folder' {
+        Get-Red4extPluginPath '' | Should -BeExactly ''
     }
 }
 

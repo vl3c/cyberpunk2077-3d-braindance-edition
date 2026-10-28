@@ -48,8 +48,10 @@ The game finds the 3D SDK through one per-user registry key, `HKCU\SOFTWARE\Sams
 RED4ext, the mod's plugin (`red4ext\plugins\Braindance3D`) writes it at every game start, so there's nothing
 to run. It logs what it did to `bin\x64\Braindance3D\Braindance3D-autosetup.log`.
 
-**Without RED4ext:** double-click `bin\x64\Braindance3D\Install-Braindance3D.bat` once, not as administrator.
-It writes the same key, needs no admin rights, and has to be run again only if you move the game.
+**Without RED4ext:** use the full zip from [GitHub releases](https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/releases)
+(the Nexus download leaves the setup scripts out). Double-click `bin\x64\Braindance3D\Install-Braindance3D.bat`
+once, not as administrator. It writes the same key, needs no admin rights, and has to be run again only if you
+move the game.
 
 Both leave Samsung's own Odyssey 3D Hub alone if it's installed. Mod Organizer 2 isn't supported yet: the game
 must find the DLL in a real folder, and the engine ini only exists inside MO2's virtual file system.
@@ -66,9 +68,11 @@ must find the DLL in a real folder, and the engine ini only exists inside MO2's 
 
 ## Uninstall
 
-Remove the mod in Vortex, or delete its files. The registry key stays behind and does no harm: the game just
-stops finding the stand-in. To remove the key too, double-click `bin\x64\Braindance3D\Uninstall-Braindance3D.bat`
-before deleting the files.
+Remove the mod in Vortex, or delete its files (including `red4ext\plugins\Braindance3D`). The registry key
+stays behind and points at a folder that is gone, so the game just stops finding the stand-in. To remove the key
+too, run `Uninstall-Braindance3D.bat` (full zip) after removing the RED4ext plugin, or delete
+`HKCU\SOFTWARE\Samsung\Odyssey3DHub` in regedit if nothing else uses it. With RED4ext, the uninstaller alone
+isn't enough: the plugin registers the mod again at the next game start.
 
 **If you own a real Odyssey 3D monitor, don't install this mod.** The engine ini alone makes the game draw side
 by side instead of using your monitor's 3D, even if you never run the installer. The installer won't replace
@@ -77,10 +81,11 @@ command prompt. If you do, run the uninstaller before deleting the mod: it resto
 
 ## Troubleshooting
 
-- **The game crashes or won't start, after installing or after a game update:** remove the mod (or run
-  `Uninstall-Braindance3D.bat`). The game then starts normally. Please report it with your game version.
-- **3D Mode is still greyed out:** check `Braindance3D-autosetup.log` (RED4ext) or run the installer again and
-  read the log it names at the end (`Braindance3D-setup.log`). Both are in `bin\x64\Braindance3D`. On a PC with several monitors, try `Monitor = primary` in
+- **The game crashes or won't start, after installing or after a game update:** remove the mod in Vortex (or
+  delete its files, including `red4ext\plugins\Braindance3D`). The game then starts normally. Please report it
+  with your game version.
+- **3D Mode is still greyed out:** check `Braindance3D-autosetup.log` (RED4ext) or, without RED4ext, run the
+  installer again and read the log it names at the end (`Braindance3D-setup.log`). Both are in `bin\x64\Braindance3D`. On a PC with several monitors, try `Monitor = primary` in
   `Braindance3D-Settings.ini`, and play on the primary monitor.
 - **The mod's log:** `bin\x64\Braindance3D\braindance3d.log` (the previous run is `braindance3d.old.log`), or
   `%LOCALAPPDATA%\Braindance3D` if the game folder is read-only.

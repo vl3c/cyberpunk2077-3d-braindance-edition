@@ -718,7 +718,11 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         InitializeCriticalSection(&g_monLock);
         find_install_dir();
         read_settings();
-        log_open();
+        // Decide the host first: another program that loads the stand-in must not rotate away the game's log.
+        g_hostAllowed = is_allowed_host();
+        QueryPerformanceFrequency(&g_freq);
+        QueryPerformanceCounter(&g_t0);
+        if (g_hostAllowed) log_open();
         wchar_t exe[MAX_PATH] = L"";
         GetModuleFileNameW(NULL, exe, MAX_PATH);
         char b1[MAX_PATH * 3], b2[MAX_PATH * 3];
@@ -727,7 +731,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         slog("install folder %s, log level %d (" "Braindance3D-Settings.ini [Log] Level: 0 off, 1 normal, 2 verbose)",
              utf8(g_installDir, b2, sizeof(b2)), g_logLevel);
         slog("log file %s", utf8(g_logPath, b1, sizeof(b1)));
-        g_hostAllowed = is_allowed_host();
         slog("settings: monitor %s; host %s", g_monitorPrimaryOnly ? "primary" : "auto (game window's monitor)",
              g_hostAllowed ? "allowed" : "NOT Cyberpunk2077.exe, the SDK will not be offered");
         install_known_slots();
@@ -739,14 +742,15 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
             log_call_totals("factory", g_facStats);
             log_call_totals("device", g_devStats);
             log_call_totals("weaver", g_wvStats);
-            if (g_log) fclose(g_log);
-            g_log = NULL;
+            // At process exit the lines are already flushed and Windows closes the file.
+            if (g_log && !reserved) fclose(g_log);
+            if (!reserved) g_log = NULL;
             LeaveCriticalSection(&g_logLock);
-        }
-        if (!reserved) {
-            // FreeLibrary: nothing can call in any more.
-            DeleteCriticalSection(&g_monLock);
-            DeleteCriticalSection(&g_logLock);
+            if (!reserved) {
+                // FreeLibrary with the lock free: nothing can call in any more.
+                DeleteCriticalSection(&g_monLock);
+                DeleteCriticalSection(&g_logLock);
+            }
         }
     }
     return TRUE;

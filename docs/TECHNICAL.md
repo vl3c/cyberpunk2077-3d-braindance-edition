@@ -72,7 +72,10 @@ test sessions the game called only the slots above, about 110 times a second for
 ## Registration
 
 The game reads the SDK location from the registry, which mod managers can't write. Two things can write it, with
-the same rules (never replace another working SDK such as Samsung's Odyssey 3D Hub, remember what was there):
+the same rules: never replace another working SDK such as Samsung's Odyssey 3D Hub, and remember what was there.
+An `InstallPath` counts as unused only when its folder is missing on a local drive that is present, and Samsung's
+default folder has no SDK either. A network path, a missing drive (an offline USB disk), a quoted path or a
+value that isn't text is left alone (the script replaces those only with `-Force`, never a non-text value):
 
 - `red4ext\plugins\Braindance3D\Braindance3D.dll` (`src/braindance3d_autosetup.c`): a RED4ext plugin. RED4ext
   loads plugins about 10 seconds before the game looks for the SDK (measured on 2.5 with RED4ext 1.31), so the

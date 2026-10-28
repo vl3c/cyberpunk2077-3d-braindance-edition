@@ -44,13 +44,15 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$script:Version = '0.1.1'
+$script:Version = '0.1.0'
 $script:ProductName = '3D Braindance Edition'
 $script:SettingsFile = 'Braindance3D-Settings.ini'
 $script:MarkerName = 'Braindance3D_InstalledBy'
 $script:OwnPathName = 'Braindance3D_InstallPath'
 $script:PreviousName = 'Braindance3D_PreviousInstallPath'
 $script:NoPreviousValue = '<none>'
+# Stands in for a registry value that isn't text (DWORD, binary, multi-string): never replaced or restored.
+$script:UnreadableValue = '<not a text value>'
 $script:SdkRelativePath = 'GameLauncherData\core\Odyssey3DSDK.dll'
 $script:LogFile = $null
 
@@ -130,6 +132,7 @@ function Get-RegistryValue {
     if ($null -eq $item) { return $null }
     $prop = $item.PSObject.Properties[$Name]
     if ($null -eq $prop) { return $null }
+    if ($prop.Value -isnot [string]) { return $script:UnreadableValue }
     return [string]$prop.Value
 }
 
@@ -139,11 +142,21 @@ function Get-SdkPath {
     return ($Dir.TrimEnd('\', '/') + '\' + $script:SdkRelativePath)
 }
 
+# $true when a missing folder really is gone: a local path on a drive that is there. Network paths,
+# missing drives and quoted paths can't be told apart from "offline", so they don't count as gone.
+function Test-PathIsCheckable {
+    param([string]$Path)
+    if (-not $Path -or $Path.Contains('"') -or $Path.StartsWith('\\')) { return $false }
+    if ($Path.StartsWith('/')) { return $true } # PowerShell on Linux/macOS (the test suite)
+    if ($Path -notmatch '^[A-Za-z]:\\') { return $false }
+    return (Test-Path -LiteralPath $Path.Substring(0, 3))
+}
+
 # Describes the SDK DLL in a folder: whether it exists and whether it is this mod's.
 function Get-SdkInfo {
     param([string]$Dir)
     $info = [ordered]@{ Dir = $Dir; DllPath = ''; Exists = $false; IsOurs = $false; Product = ''; Version = '' }
-    if (-not $Dir) { return [pscustomobject]$info }
+    if (-not $Dir) { return (New-Object PSObject -Property $info) }
     $dll = Get-SdkPath $Dir
     $info.DllPath = $dll
     if (Test-Path -LiteralPath $dll -PathType Leaf) {
@@ -156,7 +169,7 @@ function Get-SdkInfo {
         if ($info.Product -eq $script:ProductName) { $info.IsOurs = $true }
         if (Test-Path -LiteralPath ($Dir.TrimEnd('\', '/') + '\' + $script:SettingsFile) -PathType Leaf) { $info.IsOurs = $true }
     }
-    return [pscustomobject]$info
+    return (New-Object PSObject -Property $info)
 }
 
 function Get-RegistryState {
@@ -168,7 +181,7 @@ function Get-RegistryState {
         OwnPath     = (Get-RegistryValue $Key $script:OwnPathName)
         Previous    = (Get-RegistryValue $Key $script:PreviousName)
     }
-    return [pscustomobject]$state
+    return (New-Object PSObject -Property $state)
 }
 
 # $true when the registry's InstallPath is this mod's: the path an install of this mod wrote,
@@ -200,7 +213,7 @@ function Get-GameInfo {
         }
     }
     $info.Running = [bool](Get-Process -Name 'Cyberpunk2077' -ErrorAction SilentlyContinue)
-    return [pscustomobject]$info
+    return (New-Object PSObject -Property $info)
 }
 
 # Cyberpunk versions are decimals (2.12 is older than 2.2, which is older than 2.5).
@@ -218,10 +231,19 @@ function Test-MinimumVersion {
     }
 }
 
+# <game>\red4ext\plugins\Braindance3D\Braindance3D.dll for a folder at <game>\bin\x64\Braindance3D, or ''.
+function Get-Red4extPluginPath {
+    param([string]$Dir)
+    $gameRoot = Get-ParentPath (Get-ParentPath (Get-ParentPath (Get-NormalizedPath $Dir)))
+    if (-not $gameRoot) { return '' }
+    return (Join-Path $gameRoot 'red4ext\plugins\Braindance3D\Braindance3D.dll')
+}
+
 # Samsung's default install folder, which the game uses when there is no InstallPath value.
 function Get-SamsungDefaultDir {
     param([string]$Override)
     if ($Override) { return $Override }
+    if ($env:ProgramW6432) { return (Join-Path $env:ProgramW6432 'Odyssey 3D Hub') }
     if ($env:ProgramFiles) { return (Join-Path $env:ProgramFiles 'Odyssey 3D Hub') }
     return ''
 }
@@ -274,7 +296,7 @@ function Show-Status {
     if ($active) { Write-Log 'Status: INSTALLED. The game will load the stand-in from this folder.' 'OK' }
     elseif ($reg.InstallPath) { Write-Log "Status: NOT INSTALLED from this folder. The game uses the SDK at '$($reg.InstallPath)'." 'WARN' }
     else { Write-Log 'Status: NOT INSTALLED.' 'WARN' }
-    return [pscustomobject]@{ Installed = $active; Registry = $reg; Sdk = $own; Game = $game }
+    return (New-Object PSObject -Property ([ordered]@{ Installed = $active; Registry = $reg; Sdk = $own; Game = $game }))
 }
 
 function Invoke-Install {
@@ -321,13 +343,26 @@ function Invoke-Install {
 
     # Decide what uninstall should put back, and whether replacing the current setting is allowed.
     $previous = $script:NoPreviousValue
+    if ($reg.InstallPath -eq $script:UnreadableValue -or $reg.Previous -eq $script:UnreadableValue) {
+        Write-Log "InstallPath (or the saved previous value) in $Key isn't a text value, so it can't be saved and restored. Nothing was changed. Check the key with regedit." 'ERROR'
+        return 3
+    }
     if ($reg.InstallPath -and (Test-InstallPathIsOurs $reg)) {
         # Reinstall or another copy of this mod: keep what the first install saved.
         if ($reg.Previous) { $previous = $reg.Previous }
         if (-not (Test-SamePath $reg.InstallPath $Dir)) { Write-Log "Replacing another copy of this mod at '$($reg.InstallPath)'." }
     } elseif ($reg.InstallPath) {
         $other = Get-SdkInfo $reg.InstallPath
-        if (-not $other.Exists) {
+        $samsung = Get-SamsungDefaultDir $SamsungDir
+        $samsungSdk = $null
+        if ($samsung) { $samsungSdk = Get-SdkInfo $samsung }
+        if (-not $other.Exists -and -not $Force -and -not (Test-PathIsCheckable $reg.InstallPath)) {
+            Write-Log "The current InstallPath '$($reg.InstallPath)' can't be checked (a network path, a drive that isn't there, or a quoted path). It may be Samsung's Odyssey 3D Hub on a drive that is offline. Nothing was changed. To replace it anyway, open a command prompt in this folder and run: Install-Braindance3D.bat -Force" 'ERROR'
+            return 3
+        } elseif (-not $other.Exists -and -not $Force -and $samsungSdk -and $samsungSdk.Exists -and -not $samsungSdk.IsOurs) {
+            Write-Log "The current InstallPath '$($reg.InstallPath)' has no SDK DLL, but Samsung's Odyssey 3D Hub is installed in '$samsung'. Nothing was changed. To replace it anyway, open a command prompt in this folder and run: Install-Braindance3D.bat -Force" 'ERROR'
+            return 3
+        } elseif (-not $other.Exists) {
             Write-Log "The current InstallPath '$($reg.InstallPath)' has no SDK DLL, so nothing uses it. Saving it so uninstall can put it back."
         } elseif ($Force) {
             Write-Log "Replacing the SDK at '$($reg.InstallPath)' because -Force was given. Uninstall restores it: run Uninstall-Braindance3D.bat BEFORE you delete this mod." 'WARN'
@@ -400,7 +435,11 @@ function Invoke-Uninstall {
 
     $after = Get-RegistryState $Key
     Write-Log ("Registry after: exists={0} InstallPath='{1}'" -f $after.KeyExists, $after.InstallPath)
-    Write-Log 'Uninstalled. The game no longer loads the stand-in. Now delete the mod files (or remove the mod in your mod manager).' 'OK'
+    $plugin = Get-Red4extPluginPath $Dir
+    if ($plugin -and (Test-Path -LiteralPath $plugin -PathType Leaf)) {
+        Write-Log "The RED4ext plugin is still installed ($plugin), so it registers the mod again the next time the game starts. Remove the mod in your mod manager, or delete the red4ext\plugins\Braindance3D folder." 'WARN'
+    }
+    Write-Log 'Uninstalled. Now delete the mod files (or remove the mod in your mod manager).' 'OK'
     return 0
 }
 
@@ -426,6 +465,11 @@ if ($MyInvocation.InvocationName -ne '.') {
     if (-not $InstallDir) { $InstallDir = $PSScriptRoot }
     if (-not $InstallDir -and $PSCommandPath) { $InstallDir = Split-Path -Parent $PSCommandPath }
     if (-not $InstallDir -and $MyInvocation.MyCommand.Path) { $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    # -RegistryPath exists for the tests; it may never point outside HKCU\SOFTWARE.
+    if ($RegistryPath -notlike 'HKCU:\SOFTWARE\*') {
+        Write-Host "-RegistryPath must be under HKCU:\SOFTWARE\ (got '$RegistryPath')."
+        exit 1
+    }
     $code = Invoke-Main -Action $Action -Key $RegistryPath -Dir $InstallDir -Force:$Force -AnyFolder:$AnyFolder -Log $LogPath -SamsungDir $SamsungDefaultDir
     if ($script:LogFile) { Write-Host "Log: $script:LogFile" }
     if (-not $NoPause) {

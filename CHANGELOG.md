@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.1.1 (2026-10-28)
-
-- Fixed: `Install-Braindance3D.bat` and `Uninstall-Braindance3D.bat` couldn't find the mod's folder under
-  Windows PowerShell 5.1 and stopped with "The SDK stand-in is missing". Only setups without RED4ext use them;
-  the RED4ext auto-setup (Vortex installs) wasn't affected.
-
 ## 0.1.0 (2026-10-28)
 
 First release.
@@ -19,4 +13,5 @@ First release.
 - Per-user installer and uninstaller for setups without RED4ext (one registry key, no admin rights). The installer won't replace
   Samsung's Odyssey 3D Hub unless forced; the uninstaller restores it.
 - FOMOD metadata so Vortex installs the files where they belong.
+- Two downloads: the Nexus zip for RED4ext setups, and the full zip on GitHub that adds the setup scripts.
 - Logging: `braindance3d.log` (levels 0 to 2) and `Braindance3D-setup.log`.
