@@ -71,6 +71,7 @@ echo "== compiling tests with $CC"
 "$CC" "${CFLAGS[@]}" -Isrc -o build/tests/test_whitebox.exe tests/native/test_whitebox.c "${LIBS[@]}"
 "$CC" "${CFLAGS[@]}" -Isrc -o build/tests/test_autosetup.exe tests/native/test_autosetup.c src/braindance3d_menus.c \
     "${LIBS[@]}" -ldxguid -luuid
+"$CC" "${CFLAGS[@]}" -Isrc -o build/tests/test_menus.exe tests/native/test_menus.c "${LIBS[@]}" -ldxguid -luuid
 
 DLL=build/Odyssey3DSDK.dll
 PLUGIN=build/Braindance3D.dll
@@ -89,7 +90,7 @@ if [[ $NATIVE == 0 && "${RUN[0]}" == xvfb-run ]] && command -v wineserver > /dev
 fi
 
 STATUS=0
-for t in test_dll test_whitebox test_autosetup; do
+for t in test_dll test_whitebox test_autosetup test_menus; do
     echo
     echo "== $t"
     if ! ${RUN[@]+"${RUN[@]}"} "build/tests/$t.exe" --dll "$DLL" --plugin "$PLUGIN" "${ARGS[@]+"${ARGS[@]}"}"; then

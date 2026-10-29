@@ -16,7 +16,9 @@
 //     list and executed on the game's direct queue, so it runs after the game's work for the frame.
 //     It sits in front of OptiScaler, Streamline and ReShade's own Present wrappers when those wrap
 //     the swap chain the game holds, and after them otherwise.
-//   - The shaders are compiled at start-up with Windows' own d3dcompiler_47.dll.
+//   - The shaders are compiled when the plugin loads, with Windows' own d3dcompiler_47.dll.
+//   - Only the game's own swap chain is squeezed (other swap chains can share the patched vtable), at
+//     most once per game frame.
 // Any failure turns the squeeze off for the rest of the session and says why in the log. The game
 // itself never stops because of it.
 //
@@ -28,9 +30,9 @@
 //                     Mode is on;
 //                   - one IsAvailable and no eye positions for STEREO_OFF_FRAMES frames in a row: 2D
 //                     gameplay, so 3D Mode is off;
-//                   - GetMonitorRect twice or more within RECT_WINDOW_MS: 3D Mode was switched (the game
-//                     re-checks the 3D display then; opening Settings alone asks once), so it flips, and
-//                     the next gameplay frame confirms it.
+//                   - GetMonitorRect twice or more in one burst (gaps under RECT_BURST_GAP_MS): 3D Mode
+//                     was switched (the game re-checks the 3D display then; opening Settings alone asks
+//                     once), so it flips, and the next gameplay frame confirms it.
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
 //                   Ctrl+F8 flips the squeeze by hand until the next menu opens or closes.
 //   on:             every frame (for testing)
@@ -89,7 +91,7 @@ enum { STEREO_UNKNOWN = -1, STEREO_OFF, STEREO_ON }; // whether the game's 3D Mo
 #define SLOT_MONITOR_RECT 6
 #define SLOT_IS_AVAILABLE 10
 #define STEREO_OFF_FRAMES 30 // 2D gameplay frames in a row before 3D Mode counts as off
-#define RECT_WINDOW_MS 5000  // GetMonitorRect calls this close together mean 3D Mode was switched
+#define RECT_BURST_GAP_MS 1500 // GetMonitorRect calls this close together are one display re-check
 
 static struct {
     int mode, level;
@@ -107,9 +109,12 @@ static struct {
     volatile LONG stereo;    // STEREO_*: whether 3D Mode is on, as far as the frames tell
     int stereoSeen;          // a frame has shown it (until then GetMonitorRect is the start-up check)
     int flatStreak;          // 2D gameplay frames in a row
-    DWORD rectStart;         // when the current run of GetMonitorRect calls started
-    LONG64 rectRun;          // GetMonitorRect calls in that run
-    int rectHandled;         // that run already flipped 3D Mode
+    DWORD rectLast;          // when the last GetMonitorRect call of the current burst came
+    LONG64 rectRun;          // GetMonitorRect calls in that burst
+    int rectHandled;         // that burst already flipped 3D Mode
+    int scIndex;             // the game's swap chain: entry in the device data (device index - 1)
+    volatile LONG busy;      // a squeeze is being recorded (guards against re-entry from wrappers)
+    LONG64 lastSqueezeFrame; // game frame of the last squeeze (one per frame at most)
     LONG64 gameFrames;
     int forced;       // Ctrl+F8 flips the squeeze for the screen that is showing
     int forcedFor;    // what detection said when Ctrl+F8 was pressed
@@ -167,14 +172,27 @@ static int fail(const char *what, HRESULT hr)
     return 0;
 }
 
-static void open_menu_log(const wchar_t *dir)
+static FILE *open_menu_log_in(const wchar_t *dir)
 {
     wchar_t path[MAX_PATH], old[MAX_PATH];
-    if (_snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-menus.log", dir) < 0) return;
-    if (_snwprintf(old, MAX_PATH, L"%ls\\Braindance3D-menus.old.log", dir) < 0) return;
+    if (_snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-menus.log", dir) < 0) return NULL;
+    if (_snwprintf(old, MAX_PATH, L"%ls\\Braindance3D-menus.old.log", dir) < 0) return NULL;
     path[MAX_PATH - 1] = old[MAX_PATH - 1] = 0;
     MoveFileExW(path, old, MOVEFILE_REPLACE_EXISTING);
-    g.log = _wfopen(path, L"w");
+    return _wfopen(path, L"w");
+}
+
+// Next to the settings file, or %LOCALAPPDATA%\Braindance3D if the game folder is read-only (like the stand-in's log).
+static void open_menu_log(const wchar_t *dir)
+{
+    g.log = open_menu_log_in(dir);
+    if (g.log) return;
+    wchar_t local[MAX_PATH], fallback[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (!n || n >= MAX_PATH || _snwprintf(fallback, MAX_PATH, L"%ls\\Braindance3D", local) < 0) return;
+    fallback[MAX_PATH - 1] = 0;
+    CreateDirectoryW(fallback, NULL);
+    g.log = open_menu_log_in(fallback);
 }
 
 // ---------------------------------------------------------------- settings
@@ -187,9 +205,13 @@ static void read_menu_settings(const wchar_t *dir)
     if (_snwprintf(ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", dir) < 0) return;
     ini[MAX_PATH - 1] = 0;
     GetPrivateProfileStringW(L"Log", L"Level", L"1", v, 64, ini);
-    g.level = v[0] >= L'0' && v[0] <= L'2' ? v[0] - L'0' : 1;
+    // Same rule as the stand-in's parse_level: no number is 1, 2 or more is 2.
+    const wchar_t *t = v;
+    while (*t == L' ' || *t == L'\t') t++;
+    long n = *t >= L'0' && *t <= L'9' ? wcstol(t, NULL, 10) : 1;
+    g.level = n <= 0 ? 0 : n >= 2 ? 2 : 1;
     GetPrivateProfileStringW(L"Menus", L"Squeeze", L"auto", v, 64, ini);
-    if (_wcsnicmp(v, L"off", 3) == 0) g.mode = MODE_OFF;
+    if (_wcsnicmp(v, L"off", 3) == 0 && (!v[3] || wcschr(L" \t;#", v[3]))) g.mode = MODE_OFF;
     else if (_wcsnicmp(v, L"on", 2) == 0 && (!v[2] || wcschr(L" \t;#", v[2]))) g.mode = MODE_ON;
 }
 
@@ -299,9 +321,32 @@ static int create_root_signature(void)
     return 1;
 }
 
+// Waits until the GPU has passed fence value v (an auto-reset event can be left signalled by an earlier
+// wait that timed out, so the fence itself is checked again after every wake-up). Returns 0 on timeout.
+static int wait_fence(UINT64 v, DWORD ms)
+{
+    DWORD start = GetTickCount();
+    while (ID3D12Fence_GetCompletedValue(g.fence) < v) {
+        DWORD spent = GetTickCount() - start;
+        if (spent >= ms) return 0;
+        if (FAILED(ID3D12Fence_SetEventOnCompletion(g.fence, v, g.fenceEvent))) return 0;
+        WaitForSingleObject(g.fenceEvent, ms - spent);
+    }
+    return 1;
+}
+
+// Before a resource that earlier squeezes used is released: the GPU must be done with all of them.
+static int idle_before_release(const char *what)
+{
+    if (wait_fence(g.fenceValue, 1000)) return 1;
+    mlog("warning: GPU still busy after 1 s, can't replace the %s yet", what);
+    return 0;
+}
+
 static int create_pso(DXGI_FORMAT format)
 {
     if (g.pso && g.psoFormat == format) return 1;
+    if (g.pso && !idle_before_release("pipeline")) return 0;
     if (g.pso) ID3D12PipelineState_Release(g.pso);
     g.pso = NULL;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
@@ -330,6 +375,7 @@ static int create_pso(DXGI_FORMAT format)
 static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
 {
     if (g.copy && g.copyW == bb->Width && g.copyH == bb->Height && g.copyFormat == bb->Format) return 1;
+    if (g.copy && !idle_before_release("copy texture")) return 0;
     if (g.copy) ID3D12Resource_Release(g.copy);
     g.copy = NULL;
     D3D12_HEAP_PROPERTIES heap = { D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0 };
@@ -354,8 +400,7 @@ static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv.Texture2D.MipLevels = 1;
     ID3D12Device_CreateShaderResourceView(g.device, g.copy, &srv, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(g.srvHeap));
-    mlog("copy texture %llux%u, DXGI format %d (%.1f MB)", (unsigned long long)bb->Width, bb->Height, (int)bb->Format,
-         bb->Width * (double)bb->Height * 8 / (1024.0 * 1024.0));
+    mlog("copy texture %llux%u, DXGI format %d", (unsigned long long)bb->Width, bb->Height, (int)bb->Format);
     return 1;
 }
 
@@ -379,7 +424,8 @@ static int init_d3d(void)
     g.queue = q;
     hr = ID3D12CommandQueue_GetDevice(q, &IID_ID3D12Device, (void **)&g.device);
     if (FAILED(hr)) return fail("GetDevice on the direct queue", hr);
-    if (!compile_shaders() || !create_root_signature()) return 0;
+    if (!g.vs || !g.ps) return fail("the squeeze shaders weren't compiled", E_FAIL);
+    if (!create_root_signature()) return 0;
     D3D12_DESCRIPTOR_HEAP_DESC rtv = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
     D3D12_DESCRIPTOR_HEAP_DESC srv = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
     hr = ID3D12Device_CreateDescriptorHeap(g.device, &rtv, &IID_ID3D12DescriptorHeap, (void **)&g.rtvHeap);
@@ -423,19 +469,25 @@ static void squeeze(IDXGISwapChain *sc)
     hr = IDXGISwapChain3_GetBuffer(sc3, index, &IID_ID3D12Resource, (void **)&bb);
     IDXGISwapChain3_Release(sc3);
     if (FAILED(hr)) { fail("GetBuffer on the swap chain", hr); return; }
+    ID3D12Device *bbDevice = NULL;
+    hr = ID3D12Resource_GetDevice(bb, &IID_ID3D12Device, (void **)&bbDevice);
+    if (bbDevice) ID3D12Device_Release(bbDevice);
+    if (FAILED(hr) || bbDevice != g.device) {
+        // Shouldn't happen for the game's swap chain; never record another device's resource on the game's queue.
+        ID3D12Resource_Release(bb);
+        fail("the back buffer belongs to another D3D12 device", FAILED(hr) ? hr : E_UNEXPECTED);
+        return;
+    }
     D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
     if (!create_copy_texture(&desc) || !create_pso(desc.Format)) { ID3D12Resource_Release(bb); return; }
 
     int slot = g.ring;
-    g.ring = (g.ring + 1) % RING;
-    if (ID3D12Fence_GetCompletedValue(g.fence) < g.allocFence[slot]) {
-        ID3D12Fence_SetEventOnCompletion(g.fence, g.allocFence[slot], g.fenceEvent);
-        if (WaitForSingleObject(g.fenceEvent, 1000) != WAIT_OBJECT_0) {
-            mlog("warning: GPU still busy with an earlier squeeze after 1 s, skipping this frame");
-            ID3D12Resource_Release(bb);
-            return;
-        }
+    if (!wait_fence(g.allocFence[slot], 1000)) {
+        mlog("warning: GPU still busy with an earlier squeeze after 1 s, skipping this frame");
+        ID3D12Resource_Release(bb);
+        return;
     }
+    g.ring = (g.ring + 1) % RING;
     hr = ID3D12CommandAllocator_Reset(g.alloc[slot]);
     if (SUCCEEDED(hr)) hr = ID3D12GraphicsCommandList_Reset(g.list, g.alloc[slot], g.pso);
     if (FAILED(hr)) { ID3D12Resource_Release(bb); fail("resetting the command list", hr); return; }
@@ -515,16 +567,21 @@ static void read_saved_stereo_setting(void)
     else mlog("3D Mode setting: Odyssey3D_StereoEnabled value not understood, starting as unknown");
 }
 
+static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now);
+
 // Called once per game frame, from GpuApi::Present: what the game asked the stand-in since the last one.
 static void note_game_frame(void)
 {
-    g.gameFrames++;
     if (!g.deviceCalls) {
         // The stand-in is loaded by the game when it sets up 3D, after this plugin; look it up until it's there.
         if (g.gameFrames % 60 != 1) return;
         HMODULE sdk = GetModuleHandleW(L"Odyssey3DSDK.dll");
         g.deviceCalls = sdk ? (DeviceCallsFn)(void *)GetProcAddress(sdk, "braindance3d_device_calls") : NULL;
         if (!g.deviceCalls) return;
+        // Pinned: this pointer is read every frame, so the stand-in must never unload under it.
+        HMODULE pinned;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                           (LPCWSTR)(void *)g.deviceCalls, &pinned);
         g.lastEye = g.deviceCalls(SLOT_EYE_POSITION);
         g.lastAvailable = g.deviceCalls(SLOT_IS_AVAILABLE);
         g.lastRect = g.deviceCalls(SLOT_MONITOR_RECT);
@@ -539,9 +596,15 @@ static void note_game_frame(void)
     g.lastEye = eye;
     g.lastAvailable = avail;
     g.lastRect = rect;
-    LONG flat = dEye == 0;
     VLOG("game frame %lld: %lld eye positions, %lld IsAvailable, %lld GetMonitorRect -> %s", (long long)g.gameFrames,
-         (long long)dEye, (long long)dAvail, (long long)dRect, flat ? "flat" : "stereo");
+         (long long)dEye, (long long)dAvail, (long long)dRect, dEye ? "stereo" : "flat");
+    note_frame_calls(dEye, dAvail, dRect, GetTickCount());
+}
+
+// What one game frame's stand-in calls say (split out of note_game_frame for the tests).
+static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now)
+{
+    LONG flat = dEye == 0;
     InterlockedExchange(&g.flatFrame, flat);
     if (!flat) {
         // Only a frame rendered in stereo asks for eye positions.
@@ -564,15 +627,14 @@ static void note_game_frame(void)
     // three times within a second or so when 3D Mode is switched there. Flip on a switch, so the settings menu is
     // squeezed or not to match; the next gameplay frame confirms it either way.
     if (dRect > 0 && g.stereoSeen) {
-        DWORD now = GetTickCount();
-        if (g.rectRun && now - g.rectStart <= RECT_WINDOW_MS) {
+        if (g.rectRun && now - g.rectLast <= RECT_BURST_GAP_MS) {
             g.rectRun += dRect;
         } else {
-            g.rectStart = now;
             g.rectRun = dRect;
             g.rectHandled = 0;
         }
-        VLOG("GetMonitorRect: %lld call(s) in this run", (long long)g.rectRun);
+        g.rectLast = now;
+        VLOG("GetMonitorRect: %lld call(s) in this burst", (long long)g.rectRun);
         if (g.rectRun >= 2 && !g.rectHandled) {
             g.rectHandled = 1;
             LONG cur = g.stereo;
@@ -584,7 +646,17 @@ static void note_game_frame(void)
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
 
-static int want_squeeze(void)
+// Whether Ctrl+F8 is held, counting only while the game has focus.
+static int ctrl_f8_down(void)
+{
+    DWORD fgPid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
+    return fgPid == GetCurrentProcessId() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+           (GetAsyncKeyState(VK_F8) & 0x8000);
+}
+
+// Whether to squeeze this frame, given whether Ctrl+F8 is held (split out of want_squeeze for the tests).
+static int decide_squeeze(int down)
 {
     int want = g.mode == MODE_ON ? 1 : menu_open();
     // Ctrl+F8 flips the squeeze by hand for the screen that is showing (edge-triggered, polled once per
@@ -594,7 +666,6 @@ static int want_squeeze(void)
         g.forced = 0;
         mlog("Ctrl+F8: the screen changed (detection now says %s), back to automatic", want ? "flat" : "stereo");
     }
-    int down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F8) & 0x8000);
     if (down && !g.keyWasDown) {
         g.forced = !g.forced;
         g.forcedFor = want;
@@ -604,20 +675,54 @@ static int want_squeeze(void)
     return g.forced ? !want : want;
 }
 
+static int want_squeeze(void) { return decide_squeeze(ctrl_f8_down()); }
+
+// Whether sc is the game's swap chain. The patched vtable can be shared by other swap chains (every DXGI swap
+// chain, or every one Streamline wraps), and the game can recreate its own, so the entry is read every time.
+static int is_game_swap_chain(IDXGISwapChain *sc)
+{
+    uintptr_t dd = readable((void *)g.deviceData, sizeof(void *)) ? *(uintptr_t *)g.deviceData : 0;
+    void **entry = dd ? (void **)(dd + DD_SWAPCHAINS + (uintptr_t)g.scIndex * DD_SWAPCHAIN_STRIDE) : NULL;
+    void *game = entry && readable(entry, sizeof(void *)) ? *entry : NULL;
+    if (!game) return 0;
+    if (game == (void *)sc) return 1;
+    // Same object through another interface pointer: compare the IUnknown identities.
+    IUnknown *a = NULL, *b = NULL;
+    int same = 0;
+    if (looks_like_com(game) && SUCCEEDED(IUnknown_QueryInterface((IUnknown *)game, &IID_IUnknown, (void **)&a)) &&
+        SUCCEEDED(IDXGISwapChain_QueryInterface(sc, &IID_IUnknown, (void **)&b)))
+        same = a == b;
+    if (a) IUnknown_Release(a);
+    if (b) IUnknown_Release(b);
+    return same;
+}
+
 static void before_present(IDXGISwapChain *sc, const char *which)
 {
+    // One at a time: a wrapper whose Present calls Present1 on the same vtable, or two presenting threads, must
+    // not record the shared command list twice.
+    if (InterlockedCompareExchange(&g.busy, 1, 0) != 0) return;
+    if (!is_game_swap_chain(sc)) {
+        InterlockedExchange(&g.busy, 0);
+        return;
+    }
     g.frames++;
     int want = !g.failed && want_squeeze();
     if (want != g.lastSqueeze) {
         mlog("%s: squeeze %s (frame %lld)", which, want ? "ON" : "off", (long long)g.frames);
         g.lastSqueeze = want;
     }
-    if (want) squeeze(sc);
+    // At most once per game frame, so a frame presented twice isn't squeezed twice (four pictures).
+    if (want && g.lastSqueezeFrame != g.gameFrames) {
+        g.lastSqueezeFrame = g.gameFrames;
+        squeeze(sc);
+    }
     DWORD now = GetTickCount();
     if (g.level >= 2 && now - g.lastSummary >= 1000) {
         mlog("summary: %lld frames presented, %lld squeezed", (long long)g.frames, (long long)g.squeezed);
         g.lastSummary = now;
     }
+    InterlockedExchange(&g.busy, 0);
 }
 
 // ---------------------------------------------------------------- hooks
@@ -638,7 +743,12 @@ static HRESULT STDMETHODCALLTYPE hook_present1(IDXGISwapChain1 *sc, UINT interva
 static int patch_slot(void **slot, void *hook, void **orig)
 {
     DWORD old;
-    if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old)) return 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(slot, &mbi, sizeof(mbi))) return 0;
+    // Keep execute rights in case the vtable shares a page with code.
+    DWORD rw = mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)
+                   ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
+    if (!VirtualProtect(slot, sizeof(void *), rw, &old)) return 0;
     *orig = *slot;
     *slot = hook;
     VirtualProtect(slot, sizeof(void *), old, &old);
@@ -664,6 +774,7 @@ static void patch_swap_chain(int32_t *deviceIndex)
     HRESULT hr = IUnknown_QueryInterface((IUnknown *)*entry, &IID_IDXGISwapChain, (void **)&sc);
     if (FAILED(hr)) { fail("QueryInterface(IDXGISwapChain) on the game's swap chain", hr); return; }
     g.vtbl = *(void ***)sc;
+    g.scIndex = idx - 1;
     mlog("game swap chain %p (device index %d), Present in %s", (void *)sc, idx, module_of(g.vtbl[VT_PRESENT], mod, sizeof(mod)));
     if (!patch_slot(&g.vtbl[VT_PRESENT], (void *)hook_present, (void **)&g.presentOrig)) {
         IDXGISwapChain_Release(sc);
@@ -680,6 +791,10 @@ static void patch_swap_chain(int32_t *deviceIndex)
     // No reference is kept: a later swap chain for the same window (after a display change) needs this one gone,
     // and it shares the patched vtable anyway.
     IDXGISwapChain_Release(sc);
+    // Pinned: the patched slots point into this DLL for the rest of the process, so it must never unload.
+    HMODULE pinned;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       (LPCWSTR)(void *)hook_present, &pinned);
     mlog("swap chain Present patched; the squeeze runs %s",
          g.mode == MODE_ON ? "on every frame" : "while a menu is open in 3D Mode");
 }
@@ -687,6 +802,7 @@ static void patch_swap_chain(int32_t *deviceIndex)
 static void *hook_gpu_present(int32_t *deviceIndex, uint8_t sync, UINT interval)
 {
     if (!g.patched && !g.failed && InterlockedExchange(&g.patched, 1) == 0) patch_swap_chain(deviceIndex);
+    g.gameFrames++;
     if (g.mode == MODE_AUTO) note_game_frame();
     return g.gpuPresentOrig(deviceIndex, sync, interval);
 }
@@ -714,5 +830,7 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
     if (!sdk->hooking->Attach(pluginHandle, (void *)present, (void *)hook_gpu_present, (void **)&g.gpuPresentOrig))
         return fail("RED4ext couldn't hook GpuApi::Present", E_FAIL);
     mlog("GpuApi::Present hooked; waiting for the first frame");
+    // Compiled now, not on the first menu, so opening a menu doesn't stall on the compiler.
+    if (!compile_shaders()) return 0;
     return 1;
 }
