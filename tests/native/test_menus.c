@@ -130,6 +130,16 @@ TEST(the_3d_mode_handler_sets_3d_mode_before_any_frame_tells)
     CHECK_EQ_INT(want_squeeze(), 1);
 }
 
+TEST(objects_that_arent_streamline_proxies_are_used_as_they_are)
+{
+    mt_begin();
+    // No sl.interposer.dll in this process: a COM object is returned unchanged.
+    IUnknown *obj = NULL;
+    REQUIRE(SUCCEEDED(CoCreateFreeThreadedMarshaler(NULL, &obj)));
+    CHECK(native_interface(obj, "test object") == (void *)obj);
+    IUnknown_Release(obj);
+}
+
 TEST(squeeze_on_mode_squeezes_every_frame)
 {
     mt_begin();

@@ -408,6 +408,30 @@ static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
     return 1;
 }
 
+// With DLSS frame generation loaded, Streamline hands the game proxy D3D12 objects (vtables in sl.interposer.dll), while
+// the swap chain's back buffers belong to the native device. Returns the native object behind a Streamline proxy, or p
+// itself. The native object's reference is kept for the session (whether slGetNativeInterface adds one isn't
+// documented, so it's never released).
+typedef int (*SlGetNativeInterfaceFn)(void *proxy, void **base);
+static void *native_interface(void *p, const char *what)
+{
+    HMODULE sl = GetModuleHandleW(L"sl.interposer.dll"), owner;
+    if (!sl || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCWSTR)**(void ***)p, &owner) || owner != sl)
+        return p;
+    SlGetNativeInterfaceFn get = (SlGetNativeInterfaceFn)(void *)GetProcAddress(sl, "slGetNativeInterface");
+    void *base = NULL;
+    int r = get ? get(p, &base) : -1;
+    if (r != 0 || !looks_like_com(base)) {
+        mlog("warning: the %s is Streamline's proxy, and slGetNativeInterface gave no native one (result %d)", what, r);
+        return p;
+    }
+    char mod[MAX_PATH];
+    mlog("the %s is Streamline's proxy; using the native one %p (vtable in %s)", what, base,
+         module_of(**(void ***)base, mod, sizeof(mod)));
+    return base;
+}
+
 static int init_d3d(void)
 {
     if (g.device) return 1;
@@ -417,6 +441,7 @@ static int init_d3d(void)
     void *queue = readable(slot, sizeof(void *)) ? *slot : NULL;
     if (!looks_like_com(queue)) return fail("the game's direct command queue doesn't look valid (game version changed?)", E_POINTER);
     mlog("direct queue %p (vtable in %s)", queue, module_of(**(void ***)queue, mod, sizeof(mod)));
+    queue = native_interface(queue, "direct queue");
     ID3D12CommandQueue *q = NULL;
     HRESULT hr = IUnknown_QueryInterface((IUnknown *)queue, &IID_ID3D12CommandQueue, (void **)&q);
     if (FAILED(hr)) return fail("QueryInterface(ID3D12CommandQueue) on the game's direct queue", hr);
@@ -477,7 +502,8 @@ static void squeeze(IDXGISwapChain *sc)
     hr = ID3D12Resource_GetDevice(bb, &IID_ID3D12Device, (void **)&bbDevice);
     if (bbDevice) ID3D12Device_Release(bbDevice);
     if (FAILED(hr) || bbDevice != g.device) {
-        // Shouldn't happen for the game's swap chain; never record another device's resource on the game's queue.
+        // Shouldn't happen for the game's swap chain (with Streamline the native queue and device are used, see
+        // native_interface); never record another device's resource on the game's queue.
         ID3D12Resource_Release(bb);
         fail("the back buffer belongs to another D3D12 device", FAILED(hr) ? hr : E_UNEXPECTED);
         return;
