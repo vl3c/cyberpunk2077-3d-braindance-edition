@@ -108,7 +108,7 @@ different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes thos
   `Present` and `Present1` vtable slots (on 2.5 with DLSS-G that vtable is Streamline's `sl.interposer.dll`).
 - **Squeeze:** at that point the back buffer is finished and in the PRESENT state. The plugin copies it, draws
   one full-screen triangle that samples `x * 2` for the left half and `x * 2 - 1` for the right, and runs both on
-  the game's direct queue with its own command list and fence. Shaders are compiled at start-up with Windows'
+  the game's direct queue with its own command list and fence. Shaders are compiled when the plugin loads, with Windows'
   `d3dcompiler_47.dll`. Any failure turns the squeeze off for the session and is logged.
 - **Detection,** once per game frame, from the stand-in's call counters (`braindance3d_device_calls(slot)`):
 
@@ -117,10 +117,13 @@ different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes thos
   | `GetEyePosition` (both eyes) | Stereo frame: 3D Mode is on, nothing to squeeze |
   | No eye positions | Flat frame (menus, map, loading): squeezed while 3D Mode is on |
   | `IsAvailable` once and no eye positions, 30 frames in a row | 2D gameplay: 3D Mode is off |
-  | `GetMonitorRect` twice or more within 5 s | 3D Mode was switched in Settings (opening Settings asks once) |
+  | `GetMonitorRect` twice or more in one burst (gaps under 1.5 s) | 3D Mode was switched in Settings (opening Settings asks once) |
 
   At start-up the saved `Odyssey3D_StereoEnabled` in `%LOCALAPPDATA%\CD Projekt Red\Cyberpunk 2077\UserSettings.json`
   is the first guess. Ctrl+F8 flips the squeeze for the screen that is showing, until detection changes.
+- **Safety:** only the game's own swap chain is squeezed (the patched vtable can be shared by other swap chains),
+  at most once per game frame and never re-entered. GPU resources are only replaced once the GPU is done with
+  them, and both DLLs are pinned so the patched pointers never dangle.
 - **Overlays:** CET draws inside the game's own present, before the squeeze, so its window is squeezed with menus.
   OptiScaler draws its menu and FPS counter in its own swap chain below Streamline, after the squeeze, so those
   still cover both halves.
