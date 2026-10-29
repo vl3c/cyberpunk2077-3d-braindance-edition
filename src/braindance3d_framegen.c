@@ -9,13 +9,15 @@
 // frame would blend two woven pictures. In side by side ([Odyssey3D] SBSDebug = true) there is no weaver, and DLSS-G
 // on the whole side-by-side frame works (tested through OptiScaler up to 6x).
 //
-// Three detours through RED4ext's hooking, the addresses resolved by hash from CDPR's address library (like
+// Four detours through RED4ext's hooking, the addresses resolved by hash from CDPR's address library (like
 // GpuApi::Present in braindance3d_menus.c):
 //   - the 3D Mode handler: marks that it is running, and puts Frame Generation's greyed flag back afterwards;
 //   - SetFrameGeneration: skips the handler's "Off" while DLSS frame generation is selected. FSR and XeSS frame
 //     generation stay blocked in stereo (features 89 and 75), so the game still turns those off as before;
-//   - FlagCompute: puts feature 88 back on stereo frames when the game's own DLSS-G checks for the frame passed.
-// All three pass straight through unless SBSDebug is on (read on every call: the engine ini may not be applied yet
+//   - FlagCompute and IsDlssgEnabled: FlagCompute calls IsDlssgEnabled only for a view that passed its other DLSS-G
+//     checks, so its answer, noted per thread (FlagCompute runs for several views at once on worker threads), is
+//     the game's own DLSS-G decision for that view; on stereo frames feature 88 is set again from it.
+// All of them pass straight through unless SBSDebug is on (read on every call: the engine ini may not be applied yet
 // when the plugin loads), so a real 3D monitor keeps the game's rule. Before anything is attached, byte patterns in
 // each function are checked; if one doesn't match (a game update), nothing is attached and the log says which.
 // DLSS-G loads only when Frame Generation is DLSS at game start, so choosing it needs a restart, as in 2D.
@@ -46,8 +48,6 @@
 #define VAR_VALUE 0x30           // config var: the bool value
 #define SETTING_FLAGS 0x44       // settings var: flags, FLAG_GREYED = shown greyed out
 #define FLAG_GREYED 0x800u
-#define RENDERER_SL 0x4658       // renderer: the Streamline object
-#define SL_DLSSG_ELIGIBLE 0x1F2  // Streamline object: FlagCompute found this frame eligible for DLSS-G
 #define FG_MODE_DLSS 1
 #define FEATURE_DLSSG 88
 #define FEATURE_STEREO 98
@@ -75,7 +75,8 @@ static const char AOB_SET_FG[] =
 // Start of FlagCompute.
 static const char AOB_FLAG_COMPUTE[] =
     "4C 89 4C 24 20 4C 89 44 24 18 48 89 4C 24 08 53 41 54 41 55 41 57 48 83 EC 68 0F 57 C0 4D 8B D1 0F 11 02";
-// In it, the DLSS-G check: rcx = renderer->sl; call IsDlssgEnabled; sl->eligible = 1.
+// In it, the DLSS-G check: rcx = renderer->sl; call IsDlssgEnabled; sl->eligible = 1. It's the only call to
+// IsDlssgEnabled in FlagCompute (checked at load).
 static const char AOB_FLAG_DLSSG[] = "49 8B 89 58 46 00 00 E8 ?? ?? ?? ?? 0F B6 E8 C6 81 F2 01 00 00 01";
 #define FLAG_DLSSG_CALL 7
 // In it, the stereo clear: feature 88 = dlssg && !stereo.
@@ -94,8 +95,8 @@ static struct {
     O3dChangedFn o3dOrig;
     SetFgFn setFgOrig;
     FlagComputeFn flagOrig;
+    DlssgEnabledFn dlssgOrig;
     FgModeFn fgMode;
-    DlssgEnabledFn dlssgEnabled;
     RootFn root;
     FindFn group, var;
     const uint64_t *presetsName, *fgName; // the CNames SetFrameGeneration passes
@@ -106,6 +107,9 @@ static struct {
     LONG64 lastRestored;
     DWORD lastSummary;
 } fg;
+
+// Set while this thread runs FlagCompute; then what IsDlssgEnabled answered in it (-1: it wasn't asked).
+static __thread int t_inFlagCompute, t_dlssg;
 
 // ---------------------------------------------------------------- byte patterns
 
@@ -160,6 +164,15 @@ static int aob_len(const char *pattern) { return (int)(strlen(pattern) + 1) / 3;
 
 // Where an E8 rel32 call goes, and what a 7-byte RIP-relative mov reads.
 static uintptr_t call_target(const uint8_t *call) { return (uintptr_t)(call + 5) + *(const int32_t *)(call + 1); }
+
+// How many E8 calls to target there are in [p, p + size).
+static int count_calls(const uint8_t *p, size_t size, uintptr_t target)
+{
+    int n = 0;
+    for (size_t i = 0; i + 5 <= size; i++)
+        if (p[i] == 0xE8 && call_target(p + i) == target) n++;
+    return n;
+}
 static uintptr_t rip_operand(const uint8_t *insn) { return (uintptr_t)(insn + 7) + *(const int32_t *)(insn + 3); }
 
 // ---------------------------------------------------------------- memory checks
@@ -190,12 +203,11 @@ static int text_is(const char *p, const char *want) { return readable(p, strlen(
 
 static int sbs_debug(void) { return fg.sbsVar[VAR_VALUE] != 0; }
 
-// Frame Generation's settings var, found the way SetFrameGeneration finds it. NULL if any step fails.
+// Frame Generation's flags, in the settings var found the way SetFrameGeneration finds it (the lookups never return
+// NULL for these names; the check is for a var that isn't readable as expected). NULL if that fails.
 static uint32_t *fg_flags(void)
 {
-    void *root = fg.root();
-    void *group = root ? fg.group(root, *fg.presetsName) : NULL;
-    uint8_t *var = group ? fg.var(group, *fg.fgName) : NULL;
+    uint8_t *var = fg.var(fg.group(fg.root(), *fg.presetsName), *fg.fgName);
     return var && readable(var + SETTING_FLAGS, sizeof(uint32_t)) ? (uint32_t *)(var + SETTING_FLAGS) : NULL;
 }
 
@@ -229,7 +241,7 @@ static void hook_o3d_changed(uint8_t *event)
 static uint8_t hook_set_fg(int32_t index, uint8_t mode)
 {
     if (index == 0 && fg.handlerThread == GetCurrentThreadId()) {
-        uint32_t selected = fg.fgMode() & 0xFF;
+        uint32_t selected = fg.fgMode();
         if (selected == FG_MODE_DLSS) {
             fg.kept = 1;
             plugin_log(1, "framegen: 3D Mode is on, kept DLSS Frame Generation (the game would turn it off)");
@@ -241,13 +253,23 @@ static uint8_t hook_set_fg(int32_t index, uint8_t mode)
     return fg.setFgOrig(index, mode);
 }
 
+static uint8_t hook_dlssg_enabled(uint8_t *sl)
+{
+    uint8_t on = fg.dlssgOrig(sl);
+    if (t_inFlagCompute) t_dlssg = on;
+    return on;
+}
+
 static void hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
 {
+    t_inFlagCompute = 1;
+    t_dlssg = -1;
     fg.flagOrig(renderer, flags, frame, settings);
-    if (!(flags[1] & FEATURE_BIT(FEATURE_STEREO)) || (flags[1] & FEATURE_BIT(FEATURE_DLSSG)) || !sbs_debug()) return;
-    // The original's own DLSS-G decision for this frame, without its "and not stereo".
-    uint8_t *sl = *(uint8_t **)(renderer + RENDERER_SL);
-    if (!sl || !sl[SL_DLSSG_ELIGIBLE] || !fg.dlssgEnabled(sl)) return;
+    t_inFlagCompute = 0;
+    // The original's own DLSS-G decision for this view, without its "and not stereo".
+    if (t_dlssg != 1 || !(flags[1] & FEATURE_BIT(FEATURE_STEREO)) || (flags[1] & FEATURE_BIT(FEATURE_DLSSG)) ||
+        !sbs_debug())
+        return;
     flags[1] |= FEATURE_BIT(FEATURE_DLSSG);
     LONG64 n = InterlockedIncrement64(&fg.restored);
     if (n == 1) plugin_log(1, "framegen: DLSS frame generation running on a 3D frame (first one)");
@@ -268,14 +290,17 @@ static int fail(const char *what)
     return 0;
 }
 
-// Checks every address and pattern before anything is attached: all three hooks or none.
-static int find_targets(ResolveFn resolve, uint8_t **o3d, uint8_t **setFg, uint8_t **flagCompute)
+enum { T_SET_FG, T_O3D, T_DLSSG, T_FLAG_COMPUTE, T_COUNT }; // in attach order
+
+// Checks every address and pattern before anything is attached, and fills t[T_*] with the hook targets.
+static int find_targets(ResolveFn resolve, uint8_t **t)
 {
+    uint8_t **o3d = &t[T_O3D], **setFg = &t[T_SET_FG], **flagCompute = &t[T_FLAG_COMPUTE];
     *o3d = (uint8_t *)resolve(HASH_O3D_CHANGED);
     *setFg = (uint8_t *)resolve(HASH_SET_FG);
     *flagCompute = (uint8_t *)resolve(HASH_FLAG_COMPUTE);
     uint8_t *fgMode = (uint8_t *)resolve(HASH_FG_MODE);
-    uint8_t *dlssg = (uint8_t *)resolve(HASH_DLSSG_ENABLED);
+    uint8_t *dlssg = t[T_DLSSG] = (uint8_t *)resolve(HASH_DLSSG_ENABLED);
     uint8_t *sbs = (uint8_t *)resolve(HASH_VAR_SBSDEBUG);
     plugin_log(1, "framegen: resolved 3D Mode handler %p, SetFrameGeneration %p, GetFrameGenerationMode %p, "
                   "FlagCompute %p, IsDlssgEnabled %p, SBSDebug var %p",
@@ -305,6 +330,8 @@ static int find_targets(ResolveFn resolve, uint8_t **o3d, uint8_t **setFg, uint8
     if (off < 0) return fail("FlagCompute: the DLSS-G check isn't there");
     if (call_target(*flagCompute + off + FLAG_DLSSG_CALL) != (uintptr_t)dlssg)
         return fail("FlagCompute: the DLSS-G check doesn't call IsDlssgEnabled");
+    if (count_calls(*flagCompute, FLAG_COMPUTE_SIZE, (uintptr_t)dlssg) != 1)
+        return fail("FlagCompute: IsDlssgEnabled is called somewhere else in it too");
     long clear = aob_find_unique(*flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_CLEAR);
     if (clear < 0) return fail("FlagCompute: the stereo clear of feature 88 isn't there");
     plugin_log(2, "framegen: FlagCompute checked (DLSS-G check at +0x%lX, stereo clear at +0x%lX)", off, clear);
@@ -314,7 +341,6 @@ static int find_targets(ResolveFn resolve, uint8_t **o3d, uint8_t **setFg, uint8
         return fail("the SBSDebug config var isn't named [Odyssey3D] SBSDebug");
 
     fg.fgMode = (FgModeFn)(void *)fgMode;
-    fg.dlssgEnabled = (DlssgEnabledFn)(void *)dlssg;
     fg.root = (RootFn)root;
     fg.group = (FindFn)group;
     fg.var = (FindFn)var;
@@ -325,20 +351,21 @@ static int find_targets(ResolveFn resolve, uint8_t **o3d, uint8_t **setFg, uint8
     return 1;
 }
 
-// All three hooks or none.
+// All four hooks or none.
 static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
-    uint8_t *o3d, *setFg, *flagCompute;
-    if (!find_targets(resolve, &o3d, &setFg, &flagCompute)) return 0;
-    if (!h->Attach(pluginHandle, setFg, (void *)hook_set_fg, (void **)&fg.setFgOrig)) return fail("couldn't hook SetFrameGeneration");
-    if (!h->Attach(pluginHandle, o3d, (void *)hook_o3d_changed, (void **)&fg.o3dOrig)) {
-        h->Detach(pluginHandle, setFg);
-        return fail("couldn't hook the 3D Mode handler");
-    }
-    if (!h->Attach(pluginHandle, flagCompute, (void *)hook_flag_compute, (void **)&fg.flagOrig)) {
-        h->Detach(pluginHandle, o3d);
-        h->Detach(pluginHandle, setFg);
-        return fail("couldn't hook FlagCompute");
+    uint8_t *t[T_COUNT];
+    if (!find_targets(resolve, t)) return 0;
+    static const char *const names[T_COUNT] = { "SetFrameGeneration", "the 3D Mode handler", "IsDlssgEnabled", "FlagCompute" };
+    void *const detours[T_COUNT] = { (void *)hook_set_fg, (void *)hook_o3d_changed, (void *)hook_dlssg_enabled,
+                                     (void *)hook_flag_compute };
+    void **const origs[T_COUNT] = { (void **)&fg.setFgOrig, (void **)&fg.o3dOrig, (void **)&fg.dlssgOrig,
+                                    (void **)&fg.flagOrig };
+    for (int i = 0; i < T_COUNT; i++) {
+        if (h->Attach(pluginHandle, t[i], detours[i], origs[i])) continue;
+        plugin_log(1, "framegen: couldn't hook %s", names[i]);
+        while (i-- > 0) h->Detach(pluginHandle, t[i]);
+        return fail("a hook couldn't be attached");
     }
     plugin_log(1, "framegen: hooks attached; with SBSDebug on, DLSS frame generation stays available in 3D Mode");
     return 1;

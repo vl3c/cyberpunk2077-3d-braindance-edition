@@ -140,18 +140,19 @@ generated frame would blend two interlaced pictures) but not for side by side:
   88 (DLSS-G) from the game's DLSS-G checks, then clears it while stereo is on (likewise 89, FSR FG, and 75, XeSS
   FG). The frame graph and the Streamline resource tagging read feature 88, so without it DLSS-G gets no input.
 
-The RED4ext plugin (`src/braindance3d_framegen.c`) attaches three detours, resolved by hash from CDPR's address
+The RED4ext plugin (`src/braindance3d_framegen.c`) attaches four detours, resolved by hash from CDPR's address
 library like `GpuApi::Present`:
 
 | Detour | What it changes |
 | --- | --- |
 | 3D Mode handler | Marks that it's running; afterwards puts Frame Generation's greyed flag back as it was |
 | `SetFrameGeneration` | Skips the handler's Off while DLSS frame generation is selected (FSR and XeSS stay blocked in stereo, so the game still turns those off) |
-| `FlagCompute` | On stereo frames, sets feature 88 again when the game's own DLSS-G checks for the frame passed (`sl+0x1F2` and `IsDlssgEnabled`) |
+| `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its other DLSS-G checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it |
 
-All three pass straight through unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor
+All of them pass straight through unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor
 keeps the game's rule. Before attaching, the plugin checks byte patterns in each function (start, the Off call and
-its target, the grey, the DLSS-G check and its target, the stereo clear) and the SBSDebug var's name. If any
+its target, the grey, the DLSS-G check and its target as the only `IsDlssgEnabled` call, the stereo clear) and the
+SBSDebug var's name. If any
 check fails, nothing is attached and the hooks log says which. DLSS-G loads only when Frame Generation is DLSS at
 game start (Streamline is set up once), so choosing it needs a restart, as in 2D.
 

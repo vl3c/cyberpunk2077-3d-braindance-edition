@@ -4,7 +4,7 @@
 
 - The game's own DLSS frame generation now works in 3D Mode: 3D Mode no longer turns Frame Generation off or greys
   it out, and the renderer keeps DLSS-G on side-by-side frames. Needs RED4ext; choose DLSS frame generation and
-  restart the game once. FSR and XeSS frame generation still turn off in 3D Mode. Done with three small hooks that
+  restart the game once. FSR and XeSS frame generation still turn off in 3D Mode. Done with four small hooks that
   check the game's code first and do nothing if it changed; a real 3D monitor keeps the game's rule.
 - The RED4ext plugin's log is now `Braindance3D-hooks.log` (was `Braindance3D-menus.log`).
 

@@ -1,5 +1,5 @@
 // White-box tests for the frame generation hooks: this file #includes src/braindance3d_framegen.c so it can run
-// the byte-pattern checks against a fake copy of the game's code and drive the three hooks with fake originals.
+// the byte-pattern checks against a fake copy of the game's code and drive the hooks with fake originals.
 // Whether DLSS frame generation really runs in 3D is only tested in game.
 //
 // Run: test_framegen.exe [--list] [name filters...]
@@ -106,7 +106,7 @@ static R4eHooking f_hooking = { fake_attach, fake_detach };
 
 // Fake originals and game functions for the hook tests.
 static uint32_t f_mode = FG_MODE_DLSS;
-static int f_setFgCalls, f_setFgIndex, f_o3dSetsFgOff, f_o3dGreys, f_dlssgOn, f_dlssgCalls;
+static int f_setFgCalls, f_setFgIndex, f_o3dSetsFgOff, f_o3dGreys, f_eligible, f_dlssgOn, f_dlssgCalls;
 static uint8_t f_var[0x50];
 
 static uint8_t orig_set_fg(int32_t index, uint8_t mode)
@@ -123,24 +123,23 @@ static void orig_o3d(uint8_t *event)
     if (f_o3dGreys) *(uint32_t *)(f_var + SETTING_FLAGS) |= FLAG_GREYED;
 }
 
-static uint32_t fake_fg_mode(void) { return f_mode | 0xAB00; } // only the low byte counts
+static uint32_t fake_fg_mode(void) { return f_mode; }
 static void *fake_root(void) { return f_lookup; }
 static void *fake_find(void *parent, uint64_t cname) { return cname == f_cnames[1] ? (void *)f_var : (void *)f_lookup; }
-
-static uint64_t f_flagsAfterOrig[2];
-static void orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
-{
-    flags[0] = f_flagsAfterOrig[0];
-    flags[1] = f_flagsAfterOrig[1];
-}
-
-static uint8_t f_sl[0x200];
-static uint8_t *f_renderer[RENDERER_SL / 8 + 1];
 
 static uint8_t fake_dlssg(uint8_t *sl)
 {
     f_dlssgCalls++;
     return (uint8_t)f_dlssgOn;
+}
+
+// Like the game's: asks IsDlssgEnabled (through the hook, as it would be patched) only for an eligible view.
+static uint64_t f_flagsAfterOrig[2];
+static void orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
+{
+    if (f_eligible) hook_dlssg_enabled(NULL);
+    flags[0] = f_flagsAfterOrig[0];
+    flags[1] = f_flagsAfterOrig[1];
 }
 
 static void ft_begin(void)
@@ -152,7 +151,7 @@ static void ft_begin(void)
     f_mode = FG_MODE_DLSS;
     f_setFgCalls = f_setFgIndex = 0;
     f_o3dSetsFgOff = f_o3dGreys = 1;
-    f_dlssgOn = 1;
+    f_eligible = f_dlssgOn = 1;
     f_dlssgCalls = 0;
     memset(f_var, 0, sizeof(f_var));
     f_cnames[0] = 0x1AF15AB3D7A612E0ull;
@@ -161,15 +160,13 @@ static void ft_begin(void)
     fg.o3dOrig = orig_o3d;
     fg.flagOrig = orig_flag_compute;
     fg.fgMode = fake_fg_mode;
-    fg.dlssgEnabled = fake_dlssg;
+    fg.dlssgOrig = fake_dlssg;
     fg.root = fake_root;
     fg.group = fake_find;
     fg.var = fake_find;
     fg.presetsName = &f_cnames[0];
     fg.fgName = &f_cnames[1];
     fg.sbsVar = (const uint8_t *)f_sbsVar;
-    f_renderer[RENDERER_SL / 8] = f_sl;
-    f_sl[SL_DLSSG_ELIGIBLE] = 1;
     f_flagsAfterOrig[0] = 0;
     f_flagsAfterOrig[1] = FEATURE_BIT(FEATURE_STEREO);
 }
@@ -209,12 +206,12 @@ TEST(call_and_rip_targets_are_relative_to_the_next_instruction)
 
 // ===================================================================================== checks before attaching
 
-TEST(all_three_hooks_attach_when_every_check_passes)
+TEST(all_four_hooks_attach_when_every_check_passes)
 {
     ft_begin();
     memset(&fg, 0, sizeof(fg));
     CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 1);
-    CHECK_EQ_INT(f_attached, 3);
+    CHECK_EQ_INT(f_attached, 4);
     CHECK_EQ_INT(f_detached, 0);
     CHECK(fg.setFgOrig == (SetFgFn)(void *)f_setFg);
     CHECK(fg.o3dOrig == (O3dChangedFn)(void *)f_o3d);
@@ -224,7 +221,8 @@ TEST(all_three_hooks_attach_when_every_check_passes)
     CHECK(fg.var == (FindFn)(void *)f_lookup[2]);
     CHECK(fg.presetsName == &f_cnames[0]);
     CHECK(fg.fgName == &f_cnames[1]);
-    CHECK(fg.dlssgEnabled == (DlssgEnabledFn)(void *)f_dlssg);
+    CHECK(fg.dlssgOrig == (DlssgEnabledFn)(void *)f_dlssg);
+    CHECK(fg.fgMode == (FgModeFn)(void *)f_fgMode);
     CHECK(strstr(ft_log, "all checks passed (SBSDebug is on right now)") != NULL);
 }
 
@@ -290,6 +288,10 @@ TEST(nothing_attaches_when_flag_compute_changed)
     ft_begin();
     f_flag[0x6F0 + 14] = 0x59; // feature 89
     expect_no_hooks("the stereo clear of feature 88 isn't there");
+    ft_begin();
+    f_flag[0x900] = 0xE8; // a second call to IsDlssgEnabled: its answer wouldn't be the DLSS-G decision
+    put_rel32(f_flag + 0x905, f_dlssg);
+    expect_no_hooks("IsDlssgEnabled is called somewhere else in it too");
 }
 
 TEST(nothing_attaches_when_the_sbsdebug_var_is_another_var)
@@ -304,7 +306,7 @@ TEST(nothing_attaches_when_the_sbsdebug_var_is_another_var)
 
 TEST(a_failed_attach_detaches_the_hooks_already_attached)
 {
-    for (int failAt = 1; failAt <= 3; failAt++) {
+    for (int failAt = 1; failAt <= T_COUNT; failAt++) {
         ft_begin();
         f_attachFails = failAt;
         CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
@@ -393,7 +395,7 @@ TEST(set_frame_generation_outside_the_handler_passes_through)
 static uint64_t run_flags(void)
 {
     uint64_t flags[2] = { 0, 0 };
-    hook_flag_compute((uint8_t *)f_renderer, flags, NULL, NULL);
+    hook_flag_compute(NULL, flags, NULL, NULL);
     return flags[1];
 }
 
@@ -416,20 +418,44 @@ TEST(flag_compute_changes_nothing_otherwise)
     set_sbs_debug(0); // a real 3D monitor
     CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
     ft_begin();
-    f_sl[SL_DLSSG_ELIGIBLE] = 0; // the game's own checks said no this frame
+    f_eligible = 0; // the game's other checks said no for this view, so IsDlssgEnabled isn't asked
     CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
-    f_sl[SL_DLSSG_ELIGIBLE] = 1;
     ft_begin();
     f_dlssgOn = 0; // DLSS-G not loaded or not on
     CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
     ft_begin();
-    f_renderer[RENDERER_SL / 8] = NULL;
-    CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
-    ft_begin();
     f_flagsAfterOrig[1] |= FEATURE_BIT(FEATURE_DLSSG); // already on
     run_flags();
-    CHECK_EQ_INT(f_dlssgCalls, 0);
     CHECK_EQ_INT((int)fg.restored, 0);
+}
+
+TEST(is_dlssg_enabled_only_counts_inside_flag_compute)
+{
+    ft_begin();
+    CHECK_EQ_INT(hook_dlssg_enabled(NULL), 1); // the per-frame DLSS-G code asking
+    f_eligible = 0;
+    CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
+    CHECK_EQ_INT(f_dlssgCalls, 1);
+}
+
+static DWORD WINAPI eligible_view_thread(void *arg)
+{
+    *(uint64_t *)arg = run_flags();
+    return 0;
+}
+
+TEST(each_thread_gets_its_own_dlssg_decision)
+{
+    ft_begin();
+    // An eligible view on a worker thread doesn't make a view on this thread eligible.
+    uint64_t other = 0;
+    HANDLE t = CreateThread(NULL, 0, eligible_view_thread, &other, 0, NULL);
+    REQUIRE(t != NULL);
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    CHECK(other == (FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_DLSSG)));
+    f_eligible = 0;
+    CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }
