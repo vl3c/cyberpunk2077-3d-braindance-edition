@@ -279,10 +279,12 @@ Describe 'Shipped files agree with each other' {
         $text | Should -Match '(?m)^\[Display\]'
         $text | Should -Match '(?m)^Monitor\s*=\s*auto\s*$'
     }
-    It 'the engine ini turns on the side-by-side options' {
+    It 'the engine ini turns on side by side and leaves stereo to the 3D Mode setting' {
         $text = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'package\engine\config\platform\pc\braindance3d.ini') -Raw
         $text | Should -Match '(?m)^\[Odyssey3D\]'
-        foreach ($opt in 'OverrideEnabled', 'StereoEnabled', 'SBSDebug') { $text | Should -Match ('(?m)^' + $opt + '\s*=\s*true\s*$') }
+        $text | Should -Match '(?m)^SBSDebug\s*=\s*true\s*$'
+        # With the override on, the engine ignores the 3D Mode toggle and stereo can't be turned off in game
+        $text | Should -Match '(?m)^OverrideEnabled\s*=\s*false\s*$'
     }
     It 'the RED4ext auto-setup plugin uses the same key, value names and files as the script' {
         # src/braindance3d_autosetup.c registers the mod when the game starts; this script must be able to

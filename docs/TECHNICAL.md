@@ -14,9 +14,13 @@ The hidden engine config group `Odyssey3D` (set in `engine\config\platform\pc\br
 
 | Option | Default | This mod | Meaning |
 | --- | --- | --- | --- |
-| `OverrideEnabled` | false | true | Override switch for the options below |
-| `StereoEnabled` | true | true | Stereo rendering |
+| `OverrideEnabled` | false | false | When true, the engine takes stereo on/off from `StereoEnabled` below instead of the user setting |
+| `StereoEnabled` | true | true | Stereo rendering, used only when `OverrideEnabled` is true |
 | `SBSDebug` | false | true | Present both eyes side by side instead of handing them to the SDK's weaver |
+
+With `OverrideEnabled` off, the 3D Mode toggle in the game's settings decides whether stereo is on: turning it
+off gives the normal 2D picture, live, and `SBSDebug` still applies when it is on. With the override on (0.1.0),
+stereo stayed on whatever the toggle said.
 
 Other options in the group (not changed): `WeaponConvergenceDistance` (0.5), `AO/StereoMod` (true),
 `AO/NoDownsampleThreshold` (1440), `Dynamic3DSettings/EnableWidgetDepth` (true), `WidgetDepthValue` (0.008),
