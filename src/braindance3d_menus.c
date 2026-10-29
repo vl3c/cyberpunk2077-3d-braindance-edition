@@ -21,10 +21,17 @@
 // itself never stops because of it.
 //
 // When it squeezes ([Menus] Squeeze in Braindance3D-Settings.ini):
-//   auto (default): on flat frames. The game asks the stand-in for both eye positions on every frame
-//                   it renders in stereo and not at all on menus, the map and loading screens, so a
-//                   game frame (GpuApi::Present) without new calls (braindance3d_eye_position_calls) is
-//                   squeezed. Ctrl+F8 flips it by hand for testing.
+//   auto (default): on flat frames while 3D Mode is on. Once per game frame (GpuApi::Present) this reads
+//                   the stand-in's call counters (braindance3d_device_calls):
+//                   - eye positions asked: a stereo frame, so 3D Mode is on and nothing is squeezed;
+//                   - no eye positions: a flat frame (menus, the map, loading screens), squeezed if 3D
+//                     Mode is on;
+//                   - one IsAvailable and no eye positions for STEREO_OFF_FRAMES frames in a row: 2D
+//                     gameplay, so 3D Mode is off;
+//                   - GetMonitorRect: the game re-checked the 3D display, as it does when 3D Mode is
+//                     switched, so whether 3D is on is unknown until the next gameplay frame.
+//                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
+//                   Ctrl+F8 flips the squeeze by hand until the next menu opens or closes.
 //   on:             every frame (for testing)
 //   off:            never; no hooks are installed
 // Log: Braindance3D-menus.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose).
@@ -66,7 +73,7 @@ typedef HRESULT(STDMETHODCALLTYPE *PresentFn)(IDXGISwapChain *sc, UINT interval,
 typedef HRESULT(STDMETHODCALLTYPE *Present1Fn)(IDXGISwapChain1 *sc, UINT interval, UINT flags,
                                                const DXGI_PRESENT_PARAMETERS *params);
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
-typedef LONG64 (*EyeCallsFn)(void);
+typedef LONG64 (*DeviceCallsFn)(int slot);
 typedef HRESULT(WINAPI *D3DCompileFn)(const void *src, SIZE_T len, const char *name, const D3D_SHADER_MACRO *defines,
                                       ID3DInclude *include, const char *entry, const char *target, UINT flags1,
                                       UINT flags2, ID3DBlob **code, ID3DBlob **errors);
@@ -74,6 +81,13 @@ typedef HRESULT(WINAPI *SerializeRootSigFn)(const D3D12_ROOT_SIGNATURE_DESC *des
                                             ID3DBlob **blob, ID3DBlob **errors);
 
 enum { MODE_OFF, MODE_AUTO, MODE_ON };
+enum { STEREO_UNKNOWN = -1, STEREO_OFF, STEREO_ON }; // whether the game's 3D Mode is on
+
+// Stand-in device slots read once per game frame (see braindance3d_device_calls in braindance3d_sdk.c).
+#define SLOT_EYE_POSITION 1
+#define SLOT_MONITOR_RECT 6
+#define SLOT_IS_AVAILABLE 10
+#define STEREO_OFF_FRAMES 30 // 2D gameplay frames in a row before 3D Mode counts as off
 
 static struct {
     int mode, level;
@@ -85,11 +99,15 @@ static struct {
     void **vtbl;
     PresentFn presentOrig;
     Present1Fn present1Orig;
-    EyeCallsFn eyeCalls;
-    LONG64 lastEyeCalls;
+    DeviceCallsFn deviceCalls;
+    LONG64 lastEye, lastAvailable, lastRect;
     volatile LONG flatFrame; // the game's last frame asked for no eye positions
+    volatile LONG stereo;    // STEREO_*: whether 3D Mode is on, as far as the frames tell
+    int stereoSeen;          // a frame has shown it (until then GetMonitorRect is the start-up check)
+    int flatStreak;          // 2D gameplay frames in a row
     LONG64 gameFrames;
-    int forced;       // Ctrl+F8 flips this
+    int forced;       // Ctrl+F8 flips the squeeze for the screen that is showing
+    int forcedFor;    // what detection said when Ctrl+F8 was pressed
     int keyWasDown;
     int lastSqueeze;  // for logging changes
     LONG64 frames, squeezed;
@@ -455,41 +473,111 @@ static void squeeze(IDXGISwapChain *sc)
 
 // ---------------------------------------------------------------- when to squeeze
 
-// Called once per game frame, from GpuApi::Present: whether the game asked for eye positions since the last one.
+static const char *stereo_name(LONG v) { return v == STEREO_ON ? "on" : v == STEREO_OFF ? "off" : "unknown"; }
+
+static void set_stereo(LONG v, const char *why)
+{
+    if (InterlockedExchange(&g.stereo, v) != v)
+        mlog("3D Mode now %s (%s, game frame %lld)", stereo_name(v), why, (long long)g.gameFrames);
+}
+
+// First guess at whether 3D Mode is on: the game saves its settings to UserSettings.json when it quits, so the
+// file holds the setting this session started with. Only the "Odyssey3D_StereoEnabled" option object is read.
+static void read_saved_stereo_setting(void)
+{
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH);
+    if (!n || n >= MAX_PATH) { mlog("3D Mode setting: no LOCALAPPDATA, starting as unknown"); return; }
+    if (_snwprintf(path, MAX_PATH, L"%ls\\CD Projekt Red\\Cyberpunk 2077\\UserSettings.json", dir) < 0) return;
+    path[MAX_PATH - 1] = 0;
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) { mlog("3D Mode setting: %ls not found, starting as unknown", path); return; }
+    static char buf[1 << 20]; // the file is about 100 KB
+    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[len] = 0;
+    const char *opt = strstr(buf, "\"Odyssey3D_StereoEnabled\"");
+    const char *end = opt ? strchr(opt, '}') : NULL;
+    const char *val = opt ? strstr(opt, "\"value\"") : NULL;
+    if (!opt || !end || !val || val > end) {
+        mlog("3D Mode setting: no Odyssey3D_StereoEnabled value in UserSettings.json, starting as unknown");
+        return;
+    }
+    val += 7;
+    while (*val == ' ' || *val == '\t' || *val == ':' || *val == '\r' || *val == '\n') val++;
+    if (strncmp(val, "true", 4) == 0) set_stereo(STEREO_ON, "saved setting in UserSettings.json");
+    else if (strncmp(val, "false", 5) == 0) set_stereo(STEREO_OFF, "saved setting in UserSettings.json");
+    else mlog("3D Mode setting: Odyssey3D_StereoEnabled value not understood, starting as unknown");
+}
+
+// Called once per game frame, from GpuApi::Present: what the game asked the stand-in since the last one.
 static void note_game_frame(void)
 {
     g.gameFrames++;
-    if (!g.eyeCalls) {
+    if (!g.deviceCalls) {
         // The stand-in is loaded by the game when it sets up 3D, after this plugin; look it up until it's there.
         if (g.gameFrames % 60 != 1) return;
         HMODULE sdk = GetModuleHandleW(L"Odyssey3DSDK.dll");
-        g.eyeCalls = sdk ? (EyeCallsFn)(void *)GetProcAddress(sdk, "braindance3d_eye_position_calls") : NULL;
-        if (!g.eyeCalls) return;
-        g.lastEyeCalls = g.eyeCalls();
-        mlog("menu detection: the stand-in's eye-position counter found (%lld calls so far, game frame %lld)",
-             (long long)g.lastEyeCalls, (long long)g.gameFrames);
+        g.deviceCalls = sdk ? (DeviceCallsFn)(void *)GetProcAddress(sdk, "braindance3d_device_calls") : NULL;
+        if (!g.deviceCalls) return;
+        g.lastEye = g.deviceCalls(SLOT_EYE_POSITION);
+        g.lastAvailable = g.deviceCalls(SLOT_IS_AVAILABLE);
+        g.lastRect = g.deviceCalls(SLOT_MONITOR_RECT);
+        mlog("menu detection: the stand-in's call counters found (game frame %lld: %lld eye positions, %lld "
+             "IsAvailable, %lld GetMonitorRect so far)", (long long)g.gameFrames, (long long)g.lastEye,
+             (long long)g.lastAvailable, (long long)g.lastRect);
         return;
     }
-    LONG64 n = g.eyeCalls();
-    LONG flat = n == g.lastEyeCalls;
-    VLOG("game frame %lld: %lld eye-position calls -> %s", (long long)g.gameFrames, (long long)(n - g.lastEyeCalls),
-         flat ? "flat" : "stereo");
-    g.lastEyeCalls = n;
+    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE),
+           rect = g.deviceCalls(SLOT_MONITOR_RECT);
+    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable, dRect = rect - g.lastRect;
+    g.lastEye = eye;
+    g.lastAvailable = avail;
+    g.lastRect = rect;
+    LONG flat = dEye == 0;
+    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable, %lld GetMonitorRect -> %s", (long long)g.gameFrames,
+         (long long)dEye, (long long)dAvail, (long long)dRect, flat ? "flat" : "stereo");
     InterlockedExchange(&g.flatFrame, flat);
+    if (!flat) {
+        // Only a frame rendered in stereo asks for eye positions.
+        g.flatStreak = 0;
+        g.stereoSeen = 1;
+        set_stereo(STEREO_ON, "a frame rendered in stereo");
+        return;
+    }
+    if (dAvail == 1) {
+        // 2D gameplay asks IsAvailable once per frame (stereo asks twice); a few such frames also turn up while
+        // the settings menu re-checks the display, so it takes a run of them.
+        if (++g.flatStreak == STEREO_OFF_FRAMES) {
+            g.stereoSeen = 1;
+            set_stereo(STEREO_OFF, "2D gameplay frames");
+        }
+    } else {
+        g.flatStreak = 0;
+    }
+    // The game re-checks the 3D display at start-up (before any frame tells) and when 3D Mode is switched.
+    if (dRect > 0 && g.stereoSeen) set_stereo(STEREO_UNKNOWN, "the game re-checked the 3D display");
 }
 
-static int menu_open(void) { return g.eyeCalls && g.flatFrame; }
+static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
 
 static int want_squeeze(void)
 {
-    // Ctrl+F8 flips the squeeze by hand (edge-triggered, polled once per frame).
+    int want = g.mode == MODE_ON ? 1 : menu_open();
+    // Ctrl+F8 flips the squeeze by hand for the screen that is showing (edge-triggered, polled once per
+    // frame). It lasts until detection changes its mind, so a menu flipped by hand doesn't leave gameplay
+    // squeezed (which would show four pictures) after the menu closes.
+    if (g.forced && want != g.forcedFor) {
+        g.forced = 0;
+        mlog("Ctrl+F8: the screen changed (detection now says %s), back to automatic", want ? "flat" : "stereo");
+    }
     int down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F8) & 0x8000);
     if (down && !g.keyWasDown) {
         g.forced = !g.forced;
-        mlog("Ctrl+F8: squeeze flipped by hand, now %s", g.forced ? "inverted" : "normal");
+        g.forcedFor = want;
+        mlog("Ctrl+F8: squeeze flipped by hand, now %s for this screen", g.forced ? (want ? "off" : "ON") : "automatic");
     }
     g.keyWasDown = down;
-    int want = g.mode == MODE_ON ? 1 : menu_open();
     return g.forced ? !want : want;
 }
 
@@ -569,7 +657,8 @@ static void patch_swap_chain(int32_t *deviceIndex)
     // No reference is kept: a later swap chain for the same window (after a display change) needs this one gone,
     // and it shares the patched vtable anyway.
     IDXGISwapChain_Release(sc);
-    mlog("swap chain Present patched; the squeeze runs %s", g.mode == MODE_ON ? "on every frame" : "while a menu is open");
+    mlog("swap chain Present patched; the squeeze runs %s",
+         g.mode == MODE_ON ? "on every frame" : "while a menu is open in 3D Mode");
 }
 
 static void *hook_gpu_present(int32_t *deviceIndex, uint8_t sync, UINT interval)
@@ -589,6 +678,8 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
     mlog("==== 3D Braindance Edition menu squeeze, mode %s, log level %d",
          g.mode == MODE_OFF ? "off" : g.mode == MODE_ON ? "on (every frame)" : "auto", g.level);
     if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no hooks installed"); return 1; }
+    g.stereo = STEREO_UNKNOWN;
+    if (g.mode == MODE_AUTO) read_saved_stereo_setting();
     if (!sdk || !sdk->hooking || !sdk->hooking->Attach) return fail("RED4ext didn't pass a hooking interface", E_POINTER);
     HMODULE r4e = GetModuleHandleW(L"RED4ext.dll");
     ResolveFn resolve = r4e ? (ResolveFn)(void *)GetProcAddress(r4e, "RED4ext_ResolveAddress") : NULL;

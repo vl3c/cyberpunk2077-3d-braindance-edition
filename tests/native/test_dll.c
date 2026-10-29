@@ -304,19 +304,25 @@ TEST(exports_are_present_and_undecorated)
     CHECK(GetProcAddress(s->h, "braindance3d_version") != NULL);
 }
 
-TEST(eye_position_counter_counts_every_eye_position_call)
+TEST(device_call_counter_counts_each_slot_on_its_own)
 {
-    typedef LONG64 (*EyeCallsFn)(void);
+    typedef LONG64 (*DeviceCallsFn)(int);
     Sdk *s = sdk_loaded(NULL);
-    EyeCallsFn calls = (EyeCallsFn)(void *)GetProcAddress(s->h, "braindance3d_eye_position_calls");
+    DeviceCallsFn calls = (DeviceCallsFn)(void *)GetProcAddress(s->h, "braindance3d_device_calls");
     REQUIRE(calls != NULL);
-    LONG64 before = calls();
+    LONG64 eye = calls(DEV_GET_EYE_POSITION), avail = calls(DEV_IS_AVAILABLE), rect = calls(DEV_GET_MONITOR_RECT);
     Obj *dev = sdk_device(s);
     float v[3];
     for (int i = 0; i < 5; i++) SLOT(dev, DEV_GET_EYE_POSITION, PFN_GetFloat3I)(dev, v, i & 1);
-    CHECK_EQ_INT(calls() - before, 5);
+    CHECK_EQ_INT(calls(DEV_GET_EYE_POSITION) - eye, 5);
+    CHECK_EQ_INT(calls(DEV_IS_AVAILABLE) - avail, 0); // other slots don't count
     SLOT(dev, DEV_IS_AVAILABLE, PFN_IsAvailable)(dev);
-    CHECK_EQ_INT(calls() - before, 5); // other slots don't count
+    SLOT(dev, DEV_IS_AVAILABLE, PFN_IsAvailable)(dev);
+    CHECK_EQ_INT(calls(DEV_IS_AVAILABLE) - avail, 2);
+    CHECK_EQ_INT(calls(DEV_GET_EYE_POSITION) - eye, 5);
+    CHECK_EQ_INT(calls(DEV_GET_MONITOR_RECT) - rect, 0);
+    CHECK_EQ_INT(calls(-1), -1);
+    CHECK_EQ_INT(calls(32), -1);
     device_release(dev);
 }
 
