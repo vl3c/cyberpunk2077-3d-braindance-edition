@@ -28,8 +28,9 @@
 //                     Mode is on;
 //                   - one IsAvailable and no eye positions for STEREO_OFF_FRAMES frames in a row: 2D
 //                     gameplay, so 3D Mode is off;
-//                   - GetMonitorRect: the game re-checked the 3D display, as it does when 3D Mode is
-//                     switched, so whether 3D is on is unknown until the next gameplay frame.
+//                   - GetMonitorRect twice or more within RECT_WINDOW_MS: 3D Mode was switched (the game
+//                     re-checks the 3D display then; opening Settings alone asks once), so it flips, and
+//                     the next gameplay frame confirms it.
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
 //                   Ctrl+F8 flips the squeeze by hand until the next menu opens or closes.
 //   on:             every frame (for testing)
@@ -88,6 +89,7 @@ enum { STEREO_UNKNOWN = -1, STEREO_OFF, STEREO_ON }; // whether the game's 3D Mo
 #define SLOT_MONITOR_RECT 6
 #define SLOT_IS_AVAILABLE 10
 #define STEREO_OFF_FRAMES 30 // 2D gameplay frames in a row before 3D Mode counts as off
+#define RECT_WINDOW_MS 5000  // GetMonitorRect calls this close together mean 3D Mode was switched
 
 static struct {
     int mode, level;
@@ -105,6 +107,9 @@ static struct {
     volatile LONG stereo;    // STEREO_*: whether 3D Mode is on, as far as the frames tell
     int stereoSeen;          // a frame has shown it (until then GetMonitorRect is the start-up check)
     int flatStreak;          // 2D gameplay frames in a row
+    DWORD rectStart;         // when the current run of GetMonitorRect calls started
+    LONG64 rectRun;          // GetMonitorRect calls in that run
+    int rectHandled;         // that run already flipped 3D Mode
     LONG64 gameFrames;
     int forced;       // Ctrl+F8 flips the squeeze for the screen that is showing
     int forcedFor;    // what detection said when Ctrl+F8 was pressed
@@ -555,8 +560,26 @@ static void note_game_frame(void)
     } else {
         g.flatStreak = 0;
     }
-    // The game re-checks the 3D display at start-up (before any frame tells) and when 3D Mode is switched.
-    if (dRect > 0 && g.stereoSeen) set_stereo(STEREO_UNKNOWN, "the game re-checked the 3D display");
+    // The game re-checks the 3D display at start-up (before any frame tells), once when Settings opens, and two or
+    // three times within a second or so when 3D Mode is switched there. Flip on a switch, so the settings menu is
+    // squeezed or not to match; the next gameplay frame confirms it either way.
+    if (dRect > 0 && g.stereoSeen) {
+        DWORD now = GetTickCount();
+        if (g.rectRun && now - g.rectStart <= RECT_WINDOW_MS) {
+            g.rectRun += dRect;
+        } else {
+            g.rectStart = now;
+            g.rectRun = dRect;
+            g.rectHandled = 0;
+        }
+        VLOG("GetMonitorRect: %lld call(s) in this run", (long long)g.rectRun);
+        if (g.rectRun >= 2 && !g.rectHandled) {
+            g.rectHandled = 1;
+            LONG cur = g.stereo;
+            if (cur == STEREO_ON) set_stereo(STEREO_OFF, "3D Mode switched in Settings (display re-checked)");
+            else if (cur == STEREO_OFF) set_stereo(STEREO_ON, "3D Mode switched in Settings (display re-checked)");
+        }
+    }
 }
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
