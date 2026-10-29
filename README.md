@@ -120,8 +120,8 @@ too, run `Uninstall-Braindance3D.bat` (full zip) after removing the RED4ext plug
 `HKCU\SOFTWARE\Samsung\Odyssey3DHub` in regedit if nothing else uses it. With RED4ext, the uninstaller alone
 isn't enough: the plugin registers the mod again at the next game start.
 
-**If you own a real Odyssey 3D monitor, don't install this mod.** The engine ini alone makes the game draw side
-by side instead of using your monitor's 3D, even if you never run the installer. The installer won't replace
+**If you own a real Odyssey 3D monitor, don't install this mod.** The engine ini alone makes the game's 3D Mode
+draw side by side instead of using your monitor's 3D, even if you never run the installer. The installer won't replace
 Samsung's software (neither does the RED4ext plugin) unless you run `Install-Braindance3D.bat -Force` from a
 command prompt. If you do, run the uninstaller before deleting the mod: it restores Samsung's setting.
 
