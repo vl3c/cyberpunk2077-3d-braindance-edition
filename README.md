@@ -19,13 +19,18 @@ Patch 2.5 added a 3D Mode for Samsung's Odyssey 3D monitor. The game renders a s
 with real depth for the world, the HUD and your weapon. It only switches that on when Samsung's Odyssey 3D
 software is installed, so for everyone else the option is greyed out.
 
-This mod does two things:
+This mod does three things:
 
 1. It provides a small stand-in for Samsung's Odyssey 3D SDK. The game finds it and unlocks 3D Mode.
 2. It turns on a hidden engine option (`SBSDebug`), so the game draws the left and right eye side by side
    instead of interlacing them for Samsung's lenticular panel.
+3. With RED4ext, it makes menus readable: the game draws menus, the map and loading screens as one flat
+   picture, so each eye would see a different half. The mod squeezes that picture into each half, and both eyes
+   see the same flat screen.
 
-It doesn't modify any game file and doesn't hook or patch the game's memory. The game loads the stand-in DLL itself, through its own Odyssey 3D code path.
+It doesn't modify any game file. The game loads the stand-in DLL itself, through its own Odyssey 3D code path. The
+menu fix is the only hook: the RED4ext plugin hooks the game's present (the same address Cyber Engine Tweaks
+uses), and `[Menus] Squeeze = off` in `Braindance3D-Settings.ini` turns it off.
 
 ## Requirements
 
@@ -135,8 +140,11 @@ command prompt. If you do, run the uninstaller before deleting the mod: it resto
   `Braindance3D-Settings.ini`, and play on the primary monitor.
 - **The mod's log:** `bin\x64\Braindance3D\braindance3d.log` (the previous run is `braindance3d.old.log`), or
   `%LOCALAPPDATA%\Braindance3D` if the game folder is read-only.
-- **Menus look wrong in the headset:** a known issue. The game draws menus once across the whole screen
-  instead of once per eye, so in half-SBS each eye sees a different half of the menu.
+- **Menus:** with RED4ext, menus, the map and loading screens are squeezed so both eyes see the same flat
+  screen, only while 3D Mode is on. Ctrl+F8 flips it by hand for the screen that is showing. OptiScaler's own
+  menu and FPS counter are drawn after this and still look split; `FpsOverlayPos = 0` in `OptiScaler.ini` keeps
+  the counter readable in the left eye. If menus look wrong, set `[Menus] Squeeze = off` and send
+  `bin\x64\Braindance3D\Braindance3D-menus.log`.
 - **The depth looks inside out:** use your viewer's swap-eyes option.
 - **Other games:** the registry key isn't per game. The stand-in refuses to work in anything but
   `Cyberpunk2077.exe`, but if another game with Odyssey 3D support misbehaves, uninstall before playing it.

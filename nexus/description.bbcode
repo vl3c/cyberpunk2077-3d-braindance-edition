@@ -25,7 +25,8 @@ That's it: the mod sets itself up automatically every time the game starts.
 [list]
 [*]Real stereo 3D from the game's own renderer: separate left and right images, not a depth-map fake.
 [*]Correct depth for the world, the HUD and your weapon, tuned with the game's own settings: [b]3D Mode[/b], [b]Preset[/b], [b]Depth[/b], [b]Weapon Depth[/b] and [b]Motion Comfort[/b]. Depth 0.5 to 1.0 works well in a headset.
-[*][b]No hooks or memory patches, no game files modified.[/b] The game loads the stand-in DLL itself through its own 3D support.
+[*][b]Readable menus in 3D[/b] (with RED4ext): menus, the map and loading screens are squeezed so both eyes see the same flat screen.
+[*][b]No game files modified.[/b] The game loads the stand-in DLL itself through its own 3D support. The menu fix is the only hook, and it can be turned off.
 [*]Sets itself up automatically at game start. Nothing to run or configure.
 [*]Open source (MIT), with logs for easy troubleshooting.
 [/list]
@@ -58,7 +59,7 @@ Good to know: each eye gets half the horizontal resolution, so a higher game res
 [size=4][b]Known limitations[/b][/size]
 [list]
 [*]Half the horizontal resolution per eye (half-SBS), so play on a 4K screen. No head tracking.
-[*]Menus look wrong in the headset: the game draws them once across the whole screen, so each eye sees a different half.
+[*]OptiScaler's own menu and FPS counter still look split in the headset (they're drawn after the mod's menu fix).
 [*]Untested: Steam and GOG builds, Mod Organizer 2, multi-monitor setups, viewers other than Virtual Desktop.
 [/list]
 

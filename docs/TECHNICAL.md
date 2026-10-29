@@ -69,7 +69,8 @@ test sessions the game called only the slots above, about 110 times a second for
 | `bin\x64\Braindance3D\Install-Braindance3D.bat`, `Uninstall-Braindance3D.bat` | Double-click wrappers |
 | `bin\x64\Braindance3D\README.md`, `LICENSE`, `CHANGELOG.md` | Docs |
 | `bin\x64\Braindance3D\braindance3d.log`, `braindance3d.old.log`, `Braindance3D-setup.log` | Logs, written at run time (or in `%LOCALAPPDATA%\Braindance3D`) |
-| `red4ext\plugins\Braindance3D\Braindance3D.dll` | RED4ext plugin that writes the registry setting at game start |
+| `red4ext\plugins\Braindance3D\Braindance3D.dll` | RED4ext plugin that writes the registry setting at game start and squeezes menus |
+| `bin\x64\Braindance3D\Braindance3D-menus.log`, `Braindance3D-menus.old.log` | What the menu squeeze did (this run and the previous one) |
 | `bin\x64\Braindance3D\Braindance3D-autosetup.log` | What the RED4ext plugin did (appended each start, reset past 256 KB) |
 | `fomod\` | Install metadata for Vortex and other FOMOD-aware managers |
 
@@ -83,8 +84,8 @@ value that isn't text is left alone (the script replaces those only with `-Force
 
 - `red4ext\plugins\Braindance3D\Braindance3D.dll` (`src/braindance3d_autosetup.c`): a RED4ext plugin. RED4ext
   loads plugins about 10 seconds before the game looks for the SDK (measured on 2.5 with RED4ext 1.31), so the
-  first launch already works. It points `InstallPath` at `<folder of Cyberpunk2077.exe>\Braindance3D`, and does
-  nothing else.
+  first launch already works. It points `InstallPath` at `<folder of Cyberpunk2077.exe>\Braindance3D`. It also
+  installs the menu squeeze (see below).
 - `Braindance3D-Setup.ps1` (via the .bat files), for setups without RED4ext. It can also uninstall, and with
   `-Force` replace Samsung's Hub.
 
@@ -96,6 +97,33 @@ Both write these values in `HKCU\SOFTWARE\Samsung\Odyssey3DHub`:
 | `Braindance3D_InstallPath` | The path this mod wrote, to recognise it later |
 | `Braindance3D_PreviousInstallPath` | What uninstall restores, or `<none>` |
 | `Braindance3D_InstalledBy` | The mod version that installed it |
+
+## Menu squeeze
+
+The game draws menus, the map and loading screens once across the whole window. In half-SBS each eye would see a
+different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes those frames into each half.
+
+- **Hook:** RED4ext resolves `GpuApi::Present` and the GPU device data by hash (the addresses Cyber Engine Tweaks
+  uses). A pass-through hook on `GpuApi::Present` finds the game's swap chain on its first call and patches its
+  `Present` and `Present1` vtable slots (on 2.5 with DLSS-G that vtable is Streamline's `sl.interposer.dll`).
+- **Squeeze:** at that point the back buffer is finished and in the PRESENT state. The plugin copies it, draws
+  one full-screen triangle that samples `x * 2` for the left half and `x * 2 - 1` for the right, and runs both on
+  the game's direct queue with its own command list and fence. Shaders are compiled at start-up with Windows'
+  `d3dcompiler_47.dll`. Any failure turns the squeeze off for the session and is logged.
+- **Detection,** once per game frame, from the stand-in's call counters (`braindance3d_device_calls(slot)`):
+
+  | What the game asked since the last frame | Meaning |
+  | --- | --- |
+  | `GetEyePosition` (both eyes) | Stereo frame: 3D Mode is on, nothing to squeeze |
+  | No eye positions | Flat frame (menus, map, loading): squeezed while 3D Mode is on |
+  | `IsAvailable` once and no eye positions, 30 frames in a row | 2D gameplay: 3D Mode is off |
+  | `GetMonitorRect` twice or more within 5 s | 3D Mode was switched in Settings (opening Settings asks once) |
+
+  At start-up the saved `Odyssey3D_StereoEnabled` in `%LOCALAPPDATA%\CD Projekt Red\Cyberpunk 2077\UserSettings.json`
+  is the first guess. Ctrl+F8 flips the squeeze for the screen that is showing, until detection changes.
+- **Overlays:** CET draws inside the game's own present, before the squeeze, so its window is squeezed with menus.
+  OptiScaler draws its menu and FPS counter in its own swap chain below Streamline, after the squeeze, so those
+  still cover both halves.
 
 ## Building and testing
 
