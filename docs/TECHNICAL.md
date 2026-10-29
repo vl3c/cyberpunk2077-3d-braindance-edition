@@ -145,7 +145,7 @@ library like `GpuApi::Present`:
 
 | Detour | What it changes |
 | --- | --- |
-| 3D Mode handler | Marks that it's running; afterwards puts Frame Generation's greyed flag back as it was, and tells the menu squeeze which way 3D Mode was set |
+| 3D Mode handler | Marks that it's running; afterwards clears Frame Generation's greyed flag when it was kept, and tells the menu squeeze which way 3D Mode was set |
 | `SetFrameGeneration` | Skips the handler's Off unless FSR or XeSS frame generation is selected (those stay blocked in stereo, so the game still turns them off). Off stays choosable, so DLSS can be picked in 3D Mode |
 | `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its other DLSS-G checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it |
 
@@ -154,10 +154,18 @@ game's rule. Each is entered through a small assembly thunk that keeps `rcx`, `r
 the game is built with whole-program optimisation, and FlagCompute keeps using `rcx` after calling
 `IsDlssgEnabled`. The selected Frame Generation value is read from the setting itself (`+0x84` indexes the list of
 values at `+0x90`; before the list is built, the value from the file is at `+0x58`), because the game's
-`GetFrameGenerationMode` reads only the file value, which is emptied once the list is built. Before attaching, the plugin checks byte patterns in each function (start, the Off call and
-its target, the grey, the DLSS-G check and its target as the only `IsDlssgEnabled` call, the stereo clear) and the
-SBSDebug var's name. If any
-check fails, nothing is attached and the hooks log says which. DLSS-G loads only when Frame Generation is DLSS at
+`GetFrameGenerationMode` reads only the file value, which is emptied once the list is built.
+
+Before attaching, the plugin checks byte patterns, in two groups that are each attached whole or not at all:
+
+- **3D Mode handler:** its start, the Off call going to `SetFrameGeneration`, and that call being its only one. The
+  handler has no exit other than its 3D-on branch (which starts with that call) and its 3D-off branch, so the call
+  tells the menu squeeze which way 3D Mode was set.
+- **Frame generation:** the grey, `SetFrameGeneration`'s start and settings lookup, FlagCompute's start, its DLSS-G
+  check calling `IsDlssgEnabled` (its only call there) and the stereo clear, and the SBSDebug var's name.
+
+If the second group fails, the game keeps its frame generation rule but the squeeze still follows 3D Mode; if the first
+fails, nothing is attached. The hooks log says which check failed. DLSS-G loads only when Frame Generation is DLSS at
 game start (Streamline is set up once), so choosing it needs a restart, as in 2D.
 
 ## Building and testing

@@ -163,12 +163,13 @@ static uint8_t orig_set_fg(int32_t index, uint8_t mode)
 // Does what the game's handler does with 3D Mode on: Frame Generation Off, then the greyed flag.
 static void orig_o3d(uint8_t *event)
 {
-    if (f_o3dSetsFgOff) hook_set_fg(0, 1);
+    if (f_o3dSetsFgOff) bd3d_thunk_set_fg(0, 1); // the game calls the patched function, so through the thunk
     if (f_o3dGreys) *(uint32_t *)(f_var + SETTING_FLAGS) |= FLAG_GREYED;
 }
 
 static void *fake_root(void) { return f_lookup; }
 static void *fake_find(void *parent, uint64_t cname) { return cname == f_cnames[1] ? (void *)f_var : (void *)f_lookup; }
+static void *fake_find_nothing(void *parent, uint64_t cname) { return NULL; }
 
 static uint8_t fake_dlssg(uint8_t *sl)
 {
@@ -198,6 +199,7 @@ static void ft_begin(void)
     if (tls == TLS_OUT_OF_INDEXES) tls = TlsAlloc();
     memset(&fg, 0, sizeof(fg));
     fg.tls = tls;
+    fg.framegen = 1;
     f_noted3d = -1;
     ft_log[0] = 0;
     fake_game();
@@ -266,6 +268,7 @@ TEST(all_four_hooks_attach_when_every_check_passes)
     CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 1);
     CHECK_EQ_INT(f_attached, 4);
     CHECK_EQ_INT(f_detached, 0);
+    CHECK_EQ_INT(fg.framegen, 1);
     CHECK(fg.setFgOrig == (SetFgFn)(void *)f_setFg);
     CHECK(fg.o3dOrig == (O3dChangedFn)(void *)f_o3d);
     CHECK(fg.flagOrig == (FlagComputeFn)(void *)f_flag);
@@ -275,10 +278,10 @@ TEST(all_four_hooks_attach_when_every_check_passes)
     CHECK(fg.presetsName == &f_cnames[0]);
     CHECK(fg.fgName == &f_cnames[1]);
     CHECK(fg.dlssgOrig == (DlssgEnabledFn)(void *)f_dlssg);
-    CHECK(strstr(ft_log, "all checks passed (SBSDebug is on right now)") != NULL);
+    CHECK(strstr(ft_log, "hooks attached; with SBSDebug on (now on)") != NULL);
 }
 
-// Each broken check: nothing is attached and the log names it.
+// A broken handler check: nothing is attached and the log names it.
 static void expect_no_hooks(const char *why)
 {
     memset(&fg, 0, sizeof(fg));
@@ -287,6 +290,25 @@ static void expect_no_hooks(const char *why)
     CHECK_EQ_INT(f_attached, 0);
     CHECK_MSG(strstr(ft_log, why) != NULL, "log should say '%s', got: %s", why, ft_log);
     CHECK(strstr(ft_log, "nothing attached") != NULL);
+}
+
+// A broken frame generation check: only the handler's two hooks are attached (the menu squeeze still follows 3D Mode),
+// and SetFrameGeneration passes everything through.
+static void expect_handler_hooks_only(const char *why)
+{
+    memset(&fg, 0, sizeof(fg));
+    ft_log[0] = 0;
+    CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
+    CHECK_EQ_INT(f_attached, 2);
+    CHECK_EQ_INT(fg.framegen, 0);
+    CHECK_MSG(strstr(ft_log, why) != NULL, "log should say '%s', got: %s", why, ft_log);
+    CHECK(strstr(ft_log, "only the 3D Mode handler is hooked") != NULL);
+    // With the handler running and asking for Off, the game's rule applies and the squeeze hears "on".
+    fg.setFgOrig = orig_set_fg;
+    fg.o3dOrig = orig_o3d;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK_EQ_INT(f_noted3d, 1);
 }
 
 TEST(nothing_attaches_when_a_hash_does_not_resolve)
@@ -312,57 +334,64 @@ TEST(nothing_attaches_when_the_handler_changed)
     put_rel32(f_o3d + 0x188 + aob_len(AOB_O3D_FG_OFF) + 4, f_other);
     expect_no_hooks("doesn't go to SetFrameGeneration");
     ft_begin();
-    f_o3d[0x2FE + 7] = 0x0C; // bts eax,0Ch
-    expect_no_hooks("the greyed flag isn't set where expected");
+    f_o3d[0x500] = 0xE8; // a second call to SetFrameGeneration
+    put_rel32(f_o3d + 0x505, f_setFg);
+    expect_no_hooks("it calls SetFrameGeneration somewhere else too");
 }
 
-TEST(nothing_attaches_when_set_frame_generation_changed)
+TEST(only_the_handler_is_hooked_when_the_grey_or_set_frame_generation_changed)
 {
     ft_begin();
+    f_o3d[0x2FE + 7] = 0x0C; // bts eax,0Ch
+    expect_handler_hooks_only("the greyed flag isn't set where expected");
+    ft_begin();
     f_setFg[SET_FG_PRESETS] = 0x4C;
-    expect_no_hooks("SetFrameGeneration: start doesn't match");
+    expect_handler_hooks_only("SetFrameGeneration: start doesn't match");
     ft_begin();
     put_rel32(f_setFg + SET_FG_GROUP + 5, (uint8_t *)GetModuleHandleW(NULL) - 0x1000);
-    expect_no_hooks("its settings lookup points outside the exe");
+    expect_handler_hooks_only("its settings lookup points outside the exe");
 }
 
-TEST(nothing_attaches_when_flag_compute_changed)
+TEST(only_the_handler_is_hooked_when_flag_compute_changed)
 {
     ft_begin();
     f_flag[1] = 0;
-    expect_no_hooks("FlagCompute: start doesn't match");
+    expect_handler_hooks_only("FlagCompute: start doesn't match");
     ft_begin();
     f_flag[0x5BC + 3] = 0x60; // another renderer offset
-    expect_no_hooks("the DLSS-G check isn't there");
+    expect_handler_hooks_only("the DLSS-G check isn't there");
     ft_begin();
     put_rel32(f_flag + 0x5BC + FLAG_DLSSG_CALL + 5, f_other);
-    expect_no_hooks("doesn't call IsDlssgEnabled");
+    expect_handler_hooks_only("doesn't call IsDlssgEnabled");
     ft_begin();
     f_flag[0x6F0 + 14] = 0x59; // feature 89
-    expect_no_hooks("the stereo clear of feature 88 isn't there");
+    expect_handler_hooks_only("the stereo clear of feature 88 isn't there");
     ft_begin();
     f_flag[0x900] = 0xE8; // a second call to IsDlssgEnabled: its answer wouldn't be the DLSS-G decision
     put_rel32(f_flag + 0x905, f_dlssg);
-    expect_no_hooks("IsDlssgEnabled is called somewhere else in it too");
+    expect_handler_hooks_only("IsDlssgEnabled is called somewhere else in it too");
 }
 
-TEST(nothing_attaches_when_the_sbsdebug_var_is_another_var)
+TEST(only_the_handler_is_hooked_when_the_sbsdebug_var_is_another_var)
 {
     ft_begin();
     f_sbsVar[VAR_NAME / 8] = "StereoEnabled";
-    expect_no_hooks("isn't named [Odyssey3D] SBSDebug");
+    expect_handler_hooks_only("isn't named [Odyssey3D] SBSDebug");
     ft_begin();
     f_sbsVar[VAR_GROUP / 8] = NULL;
-    expect_no_hooks("isn't named [Odyssey3D] SBSDebug");
+    expect_handler_hooks_only("isn't named [Odyssey3D] SBSDebug");
 }
 
-TEST(a_failed_attach_detaches_the_hooks_already_attached)
+TEST(a_failed_attach_detaches_the_hooks_of_its_group)
 {
     for (int failAt = 1; failAt <= T_COUNT; failAt++) {
         ft_begin();
+        memset(&fg, 0, sizeof(fg));
         f_attachFails = failAt;
         CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
-        CHECK_EQ_INT(f_detached, failAt - 1);
+        // The handler group is hooks 1-2, the frame generation group 3-4.
+        CHECK_EQ_INT(f_detached, failAt <= 2 ? failAt - 1 : failAt - 3);
+        CHECK_EQ_INT(fg.framegen, 0);
         CHECK(strstr(ft_log, "couldn't hook") != NULL);
     }
 }
@@ -391,12 +420,27 @@ TEST(handler_with_sbs_keeps_dlss_frame_generation_and_its_greyed_flag)
     CHECK_EQ_INT(f_noted3d, 1); // the menu squeeze hears 3D Mode is on
 }
 
-TEST(handler_keeps_a_greyed_flag_that_was_already_there)
+TEST(handler_ungreys_frame_generation_greyed_by_an_earlier_run)
+{
+    // Saved as FSR3: turned Off and greyed at start-up. The next run sees Off and makes it choosable again.
+    ft_begin();
+    set_fg_value("FSR3", 1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
+    set_fg_value("Off", 1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, 0);
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_LIST_BUILT, FLAG_LIST_BUILT); // other flags kept
+}
+
+TEST(handler_keeps_frame_generation_when_its_setting_cant_be_read)
 {
     ft_begin();
-    *(uint32_t *)(f_var + SETTING_FLAGS) = FLAG_GREYED | 0x5;
+    fg.var = fake_find_nothing;
     hook_o3d_changed(NULL);
-    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS), FLAG_GREYED | 0x5);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    CHECK(strstr(ft_log, "couldn't read the Frame Generation setting") != NULL);
+    CHECK_EQ_INT(f_noted3d, 1);
 }
 
 TEST(handler_without_sbs_debug_does_what_the_game_does)
@@ -571,25 +615,37 @@ TEST(each_thread_gets_its_own_dlssg_decision)
 
 // ===================================================================================== the register-keeping thunks
 
-// Calls thunk(rcx, rdx, r8, r9) with known values in rcx, rdx and r8-r11, the way the game's code may keep using
-// them after the call, and writes what those registers and rax hold afterwards to out[0..6].
-void ft_call_thunk(void *thunk, uint64_t *out);
+// Calls thunk(rcx, rdx, r8, r9) with known values in rcx, rdx (rdxValue), r8-r11 and xmm0-xmm5, the way the game's
+// code may keep using them after the call, and writes what they and rax hold afterwards: out[0..5] rcx, rdx, r8-r11,
+// out[6] rax, out[7..12] the low halves of xmm0-xmm5.
+void ft_call_thunk(void *thunk, uint64_t *out, uint64_t rdxValue);
 __asm__(".text\n.globl ft_call_thunk\nft_call_thunk:\n"
-        "push %rdi\npush %rbx\nsub $0x28, %rsp\n" // 16-aligned again, with shadow space
-        "mov %rcx, %rbx\nmov %rdx, %rdi\n"
-        "movabs $0x1111111111111111, %rcx\nmovabs $0x2222222222222222, %rdx\nmovabs $0x3333333333333333, %r8\n"
+        "push %rdi\npush %rbx\npush %rsi\nsub $0x20, %rsp\n" // 16-aligned again, with shadow space
+        "mov %rcx, %rbx\nmov %rdx, %rdi\nmov %r8, %rsi\n"
+        "movabs $0x7777777777777777, %rax\nmovq %rax, %xmm0\nmovabs $0x8888888888888888, %rax\nmovq %rax, %xmm1\n"
+        "movabs $0x9999999999999999, %rax\nmovq %rax, %xmm2\nmovabs $0xAAAAAAAAAAAAAAAA, %rax\nmovq %rax, %xmm3\n"
+        "movabs $0xBBBBBBBBBBBBBBBB, %rax\nmovq %rax, %xmm4\nmovabs $0xCCCCCCCCCCCCCCCC, %rax\nmovq %rax, %xmm5\n"
+        "movabs $0x1111111111111111, %rcx\nmov %rsi, %rdx\nmovabs $0x3333333333333333, %r8\n"
         "movabs $0x4444444444444444, %r9\nmovabs $0x5555555555555555, %r10\nmovabs $0x6666666666666666, %r11\n"
         "call *%rbx\n"
         "mov %rcx, 0(%rdi)\nmov %rdx, 8(%rdi)\nmov %r8, 16(%rdi)\nmov %r9, 24(%rdi)\nmov %r10, 32(%rdi)\n"
         "mov %r11, 40(%rdi)\nmov %rax, 48(%rdi)\n"
-        "add $0x28, %rsp\npop %rbx\npop %rdi\nret\n");
+        "movq %xmm0, 56(%rdi)\nmovq %xmm1, 64(%rdi)\nmovq %xmm2, 72(%rdi)\nmovq %xmm3, 80(%rdi)\n"
+        "movq %xmm4, 88(%rdi)\nmovq %xmm5, 96(%rdi)\n"
+        "add $0x20, %rsp\npop %rsi\npop %rbx\npop %rdi\nret\n");
 
-static void check_thunk_keeps_registers(void *thunk, uint64_t wantRax, uint64_t raxMask)
+// Returns rax.
+static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
 {
-    uint64_t out[7] = { 0 };
-    ft_call_thunk(thunk, out);
-    for (int i = 0; i < 6; i++) CHECK_MSG(out[i] == 0x1111111111111111ull * (i + 1), "register %d changed to %llx", i, (unsigned long long)out[i]);
-    CHECK((out[6] & raxMask) == wantRax);
+    uint64_t out[13] = { 0 };
+    ft_call_thunk(thunk, out, rdxValue);
+    uint64_t want[13] = { 0x1111111111111111ull, rdxValue, 0x3333333333333333ull, 0x4444444444444444ull,
+                          0x5555555555555555ull, 0x6666666666666666ull, 0, 0x7777777777777777ull,
+                          0x8888888888888888ull, 0x9999999999999999ull, 0xAAAAAAAAAAAAAAAAull,
+                          0xBBBBBBBBBBBBBBBBull, 0xCCCCCCCCCCCCCCCCull };
+    for (int i = 0; i < 13; i++)
+        if (i != 6) CHECK_MSG(out[i] == want[i], "register %d changed to %llx", i, (unsigned long long)out[i]);
+    return out[6];
 }
 
 TEST(thunks_keep_the_callers_registers_and_return_the_result)
@@ -597,15 +653,20 @@ TEST(thunks_keep_the_callers_registers_and_return_the_result)
     ft_begin();
     // IsDlssgEnabled: FlagCompute writes [rcx+0x1F2] right after calling it (the second in-game test's crash).
     f_dlssgOn = 1;
-    check_thunk_keeps_registers((void *)bd3d_thunk_dlssg_enabled, 1, 0xFF);
+    CHECK_EQ_INT((int)(check_thunk_keeps_registers((void *)bd3d_thunk_dlssg_enabled, 0x2222222222222222ull) & 0xFF), 1);
     CHECK_EQ_INT(f_dlssgCalls, 1);
+    // FlagCompute: its caller reads the flags through the returned pointer (the first in-game test's crash).
+    uint64_t flags[2] = { 0, 0 };
+    CHECK(check_thunk_keeps_registers((void *)bd3d_thunk_flag_compute, (uint64_t)(uintptr_t)flags) ==
+          (uint64_t)(uintptr_t)flags);
+    CHECK(flags[1] == (FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_DLSSG)));
     // SetFrameGeneration outside the handler, passed through.
-    check_thunk_keeps_registers((void *)bd3d_thunk_set_fg, 1, 0xFF);
+    CHECK_EQ_INT((int)(check_thunk_keeps_registers((void *)bd3d_thunk_set_fg, 0x2222222222222222ull) & 0xFF), 1);
     CHECK_EQ_INT(f_setFgCalls, 1);
-    // The handler, with SBSDebug off (passed through).
-    set_sbs_debug(0);
-    f_o3dSetsFgOff = 0;
-    check_thunk_keeps_registers((void *)bd3d_thunk_o3d_changed, 0, 0);
+    // The handler with SBSDebug on: it calls SetFrameGeneration's thunk, which answers 1 itself (kept).
+    check_thunk_keeps_registers((void *)bd3d_thunk_o3d_changed, 0x2222222222222222ull);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK(strstr(ft_log, "kept and choosable") != NULL);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }

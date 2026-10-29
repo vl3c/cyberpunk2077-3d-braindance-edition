@@ -715,10 +715,9 @@ EXPORT void destroy_odyssey3d_factory_instance(Factory *f)
 EXPORT const char *braindance3d_version(void) { return BD3D_VERSION_STR; }
 
 // How many times the game has called one device slot (vtable index), or -1 for a slot that doesn't exist. The
-// RED4ext plugin's menu squeeze reads three of them once per game frame: GetEyePosition (1) is asked for both eyes
+// RED4ext plugin's menu squeeze reads two of them once per game frame: GetEyePosition (1) is asked for both eyes
 // on every frame rendered in stereo and not at all on a flat one (menus, the map, loading screens); IsAvailable
-// (10) is asked once per frame in 2D gameplay and twice in stereo; GetMonitorRect (6) comes when the game
-// re-checks the 3D display, as it does when 3D Mode is switched.
+// (10) is asked once per frame in 2D gameplay and twice in stereo. The others are for the tests and the log.
 EXPORT LONG64 braindance3d_device_calls(int slot)
 {
     return slot >= 0 && slot < NSLOTS ? g_devStats[slot].calls : -1;

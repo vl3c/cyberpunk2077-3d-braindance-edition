@@ -34,7 +34,7 @@
 //                     was switched in Settings, or set at start-up or on a display change.
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
 //   on:             every frame (for testing)
-//   off:            never; no hooks are installed
+//   off:            never; the squeeze hooks aren't installed (the frame generation hooks still are)
 // Log: Braindance3D-hooks.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose), shared with the
 // frame generation hooks (braindance3d_framegen.c).
 //
@@ -773,7 +773,7 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
     if (g.level > 0) open_hooks_log(installDir);
     mlog("==== 3D Braindance Edition menu squeeze, mode %s, log level %d",
          g.mode == MODE_OFF ? "off" : g.mode == MODE_ON ? "on (every frame)" : "auto", g.level);
-    if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no hooks installed"); return 1; }
+    if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no squeeze hooks installed"); return 1; }
     g.stereo = STEREO_UNKNOWN;
     if (g.mode == MODE_AUTO) read_saved_stereo_setting();
     if (!sdk || !sdk->hooking || !sdk->hooking->Attach) return fail("RED4ext didn't pass a hooking interface", E_POINTER);
