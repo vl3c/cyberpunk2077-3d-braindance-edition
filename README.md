@@ -35,8 +35,8 @@ It doesn't modify any game file and doesn't hook or patch the game's memory. The
   game starts. Without RED4ext, run the setup script once instead (see below).
 - A 3D / VR headset with half-SBS support (a 3D TV or monitor with an SBS mode works too). Tested: Quest 3 with
   Virtual Desktop.
-- If 3D Mode stays greyed out, turn off the game's own Frame Generation (DLSS, FSR or XeSS). The game can't
-  use it in 3D; you can add frame generation with OptiScaler instead (see Recommended setup).
+- 3D Mode needs the game's own Frame Generation (DLSS, FSR or XeSS) off: the two can't be on together. You can
+  add frame generation with OptiScaler instead (see Recommended setup).
 
 ## Install
 
@@ -83,30 +83,33 @@ work too; this one gives the sharpest and smoothest picture we've found.
 3. **Match the refresh rates.** Set the virtual monitor's refresh rate to Virtual Desktop's streaming rate
    (both 72 Hz, or both 90 Hz). Frames above the streaming rate are dropped, and a mismatch causes judder.
 4. **Path tracing with DLSS on Performance.** 3D renders every frame twice. At 4K, DLSS Performance (Balanced
-   if you have headroom) keeps the base frame rate up, and each eye is only 1920 pixels wide anyway.
-5. **Frame generation through OptiScaler.** The game turns its own frame generation off in 3D Mode, but
-   [OptiScaler](https://github.com/optiscaler/OptiScaler) can add it on top. Leave the game's Frame Generation
-   off, and in `OptiScaler.ini`:
-   - `[FrameGen]`: `Enabled = true`, `FGInput = upscaler`, `FGOutput = dlssg` (NVIDIA DLSS frame generation,
-     RTX 40 and 50 series).
-   - `[OptiFG]`: `HUDFix = true`.
+   if you have headroom) keeps the base frame rate up. It renders the whole side-by-side frame at 1920x1080
+   inside, so each eye starts from 960x1080 before DLSS scales it up.
+5. **Frame generation through OptiScaler.** The game's own frame generation can't be on in 3D Mode, but
+   [OptiScaler](https://github.com/optiscaler/OptiScaler) can add it on top. The `dlssg` output used here is
+   only in OptiScaler's development (nightly) builds so far; the 0.9.x releases don't have it.
+   - Install OptiScaler as `winhttp.dll` in `bin\x64` (what we tested). Don't use `winmm.dll` or `version.dll`:
+     RED4ext and Cyber Engine Tweaks already use those names, and without RED4ext 3D Mode stays greyed out.
+   - Leave the game's Frame Generation off, and pick DLSS as the upscaler in game, so OptiScaler can take it
+     over (`FGInput = upscaler` needs that).
+   - In `OptiScaler.ini`, `[FrameGen]`: `Enabled = true`, `FGInput = upscaler`, `FGOutput = dlssg` (NVIDIA DLSS
+     frame generation). `[OptiFG]`: `HUDFix = true`.
    - DLSS-G output needs Streamline next to OptiScaler: copy the game's own `sl.interposer.dll`,
      `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll` and `nvngx_dlssg.dll` from `bin\x64` into
      `bin\x64\OptiScaler\streamline`.
    - In game, End toggles frame generation and Insert opens OptiScaler's menu.
 
-   Tested with an OptiScaler 10.0.0 development build, stable up to 6x. Older releases may not have the
-   `dlssg` output; the setting names can differ between builds.
+   Tested with an OptiScaler development build (it reports 10.0.0-dev) on an RTX 5080, stable up to 6x. The
+   setting names can differ between builds.
 6. **Pick the multiplier from the refresh rate.** The refresh rate divided by the multiplier is the base frame
-   rate the game has to reach, and input lag follows the base rate, so keep it at 24 or more. For example,
-   72 Hz with 3x needs a base of 24; 90 Hz with 3x needs 30. OptiScaler's automatic multiplier can pick it
-   for you.
+   rate the game has to reach. Input lag follows the base rate: we find 24 or more playable for a 3D screen
+   you look at, but many players want 40 or more. RTX 40 cards stop at 2x; 3x and higher, and the automatic
+   multiplier, need an RTX 50 card. Examples:
+   - RTX 50: 72 Hz with 3x needs a base of 24; 90 Hz with 3x needs 30; 120 Hz with 4x needs 30.
+   - RTX 40: 72 Hz with 2x needs 36; 90 Hz with 2x needs 45.
 7. **Watch the video memory.** 4K, path tracing and a high multiplier can fill a 16 GB card. If the base frame
    rate suddenly collapses (and `OptiScaler.log` shows `eWarnOutOfVRAM`), lower texture quality or the
    multiplier.
-
-Menus don't look right in 3D yet: the game draws them once across the whole screen, so each eye sees a
-different half. A fix is being worked on.
 
 ## Uninstall
 
@@ -131,6 +134,8 @@ command prompt. If you do, run the uninstaller before deleting the mod: it resto
   `Braindance3D-Settings.ini`, and play on the primary monitor.
 - **The mod's log:** `bin\x64\Braindance3D\braindance3d.log` (the previous run is `braindance3d.old.log`), or
   `%LOCALAPPDATA%\Braindance3D` if the game folder is read-only.
+- **Menus look wrong in the headset:** a known issue. The game draws menus once across the whole screen
+  instead of once per eye, so in half-SBS each eye sees a different half of the menu.
 - **The depth looks inside out:** use your viewer's swap-eyes option.
 - **Other games:** the registry key isn't per game. The stand-in refuses to work in anything but
   `Cyberpunk2077.exe`, but if another game with Odyssey 3D support misbehaves, uninstall before playing it.

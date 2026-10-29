@@ -45,6 +45,7 @@ static int g_monitorPrimaryOnly = 0;
 #define PANEL_SIZE_DEFAULT 10000.0f
 static float g_panelSize[2] = { PANEL_SIZE_DEFAULT, PANEL_SIZE_DEFAULT };
 static int g_panelSizeSet = 0;
+static wchar_t g_panelSizeIgnored[64];  // a PanelSize value that wasn't understood, for the log
 
 // Per-slot logging budget, set from the level.
 static LONG64 g_fullLogCalls = 10;      // calls logged in full per slot
@@ -125,14 +126,16 @@ static int parse_level(const wchar_t *v)
     return n <= 0 ? 0 : n >= 2 ? 2 : (int)n;
 }
 
-// Parses "<width> x <height>" in cm (x, X, comma, semicolon or spaces between). Each must be 1-100000.
-// Returns 1 and fills out[2] on success; "default", empty or anything else returns 0.
+// Parses "<width> x <height>" in cm (x or X between, spaces allowed, then an optional ; or # comment).
+// Each must be 1-100000. Returns 1 and fills out[2] on success; "default", empty or anything else returns 0.
 static int parse_panel_size(const wchar_t *v, float out[2])
 {
     wchar_t *end;
     double w = wcstod(v, &end);
     if (end == v) return 0;
-    while (*end == L' ' || *end == L'\t' || *end == L'x' || *end == L'X' || *end == L',' || *end == L';') end++;
+    while (*end == L' ' || *end == L'\t') end++;
+    if (*end != L'x' && *end != L'X') return 0;
+    end++;
     const wchar_t *h0 = end;
     double h = wcstod(h0, &end);
     if (end == h0) return 0;
@@ -158,6 +161,11 @@ static void read_settings(void)
     g_panelSizeSet = parse_panel_size(v, size);
     g_panelSize[0] = g_panelSizeSet ? size[0] : PANEL_SIZE_DEFAULT;
     g_panelSize[1] = g_panelSizeSet ? size[1] : PANEL_SIZE_DEFAULT;
+    const wchar_t *t = v;
+    while (*t == L' ' || *t == L'\t') t++;
+    int isDefault = !*t || *t == L';' || *t == L'#'
+                    || (_wcsnicmp(t, L"default", 7) == 0 && (!t[7] || wcschr(L" \t;#", t[7])));
+    if (!g_panelSizeSet && !isDefault) wcscpy(g_panelSizeIgnored, t);
     if (g_logLevel >= 2) { g_fullLogCalls = 120; g_summaryInterval = 1.0; }
     else { g_fullLogCalls = 10; g_summaryInterval = 60.0; }
 }
@@ -766,8 +774,11 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         slog("settings: monitor %s; host %s", g_monitorPrimaryOnly ? "primary" : "auto (game window's monitor)",
              g_hostAllowed ? "allowed" : "NOT Cyberpunk2077.exe, the SDK will not be offered");
         if (g_panelSizeSet)
-            slog("settings: panel size %.2f x %.2f cm (device slot +0x18; the game keeps %.4f x %.4f)",
-                 g_panelSize[0], g_panelSize[1], g_panelSize[0] * 0.01, g_panelSize[1] * 0.01);
+            slog("settings: panel size %.2f x %.2f cm (device slot +0x18; the game keeps x * 0.01 = %.4f)",
+                 g_panelSize[0], g_panelSize[1], g_panelSize[0] * 0.01);
+        else if (g_panelSizeIgnored[0])
+            slog("settings: panel size \"%s\" not understood (want width x height in cm, e.g. 59.77 x 33.62), "
+                 "using the default %.0f", utf8(g_panelSizeIgnored, b1, sizeof(b1)), PANEL_SIZE_DEFAULT);
         else
             slog("settings: panel size default (%.0f, the game keeps 100.0, its own default)", PANEL_SIZE_DEFAULT);
         install_known_slots();

@@ -1337,15 +1337,28 @@ TEST(two_copies_loaded_side_by_side)
 
 TEST(panel_size_setting_overrides_slot_18)
 {
-    struct { const char *ini; float w, h; } cases[] = {
-        { "[Display]\nPanelSize=59.77 x 33.62\n", 59.77f, 33.62f },
-        { "[Display]\r\nPanelSize = 59.77X33.62 ; 27 inch\r\n", 59.77f, 33.62f },
-        { "[Display]\nPanelSize=120,68\n", 120.0f, 68.0f },
-        { "[Display]\nPanelSize=default\n", 10000.0f, 10000.0f },
-        { "[Display]\nPanelSize=\n", 10000.0f, 10000.0f },
-        { "[Display]\nPanelSize=59.77\n", 10000.0f, 10000.0f },
-        { "[Display]\nPanelSize=0 x 33\n", 10000.0f, 10000.0f },
-        { "[Display]\nPanelSize=60 x 34 cm\n", 10000.0f, 10000.0f },
+    // log: what the startup line must contain ("not understood" when a value is rejected)
+    struct { const char *ini; float w, h; const char *log; } cases[] = {
+        { "[Display]\nPanelSize=59.77 x 33.62\n", 59.77f, 33.62f, "panel size 59.77 x 33.62 cm" },
+        { "[Display]\r\nPanelSize = 59.77X33.62 ; 27 inch\r\n", 59.77f, 33.62f, "panel size 59.77 x 33.62 cm" },
+        { "[Display]\nPanelSize=120\tx\t68 # big TV\n", 120.0f, 68.0f, "panel size 120.00 x 68.00 cm" },
+        { "[Display]\nPanelSize=1x100000\n", 1.0f, 100000.0f, "panel size 1.00 x 100000.00 cm" },
+        { "[Display]\nPanelSize=default\n", 10000.0f, 10000.0f, "panel size default" },
+        { "[Display]\nPanelSize=\n", 10000.0f, 10000.0f, "panel size default" },
+        { "[Display]\nPanelSize=Default ; same as no value\n", 10000.0f, 10000.0f, "panel size default" },
+        { "[Display]\n", 10000.0f, 10000.0f, "panel size default" },
+        { "[Display]\nPanelSize=59.77\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=120,68\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=59,77 x 33,62\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=60 ; 34\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=60;34\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=0 x 33\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=-60 x 34\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=60 x 100000.1\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=nan x 34\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=inf x 34\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=60 x 34 cm\n", 10000.0f, 10000.0f, "not understood" },
+        { "[Display]\nPanelSize=abc\n", 10000.0f, 10000.0f, "not understood" },
     };
     for (int k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++) {
         Sdk *s = sdk_prepare(cases[k].ini);
@@ -1357,6 +1370,11 @@ TEST(panel_size_setting_overrides_slot_18)
                   "settings \"%s\" -> %.2f x %.2f, want %.2f x %.2f", cases[k].ini, v[0], v[1], cases[k].w, cases[k].h);
         device_release(dev);
         sdk_unload(s);
+        char *t = tu_read_file(s->log, NULL);
+        REQUIRE(t != NULL);
+        // Freed here, not with tt_defer: this many cases would fill the test's defer slots.
+        CHECK_MSG(strstr(t, cases[k].log) != NULL, "settings \"%s\": the log does not say \"%s\"", cases[k].ini, cases[k].log);
+        free(t);
     }
 }
 

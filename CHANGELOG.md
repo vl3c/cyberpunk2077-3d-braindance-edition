@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Experimental `PanelSize` setting in `Braindance3D-Settings.ini` (`[Display]`): the 3D screen's physical size in cm,
-  which the game may use to work out the depth. `default` keeps the previous behaviour.
+  which the game may use to work out the depth. `default` keeps the previous behaviour; a value it can't read is
+  logged and ignored.
 - README: recommended setup for Quest 3 and Virtual Desktop (4K virtual monitor, matching refresh rates,
   DLSS Performance with path tracing, frame generation through OptiScaler), and a known issue for menus.
 
