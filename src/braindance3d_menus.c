@@ -409,9 +409,8 @@ static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
 }
 
 // With DLSS frame generation loaded, Streamline hands the game proxy D3D12 objects (vtables in sl.interposer.dll), while
-// the swap chain's back buffers belong to the native device. Returns the native object behind a Streamline proxy, or p
-// itself. The native object's reference is kept for the session (whether slGetNativeInterface adds one isn't
-// documented, so it's never released).
+// the swap chain's back buffers belong to the native device. Returns the native object behind a Streamline proxy, with
+// a reference added (slGetNativeInterface adds one), or p itself.
 typedef int (*SlGetNativeInterfaceFn)(void *proxy, void **base);
 static void *native_interface(void *p, const char *what)
 {
@@ -441,9 +440,11 @@ static int init_d3d(void)
     void *queue = readable(slot, sizeof(void *)) ? *slot : NULL;
     if (!looks_like_com(queue)) return fail("the game's direct command queue doesn't look valid (game version changed?)", E_POINTER);
     mlog("direct queue %p (vtable in %s)", queue, module_of(**(void ***)queue, mod, sizeof(mod)));
+    void *game = queue;
     queue = native_interface(queue, "direct queue");
     ID3D12CommandQueue *q = NULL;
     HRESULT hr = IUnknown_QueryInterface((IUnknown *)queue, &IID_ID3D12CommandQueue, (void **)&q);
+    if (queue != game) IUnknown_Release((IUnknown *)queue); // q holds its own reference
     if (FAILED(hr)) return fail("QueryInterface(ID3D12CommandQueue) on the game's direct queue", hr);
     D3D12_COMMAND_QUEUE_DESC qd = ID3D12CommandQueue_GetDesc(q);
     if (qd.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
