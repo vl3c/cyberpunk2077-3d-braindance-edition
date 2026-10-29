@@ -18,8 +18,9 @@
 //     checks, so its answer, noted per thread (FlagCompute runs for several views at once on worker threads), is
 //     the game's own DLSS-G decision for that view; on stereo frames feature 88 is set again from it.
 // All of them pass straight through unless SBSDebug is on (read on every call: the engine ini may not be applied yet
-// when the plugin loads), so a real 3D monitor keeps the game's rule. Before anything is attached, byte patterns in
-// each function are checked; if one doesn't match (a game update), nothing is attached and the log says which.
+// when the plugin loads), so a real 3D monitor keeps the game's rule. Each is entered through a thunk that keeps the
+// caller's registers (see REGISTER_KEEPING_THUNK). Before anything is attached, the addresses and byte patterns are
+// checked (see find_targets); if one doesn't match (a game update), nothing is attached and the log says which.
 // DLSS-G loads only when Frame Generation is DLSS at game start, so choosing it needs a restart, as in 2D.
 //
 // License: MIT (see LICENSE).
@@ -37,12 +38,12 @@
 #define HASH_O3D_CHANGED 224667842u    // 3D Mode settings handler: void (uint8_t *event)
 #define HASH_SET_FG 2555059473u        // SetFrameGeneration: uint8_t (int32_t index, uint8_t mode)
 #define HASH_FG_MODE 3828097397u       // GetFrameGenerationMode: the selected back end, 1 = DLSS
-#define HASH_FLAG_COMPUTE 102052349u   // FlagCompute: void (renderer, uint64_t flags[2], frame, settings)
+#define HASH_FLAG_COMPUTE 102052349u   // FlagCompute: uint64_t *(renderer, uint64_t flags[2], frame, settings), returns flags
 #define HASH_DLSSG_ENABLED 1336151854u // IsDlssgEnabled: bool (Streamline object)
 #define HASH_VAR_SBSDEBUG 3257143555u  // the [Odyssey3D] SBSDebug config var
 
 #define O3D_SIZE 0x560          // the handler's code (pdata 0x2073C00-0x207415F)
-#define FLAG_COMPUTE_SIZE 0x1500 // FlagCompute and its chained body (pdata up to 0x227F73A)
+#define FLAG_COMPUTE_SIZE 0x116A // FlagCompute and its chained body (pdata 0x227E5D0 up to 0x227F73A)
 #define VAR_NAME 0x08            // config var: const char *name
 #define VAR_GROUP 0x10           // config var: const char *group
 #define VAR_VALUE 0x30           // config var: the bool value
@@ -86,7 +87,7 @@ typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
 typedef uint8_t (*SetFgFn)(int32_t index, uint8_t mode);
 typedef uint32_t (*FgModeFn)(void);
-typedef void (*FlagComputeFn)(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
+typedef uint64_t *(*FlagComputeFn)(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
 typedef uint8_t (*DlssgEnabledFn)(uint8_t *sl);
 typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
@@ -103,7 +104,8 @@ static struct {
     const uint8_t *sbsVar;
     DWORD tls;                    // per thread: a T_* state, while FlagCompute runs on that thread
     volatile DWORD handlerThread; // the thread running the 3D Mode handler, 0 when it isn't running
-    int kept;                     // that handler call kept Frame Generation
+    uint32_t *keptFlags;          // that handler call kept Frame Generation: its flags, NULL if not kept
+    uint32_t keptBefore;          // and their value before the handler greyed it
     volatile LONG64 restored;     // frames whose feature 88 was put back
     LONG64 lastRestored;
     DWORD lastSummary;
@@ -206,8 +208,8 @@ static int text_is(const char *p, const char *want) { return readable(p, strlen(
 
 static int sbs_debug(void) { return fg.sbsVar[VAR_VALUE] != 0; }
 
-// Frame Generation's flags, in the settings var found the way SetFrameGeneration finds it (the lookups never return
-// NULL for these names; the check is for a var that isn't readable as expected). NULL if that fails.
+// Frame Generation's flags, in the settings var found the way SetFrameGeneration finds it. NULL if they aren't
+// readable as expected.
 static uint32_t *fg_flags(void)
 {
     uint8_t *var = fg.var(fg.group(fg.root(), *fg.presetsName), *fg.fgName);
@@ -216,7 +218,27 @@ static uint32_t *fg_flags(void)
 
 // ---------------------------------------------------------------- hooks
 
-static void hook_o3d_changed(uint8_t *event)
+// The game is built with MSVC's whole-program optimiser, which lets a caller keep using a volatile register across a
+// call when it knows the callee leaves it alone: FlagCompute reads rcx again after calling IsDlssgEnabled. C code
+// (ours, kernel32's) doesn't keep such promises, so every hook is entered through this thunk. It saves rcx, rdx,
+// r8-r11 and xmm0-xmm5 around the C function and returns its rax; the arguments stay in their registers (no hooked
+// function takes more than four). The unwind info covers the pushes and the stack allocation.
+#define REGISTER_KEEPING_THUNK(thunk, impl)                                                                         \
+    __asm__(".text\n.p2align 4\n.globl " #thunk "\n.def " #thunk "; .scl 2; .type 32; .endef\n"                  \
+            ".seh_proc " #thunk "\n" #thunk ":\n"                                                                   \
+            "push %rcx\n.seh_pushreg %rcx\npush %rdx\n.seh_pushreg %rdx\npush %r8\n.seh_pushreg %r8\n"             \
+            "push %r9\n.seh_pushreg %r9\npush %r10\n.seh_pushreg %r10\npush %r11\n.seh_pushreg %r11\n"             \
+            "sub $0x88, %rsp\n.seh_stackalloc 0x88\n.seh_endprologue\n" /* rsp is 16-aligned here */             \
+            "movdqa %xmm0, 0x20(%rsp)\nmovdqa %xmm1, 0x30(%rsp)\nmovdqa %xmm2, 0x40(%rsp)\n"                      \
+            "movdqa %xmm3, 0x50(%rsp)\nmovdqa %xmm4, 0x60(%rsp)\nmovdqa %xmm5, 0x70(%rsp)\n"                      \
+            "call " #impl "\n"                                                                                      \
+            "movdqa 0x20(%rsp), %xmm0\nmovdqa 0x30(%rsp), %xmm1\nmovdqa 0x40(%rsp), %xmm2\n"                      \
+            "movdqa 0x50(%rsp), %xmm3\nmovdqa 0x60(%rsp), %xmm4\nmovdqa 0x70(%rsp), %xmm5\n"                      \
+            "add $0x88, %rsp\npop %r11\npop %r10\npop %r9\npop %r8\npop %rdx\npop %rcx\nret\n.seh_endproc\n")
+
+#define HOOK __attribute__((used, noinline, noclone)) static // called by name from its thunk
+
+HOOK void hook_o3d_changed(uint8_t *event)
 {
     int sbs = sbs_debug();
     plugin_log(1, "framegen: 3D Mode settings handler runs (SBSDebug %s)", sbs ? "on" : "off");
@@ -224,29 +246,31 @@ static void hook_o3d_changed(uint8_t *event)
         fg.o3dOrig(event);
         return;
     }
-    uint32_t *flags = fg_flags();
-    uint32_t before = flags ? *flags : 0;
-    fg.kept = 0;
+    fg.keptFlags = NULL;
     fg.handlerThread = GetCurrentThreadId();
     fg.o3dOrig(event);
     fg.handlerThread = 0;
-    if (!fg.kept) return;
-    if (!flags) {
-        plugin_log(1, "framegen: couldn't find the Frame Generation setting, so it may show greyed out");
-        return;
-    }
+    uint32_t *flags = fg.keptFlags;
+    if (!flags) return;
     uint32_t after = *flags;
-    *flags = (after & ~FLAG_GREYED) | (before & FLAG_GREYED);
+    *flags = (after & ~FLAG_GREYED) | (fg.keptBefore & FLAG_GREYED);
     plugin_log(after != *flags ? 1 : 2, "framegen: Frame Generation flags 0x%X -> 0x%X (greyed flag as before 3D Mode)",
                (unsigned)after, (unsigned)*flags);
 }
 
-static uint8_t hook_set_fg(int32_t index, uint8_t mode)
+HOOK uint8_t hook_set_fg(int32_t index, uint8_t mode)
 {
-    if (index == 0 && fg.handlerThread == GetCurrentThreadId()) {
+    // Only the handler's own "Off": SetFrameGeneration(0, 1), on its thread, while it runs.
+    if (index == 0 && mode == 1 && fg.handlerThread == GetCurrentThreadId()) {
         uint32_t selected = fg.fgMode();
         if (selected == FG_MODE_DLSS) {
-            fg.kept = 1;
+            uint32_t *flags = fg_flags(); // the lookup SetFrameGeneration would have done; the grey comes later
+            if (flags) {
+                fg.keptFlags = flags;
+                fg.keptBefore = *flags;
+            } else {
+                plugin_log(1, "framegen: couldn't read the Frame Generation setting's flags, so it may show greyed out");
+            }
             plugin_log(1, "framegen: 3D Mode is on, kept DLSS Frame Generation (the game would turn it off)");
             return 1; // what SetFrameGeneration always returns
         }
@@ -256,34 +280,47 @@ static uint8_t hook_set_fg(int32_t index, uint8_t mode)
     return fg.setFgOrig(index, mode);
 }
 
-static uint8_t hook_dlssg_enabled(uint8_t *sl)
+HOOK uint8_t hook_dlssg_enabled(uint8_t *sl)
 {
     uint8_t on = fg.dlssgOrig(sl);
     if (thread_state() != TS_OUTSIDE) set_thread_state(on ? TS_DLSSG_ON : TS_DLSSG_OFF);
     return on;
 }
 
-static void hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
+// Returns what the original returns (flags): its caller reads the bits through it.
+HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
 {
     set_thread_state(TS_NOT_ASKED);
-    fg.flagOrig(renderer, flags, frame, settings);
+    uint64_t *ret = fg.flagOrig(renderer, flags, frame, settings);
     uintptr_t dlssg = thread_state();
     set_thread_state(TS_OUTSIDE);
     // The original's own DLSS-G decision for this view, without its "and not stereo".
     if (dlssg != TS_DLSSG_ON || !(flags[1] & FEATURE_BIT(FEATURE_STEREO)) || (flags[1] & FEATURE_BIT(FEATURE_DLSSG)) ||
         !sbs_debug())
-        return;
+        return ret;
     flags[1] |= FEATURE_BIT(FEATURE_DLSSG);
     LONG64 n = InterlockedIncrement64(&fg.restored);
-    if (n == 1) plugin_log(1, "framegen: DLSS frame generation running on a 3D frame (first one)");
     DWORD now = GetTickCount();
-    if (now - fg.lastSummary >= 60000) {
+    if (n == 1) {
+        plugin_log(1, "framegen: DLSS frame generation running on a 3D frame (first one)");
+        fg.lastSummary = now;
+    } else if (now - fg.lastSummary >= 60000) { // from several threads: a count can be off by a few, harmless
         plugin_log(1, "framegen: %lld frames with DLSS frame generation in 3D (%lld in the last minute)", (long long)n,
                    (long long)(n - fg.lastRestored));
         fg.lastSummary = now;
         fg.lastRestored = n;
     }
+    return ret;
 }
+
+REGISTER_KEEPING_THUNK(bd3d_thunk_o3d_changed, hook_o3d_changed);
+REGISTER_KEEPING_THUNK(bd3d_thunk_set_fg, hook_set_fg);
+REGISTER_KEEPING_THUNK(bd3d_thunk_dlssg_enabled, hook_dlssg_enabled);
+REGISTER_KEEPING_THUNK(bd3d_thunk_flag_compute, hook_flag_compute);
+void bd3d_thunk_o3d_changed(uint8_t *event);
+uint8_t bd3d_thunk_set_fg(int32_t index, uint8_t mode);
+uint8_t bd3d_thunk_dlssg_enabled(uint8_t *sl);
+uint64_t *bd3d_thunk_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
 
 // ---------------------------------------------------------------- set-up
 
@@ -318,6 +355,8 @@ static int find_targets(ResolveFn resolve, uint8_t **t)
     if (off < 0) return fail("3D Mode handler: the Frame Generation Off call isn't there");
     const uint8_t *call = *o3d + off + aob_len(AOB_O3D_FG_OFF) - 1;
     if (call_target(call) != (uintptr_t)*setFg) return fail("3D Mode handler: the Off call doesn't go to SetFrameGeneration");
+    if (count_calls(*o3d, O3D_SIZE, (uintptr_t)*setFg) != 1)
+        return fail("3D Mode handler: it calls SetFrameGeneration somewhere else too");
     if (aob_find_unique(*o3d, O3D_SIZE, AOB_O3D_GREY) < 0) return fail("3D Mode handler: the greyed flag isn't set where expected");
     plugin_log(2, "framegen: 3D Mode handler checked (Off call at +0x%lX)", (long)(call - *o3d));
 
@@ -361,8 +400,8 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     if (!find_targets(resolve, t)) return 0;
     if ((fg.tls = TlsAlloc()) == TLS_OUT_OF_INDEXES) return fail("no thread-local storage slot left");
     static const char *const names[T_COUNT] = { "SetFrameGeneration", "the 3D Mode handler", "IsDlssgEnabled", "FlagCompute" };
-    void *const detours[T_COUNT] = { (void *)hook_set_fg, (void *)hook_o3d_changed, (void *)hook_dlssg_enabled,
-                                     (void *)hook_flag_compute };
+    void *const detours[T_COUNT] = { (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_o3d_changed,
+                                     (void *)bd3d_thunk_dlssg_enabled, (void *)bd3d_thunk_flag_compute };
     void **const origs[T_COUNT] = { (void **)&fg.setFgOrig, (void **)&fg.o3dOrig, (void **)&fg.dlssgOrig,
                                     (void **)&fg.flagOrig };
     for (int i = 0; i < T_COUNT; i++) {

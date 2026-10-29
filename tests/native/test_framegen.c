@@ -135,11 +135,18 @@ static uint8_t fake_dlssg(uint8_t *sl)
 
 // Like the game's: asks IsDlssgEnabled (through the hook, as it would be patched) only for an eligible view.
 static uint64_t f_flagsAfterOrig[2];
-static void orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
+static DWORD f_pauseThread;           // this thread's FlagCompute pauses after asking, until f_resume is set
+static HANDLE f_asked, f_resume;
+static uint64_t *orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
 {
     if (f_eligible) hook_dlssg_enabled(NULL);
+    if (f_pauseThread == GetCurrentThreadId()) {
+        SetEvent(f_asked);
+        WaitForSingleObject(f_resume, 10000);
+    }
     flags[0] = f_flagsAfterOrig[0];
     flags[1] = f_flagsAfterOrig[1];
+    return flags; // the game's caller reads the bits through this
 }
 
 static void ft_begin(void)
@@ -387,7 +394,7 @@ TEST(set_frame_generation_outside_the_handler_passes_through)
     fg.handlerThread = GetCurrentThreadId();
     hook_set_fg(1, 1); // not "Off"
     CHECK_EQ_INT(f_setFgCalls, 2);
-    CHECK_EQ_INT(fg.kept, 0);
+    CHECK(fg.keptFlags == NULL);
     fg.handlerThread = GetCurrentThreadId() + 1; // the handler is running on another thread
     hook_set_fg(0, 1);
     CHECK_EQ_INT(f_setFgCalls, 3);
@@ -398,7 +405,8 @@ TEST(set_frame_generation_outside_the_handler_passes_through)
 static uint64_t run_flags(void)
 {
     uint64_t flags[2] = { 0, 0 };
-    hook_flag_compute(NULL, flags, NULL, NULL);
+    uint64_t *ret = hook_flag_compute(NULL, flags, NULL, NULL);
+    CHECK(ret == flags); // a lost return value crashed the game in the first in-game test
     return flags[1];
 }
 
@@ -443,6 +451,7 @@ TEST(is_dlssg_enabled_only_counts_inside_flag_compute)
 
 static DWORD WINAPI eligible_view_thread(void *arg)
 {
+    f_pauseThread = GetCurrentThreadId();
     *(uint64_t *)arg = run_flags();
     return 0;
 }
@@ -450,15 +459,62 @@ static DWORD WINAPI eligible_view_thread(void *arg)
 TEST(each_thread_gets_its_own_dlssg_decision)
 {
     ft_begin();
-    // An eligible view on a worker thread doesn't make a view on this thread eligible.
+    // A worker thread's eligible view is paused inside FlagCompute, right after IsDlssgEnabled said yes. A view on
+    // this thread that the game didn't find eligible must not pick up that answer.
+    f_asked = CreateEventW(NULL, TRUE, FALSE, NULL);
+    f_resume = CreateEventW(NULL, TRUE, FALSE, NULL);
     uint64_t other = 0;
     HANDLE t = CreateThread(NULL, 0, eligible_view_thread, &other, 0, NULL);
     REQUIRE(t != NULL);
-    WaitForSingleObject(t, INFINITE);
-    CloseHandle(t);
-    CHECK(other == (FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_DLSSG)));
+    REQUIRE(WaitForSingleObject(f_asked, 10000) == WAIT_OBJECT_0);
     f_eligible = 0;
     CHECK(run_flags() == FEATURE_BIT(FEATURE_STEREO));
+    SetEvent(f_resume);
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    CloseHandle(f_asked);
+    CloseHandle(f_resume);
+    f_pauseThread = 0;
+    CHECK(other == (FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_DLSSG)));
+}
+
+// ===================================================================================== the register-keeping thunks
+
+// Calls thunk(rcx, rdx, r8, r9) with known values in rcx, rdx and r8-r11, the way the game's code may keep using
+// them after the call, and writes what those registers and rax hold afterwards to out[0..6].
+void ft_call_thunk(void *thunk, uint64_t *out);
+__asm__(".text\n.globl ft_call_thunk\nft_call_thunk:\n"
+        "push %rdi\npush %rbx\nsub $0x28, %rsp\n" // 16-aligned again, with shadow space
+        "mov %rcx, %rbx\nmov %rdx, %rdi\n"
+        "movabs $0x1111111111111111, %rcx\nmovabs $0x2222222222222222, %rdx\nmovabs $0x3333333333333333, %r8\n"
+        "movabs $0x4444444444444444, %r9\nmovabs $0x5555555555555555, %r10\nmovabs $0x6666666666666666, %r11\n"
+        "call *%rbx\n"
+        "mov %rcx, 0(%rdi)\nmov %rdx, 8(%rdi)\nmov %r8, 16(%rdi)\nmov %r9, 24(%rdi)\nmov %r10, 32(%rdi)\n"
+        "mov %r11, 40(%rdi)\nmov %rax, 48(%rdi)\n"
+        "add $0x28, %rsp\npop %rbx\npop %rdi\nret\n");
+
+static void check_thunk_keeps_registers(void *thunk, uint64_t wantRax, uint64_t raxMask)
+{
+    uint64_t out[7] = { 0 };
+    ft_call_thunk(thunk, out);
+    for (int i = 0; i < 6; i++) CHECK_MSG(out[i] == 0x1111111111111111ull * (i + 1), "register %d changed to %llx", i, (unsigned long long)out[i]);
+    CHECK((out[6] & raxMask) == wantRax);
+}
+
+TEST(thunks_keep_the_callers_registers_and_return_the_result)
+{
+    ft_begin();
+    // IsDlssgEnabled: FlagCompute writes [rcx+0x1F2] right after calling it (the second in-game test's crash).
+    f_dlssgOn = 1;
+    check_thunk_keeps_registers((void *)bd3d_thunk_dlssg_enabled, 1, 0xFF);
+    CHECK_EQ_INT(f_dlssgCalls, 1);
+    // SetFrameGeneration outside the handler, passed through.
+    check_thunk_keeps_registers((void *)bd3d_thunk_set_fg, 1, 0xFF);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    // The handler, with SBSDebug off (passed through).
+    set_sbs_debug(0);
+    f_o3dSetsFgOff = 0;
+    check_thunk_keeps_registers((void *)bd3d_thunk_o3d_changed, 0, 0);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }
