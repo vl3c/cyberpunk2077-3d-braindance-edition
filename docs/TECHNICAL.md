@@ -38,7 +38,7 @@ Exports: `create_odyssey3d_factory_instance()` (returns the factory, or NULL in 
 | factory | 2 (+0x10) `CreateWeaver(shared_ptr* ret, device, ID3D12Device*, allocator, ?, 0, 0, HWND)` | logging weaver in an MSVC `std::shared_ptr` |
 | device | 1 (+0x08) `GetEyePosition(float3* out, int eye)` | ±32 mm, 0, 600 mm |
 | device | 2 (+0x10) `GetResolution(float2* out)` | size of the 3D monitor (cached up to 0.5 s) |
-| device | 3 (+0x18) `GetFloat2_18(float2* out)` | 10000 (the game stores x × 0.01 = 100, its default) |
+| device | 3 (+0x18) `GetFloat2_18(float2* out)` | 10000 (the game stores x × 0.01 = 100, its default), or `[Display] PanelSize` in cm if set (experimental) |
 | device | 6 (+0x30) `GetMonitorRect(int64[4] out)` | `{top, left, right, bottom}` of the 3D monitor (always current) |
 | device | 9 (+0x48) `Hint48(bool)` | no-op returning 0; called 400 to 900 times a second, result ignored |
 | device | 10 (+0x50) `IsAvailable()` | true |
@@ -60,7 +60,7 @@ test sessions the game called only the slots above, about 110 times a second for
 | --- | --- |
 | `engine\config\platform\pc\braindance3d.ini` | The engine options above |
 | `bin\x64\Braindance3D\GameLauncherData\core\Odyssey3DSDK.dll` | The SDK stand-in |
-| `bin\x64\Braindance3D\Braindance3D-Settings.ini` | Log level and monitor choice |
+| `bin\x64\Braindance3D\Braindance3D-Settings.ini` | Log level, monitor choice and the experimental panel size |
 | `bin\x64\Braindance3D\Braindance3D-Setup.ps1` | Install, uninstall and status (registry only) |
 | `bin\x64\Braindance3D\Install-Braindance3D.bat`, `Uninstall-Braindance3D.bat` | Double-click wrappers |
 | `bin\x64\Braindance3D\README.md`, `LICENSE`, `CHANGELOG.md` | Docs |

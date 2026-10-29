@@ -129,7 +129,7 @@ extern int tt_verbose;
 #undef TT_IMPLEMENTATION
 
 #define TT_MAX_TESTS 512
-#define TT_MAX_DEFER 64
+#define TT_MAX_DEFER 256
 
 typedef struct {
     const char *name;
@@ -221,7 +221,8 @@ void tt_note(const char *fmt, ...)
 void tt_defer(void (*fn)(void *), void *arg)
 {
     if (tt_ndefers >= TT_MAX_DEFER) {
-        fn(arg);
+        // Running fn now would free what the test is still using, so leak it and fail instead.
+        tt_fail(__FILE__, __LINE__, 0, "more than %d tt_defer calls in one test; raise TT_MAX_DEFER", TT_MAX_DEFER);
         return;
     }
     tt_defers[tt_ndefers].fn = fn;
