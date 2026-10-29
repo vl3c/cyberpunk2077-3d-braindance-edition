@@ -66,7 +66,7 @@ must find the DLL in a real folder, and the engine ini only exists inside MO2's 
 - Each eye gets half the horizontal resolution (half-SBS), so a higher game resolution looks sharper. A 4K
   screen is recommended.
 - The game renders every frame twice, so expect a lower frame rate than in 2D.
-- To play in 2D again, turn 3D Mode off, or uninstall.
+- To play in 2D again, turn 3D Mode off.
 - Stereo 3D can cause eye strain or discomfort. Take breaks, and lower Depth if your eyes get tired.
 
 ## Recommended setup (Quest 3 + Virtual Desktop)
