@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Experimental `PanelSize` setting in `Braindance3D-Settings.ini` (`[Display]`): the 3D screen's physical size in cm,
+  which the game may use to work out the depth. `default` keeps the previous behaviour.
+
 ## 0.1.0 (2026-10-28)
 
 First release.

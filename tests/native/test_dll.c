@@ -1333,6 +1333,33 @@ TEST(two_copies_loaded_side_by_side)
     device_release(db);
 }
 
+// ===================================================================================== [Display] PanelSize
+
+TEST(panel_size_setting_overrides_slot_18)
+{
+    struct { const char *ini; float w, h; } cases[] = {
+        { "[Display]\nPanelSize=59.77 x 33.62\n", 59.77f, 33.62f },
+        { "[Display]\r\nPanelSize = 59.77X33.62 ; 27 inch\r\n", 59.77f, 33.62f },
+        { "[Display]\nPanelSize=120,68\n", 120.0f, 68.0f },
+        { "[Display]\nPanelSize=default\n", 10000.0f, 10000.0f },
+        { "[Display]\nPanelSize=\n", 10000.0f, 10000.0f },
+        { "[Display]\nPanelSize=59.77\n", 10000.0f, 10000.0f },
+        { "[Display]\nPanelSize=0 x 33\n", 10000.0f, 10000.0f },
+        { "[Display]\nPanelSize=60 x 34 cm\n", 10000.0f, 10000.0f },
+    };
+    for (int k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++) {
+        Sdk *s = sdk_prepare(cases[k].ini);
+        sdk_load(s);
+        Obj *dev = sdk_device(s);
+        float v[2] = { 0, 0 };
+        SLOT(dev, DEV_GET_FLOAT2_18, PFN_GetFloat2)(dev, v);
+        CHECK_MSG(fabs(v[0] - cases[k].w) < 1e-3 && fabs(v[1] - cases[k].h) < 1e-3,
+                  "settings \"%s\" -> %.2f x %.2f, want %.2f x %.2f", cases[k].ini, v[0], v[1], cases[k].w, cases[k].h);
+        device_release(dev);
+        sdk_unload(s);
+    }
+}
+
 // ===================================================================================== [Display] Monitor
 
 TEST(monitor_primary_setting_uses_the_primary_monitor)
