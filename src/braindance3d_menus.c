@@ -668,11 +668,8 @@ static void before_present(IDXGISwapChain *sc, const char *which)
 {
     // One at a time: a wrapper whose Present calls Present1 on the same vtable, or two presenting threads, must
     // not record the shared command list twice.
+    if (!is_game_swap_chain(sc)) return;
     if (InterlockedCompareExchange(&g.busy, 1, 0) != 0) return;
-    if (!is_game_swap_chain(sc)) {
-        InterlockedExchange(&g.busy, 0);
-        return;
-    }
     g.frames++;
     int want = !g.failed && want_squeeze();
     if (want != g.lastSqueeze) {
@@ -770,6 +767,12 @@ static void *hook_gpu_present(int32_t *deviceIndex, uint8_t sync, UINT interval)
 {
     if (!g.patched && !g.failed && InterlockedExchange(&g.patched, 1) == 0) patch_swap_chain(deviceIndex);
     g.gameFrames++;
+    // The game can recreate its swap chain at another device index (display or fullscreen change): follow it.
+    if (readable(deviceIndex, sizeof(int32_t)) && *deviceIndex >= 1 && *deviceIndex <= DD_SWAPCHAIN_COUNT &&
+        *deviceIndex - 1 != g.scIndex) {
+        if (g.patched) mlog("game swap chain now at device index %d (was %d)", *deviceIndex, g.scIndex + 1);
+        g.scIndex = *deviceIndex - 1;
+    }
     if (g.mode == MODE_AUTO) note_game_frame();
     return g.gpuPresentOrig(deviceIndex, sync, interval);
 }

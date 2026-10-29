@@ -8,7 +8,7 @@ windows-latest, job `package` on ubuntu-latest).
 | The DLL (`src/braindance3d_sdk.c`), black box | `tests/native/test_dll.c` | `tests/run-native-tests.sh` |
 | The DLL, white box (`#include`s the .c) | `tests/native/test_whitebox.c` | `tests/run-native-tests.sh` |
 | The RED4ext auto-setup plugin (`src/braindance3d_autosetup.c`), white and black box | `tests/native/test_autosetup.c` | `tests/run-native-tests.sh` |
-| The menu squeeze's detection, Ctrl+F8, UserSettings.json seed and settings (`src/braindance3d_menus.c`), white box | `tests/native/test_menus.c` | `tests/run-native-tests.sh` |
+| The menu squeeze's detection, UserSettings.json seed and settings (`src/braindance3d_menus.c`), white box | `tests/native/test_menus.c` | `tests/run-native-tests.sh` |
 | The installer (`Braindance3D-Setup.ps1`) | `tests/powershell/*.Tests.ps1` (Pester 5) | `tests/Run-PesterTests.ps1` |
 | The release zip | `tests/check-dist.sh` | `./build.sh dist && tests/check-dist.sh [--repro]` |
 
