@@ -42,7 +42,7 @@ the game's present (the same address Cyber Engine Tweaks uses).
 3. In your headset, view the PC screen as **half side-by-side** 3D (Virtual Desktop: the desktop screen's 3D
    mode, Half SBS). The game must run on the monitor the headset shows.
 
-The mod sets itself up at every game start. For 2D, turn 3D Mode off.
+The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game's video settings.
 
 ## Settings
 
