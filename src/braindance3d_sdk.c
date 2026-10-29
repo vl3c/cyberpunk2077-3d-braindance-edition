@@ -749,6 +749,11 @@ EXPORT void destroy_odyssey3d_factory_instance(Factory *f)
 // Lets tools and bug reports identify this build.
 EXPORT const char *braindance3d_version(void) { return BD3D_VERSION_STR; }
 
+// How many times the game has asked for an eye position. It asks for both eyes on every frame it renders in
+// stereo, and not at all on a flat frame (menus, the map, loading screens), so the RED4ext plugin's menu squeeze
+// reads a frame without new calls as a flat one.
+EXPORT LONG64 braindance3d_eye_position_calls(void) { return g_devStats[1].calls; }
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     if (reason == DLL_PROCESS_ATTACH) {

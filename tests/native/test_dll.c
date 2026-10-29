@@ -304,6 +304,22 @@ TEST(exports_are_present_and_undecorated)
     CHECK(GetProcAddress(s->h, "braindance3d_version") != NULL);
 }
 
+TEST(eye_position_counter_counts_every_eye_position_call)
+{
+    typedef LONG64 (*EyeCallsFn)(void);
+    Sdk *s = sdk_loaded(NULL);
+    EyeCallsFn calls = (EyeCallsFn)(void *)GetProcAddress(s->h, "braindance3d_eye_position_calls");
+    REQUIRE(calls != NULL);
+    LONG64 before = calls();
+    Obj *dev = sdk_device(s);
+    float v[3];
+    for (int i = 0; i < 5; i++) SLOT(dev, DEV_GET_EYE_POSITION, PFN_GetFloat3I)(dev, v, i & 1);
+    CHECK_EQ_INT(calls() - before, 5);
+    SLOT(dev, DEV_IS_AVAILABLE, PFN_IsAvailable)(dev);
+    CHECK_EQ_INT(calls() - before, 5); // other slots don't count
+    device_release(dev);
+}
+
 TEST(version_export_matches_version_h)
 {
     Sdk *s = sdk_loaded(NULL);

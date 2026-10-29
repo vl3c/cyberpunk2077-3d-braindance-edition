@@ -21,8 +21,10 @@
 // itself never stops because of it.
 //
 // When it squeezes ([Menus] Squeeze in Braindance3D-Settings.ini):
-//   auto (default): while the stand-in reports an open menu (Braindance3D_MenuOpen export), and
-//                   Ctrl+F8 flips it by hand for testing
+//   auto (default): on flat frames. The game asks the stand-in for both eye positions on every frame
+//                   it renders in stereo and not at all on menus, the map and loading screens, so a
+//                   game frame (GpuApi::Present) without new calls (braindance3d_eye_position_calls) is
+//                   squeezed. Ctrl+F8 flips it by hand for testing.
 //   on:             every frame (for testing)
 //   off:            never; no hooks are installed
 // Log: Braindance3D-menus.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose).
@@ -64,7 +66,7 @@ typedef HRESULT(STDMETHODCALLTYPE *PresentFn)(IDXGISwapChain *sc, UINT interval,
 typedef HRESULT(STDMETHODCALLTYPE *Present1Fn)(IDXGISwapChain1 *sc, UINT interval, UINT flags,
                                                const DXGI_PRESENT_PARAMETERS *params);
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
-typedef int (*MenuOpenFn)(void);
+typedef LONG64 (*EyeCallsFn)(void);
 typedef HRESULT(WINAPI *D3DCompileFn)(const void *src, SIZE_T len, const char *name, const D3D_SHADER_MACRO *defines,
                                       ID3DInclude *include, const char *entry, const char *target, UINT flags1,
                                       UINT flags2, ID3DBlob **code, ID3DBlob **errors);
@@ -83,7 +85,10 @@ static struct {
     void **vtbl;
     PresentFn presentOrig;
     Present1Fn present1Orig;
-    MenuOpenFn menuOpen;
+    EyeCallsFn eyeCalls;
+    LONG64 lastEyeCalls;
+    volatile LONG flatFrame; // the game's last frame asked for no eye positions
+    LONG64 gameFrames;
     int forced;       // Ctrl+F8 flips this
     int keyWasDown;
     int lastSqueeze;  // for logging changes
@@ -450,20 +455,30 @@ static void squeeze(IDXGISwapChain *sc)
 
 // ---------------------------------------------------------------- when to squeeze
 
-static int menu_open(void)
+// Called once per game frame, from GpuApi::Present: whether the game asked for eye positions since the last one.
+static void note_game_frame(void)
 {
-    if (!g.menuOpen) {
-        static DWORD lastLookup;
-        DWORD now = GetTickCount();
-        if (now - lastLookup < 2000 && lastLookup) return 0;
-        lastLookup = now;
+    g.gameFrames++;
+    if (!g.eyeCalls) {
+        // The stand-in is loaded by the game when it sets up 3D, after this plugin; look it up until it's there.
+        if (g.gameFrames % 60 != 1) return;
         HMODULE sdk = GetModuleHandleW(L"Odyssey3DSDK.dll");
-        g.menuOpen = sdk ? (MenuOpenFn)(void *)GetProcAddress(sdk, "Braindance3D_MenuOpen") : NULL;
-        if (g.menuOpen) mlog("menu detection: using the stand-in's Braindance3D_MenuOpen");
-        else return 0;
+        g.eyeCalls = sdk ? (EyeCallsFn)(void *)GetProcAddress(sdk, "braindance3d_eye_position_calls") : NULL;
+        if (!g.eyeCalls) return;
+        g.lastEyeCalls = g.eyeCalls();
+        mlog("menu detection: the stand-in's eye-position counter found (%lld calls so far, game frame %lld)",
+             (long long)g.lastEyeCalls, (long long)g.gameFrames);
+        return;
     }
-    return g.menuOpen() != 0;
+    LONG64 n = g.eyeCalls();
+    LONG flat = n == g.lastEyeCalls;
+    VLOG("game frame %lld: %lld eye-position calls -> %s", (long long)g.gameFrames, (long long)(n - g.lastEyeCalls),
+         flat ? "flat" : "stereo");
+    g.lastEyeCalls = n;
+    InterlockedExchange(&g.flatFrame, flat);
 }
+
+static int menu_open(void) { return g.eyeCalls && g.flatFrame; }
 
 static int want_squeeze(void)
 {
@@ -560,6 +575,7 @@ static void patch_swap_chain(int32_t *deviceIndex)
 static void *hook_gpu_present(int32_t *deviceIndex, uint8_t sync, UINT interval)
 {
     if (!g.patched && !g.failed && InterlockedExchange(&g.patched, 1) == 0) patch_swap_chain(deviceIndex);
+    if (g.mode == MODE_AUTO) note_game_frame();
     return g.gpuPresentOrig(deviceIndex, sync, interval);
 }
 
