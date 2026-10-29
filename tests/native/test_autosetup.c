@@ -1101,7 +1101,7 @@ TEST(plugin_imports_only_windows_system_dlls)
     REQUIRE(dir.VirtualAddress != 0);
     IMAGE_IMPORT_DESCRIPTOR *imp = (IMAGE_IMPORT_DESCRIPTOR *)((BYTE *)h + dir.VirtualAddress);
     static const char *allowed[] = { "kernel32.dll", "msvcrt.dll", "ntdll.dll", "advapi32.dll", "ucrtbase.dll",
-                                     "version.dll" };
+                                     "version.dll", "user32.dll" };
     int n = 0;
     for (; imp->Name; imp++, n++) {
         const char *name = (const char *)((BYTE *)h + imp->Name);

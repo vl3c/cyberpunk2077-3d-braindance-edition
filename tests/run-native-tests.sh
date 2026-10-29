@@ -69,7 +69,8 @@ CFLAGS+=("-DBD3D_PRODUCT_NAME=\"$PRODUCT\"")
 echo "== compiling tests with $CC"
 "$CC" "${CFLAGS[@]}" -o build/tests/test_dll.exe tests/native/test_dll.c "${LIBS[@]}"
 "$CC" "${CFLAGS[@]}" -Isrc -o build/tests/test_whitebox.exe tests/native/test_whitebox.c "${LIBS[@]}"
-"$CC" "${CFLAGS[@]}" -Isrc -o build/tests/test_autosetup.exe tests/native/test_autosetup.c "${LIBS[@]}"
+"$CC" "${CFLAGS[@]}" -Isrc -o build/tests/test_autosetup.exe tests/native/test_autosetup.c src/braindance3d_menus.c \
+    "${LIBS[@]}" -ldxguid -luuid
 
 DLL=build/Odyssey3DSDK.dll
 PLUGIN=build/Braindance3D.dll
