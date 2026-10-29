@@ -69,8 +69,8 @@ test sessions the game called only the slots above, about 110 times a second for
 | `bin\x64\Braindance3D\Install-Braindance3D.bat`, `Uninstall-Braindance3D.bat` | Double-click wrappers |
 | `bin\x64\Braindance3D\README.md`, `LICENSE`, `CHANGELOG.md` | Docs |
 | `bin\x64\Braindance3D\braindance3d.log`, `braindance3d.old.log`, `Braindance3D-setup.log` | Logs, written at run time (or in `%LOCALAPPDATA%\Braindance3D`) |
-| `red4ext\plugins\Braindance3D\Braindance3D.dll` | RED4ext plugin that writes the registry setting at game start and squeezes menus |
-| `bin\x64\Braindance3D\Braindance3D-menus.log`, `Braindance3D-menus.old.log` | What the menu squeeze did (this run and the previous one) |
+| `red4ext\plugins\Braindance3D\Braindance3D.dll` | RED4ext plugin that writes the registry setting at game start, squeezes menus and keeps DLSS frame generation in 3D Mode |
+| `bin\x64\Braindance3D\Braindance3D-hooks.log`, `Braindance3D-hooks.old.log` | What the menu squeeze and the frame generation hooks did (this run and the previous one) |
 | `bin\x64\Braindance3D\Braindance3D-autosetup.log` | What the RED4ext plugin did (appended each start, reset past 256 KB) |
 | `fomod\` | Install metadata for Vortex and other FOMOD-aware managers |
 
@@ -127,6 +127,33 @@ different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes thos
 - **Overlays:** CET draws inside the game's own present, before the squeeze, so its window is squeezed with menus.
   OptiScaler draws its menu and FPS counter in its own swap chain below Streamline, after the squeeze, so those
   still cover both halves.
+
+## Frame generation in 3D Mode
+
+The game keeps its own frame generation off in 3D Mode in two places, both needed for Samsung's weaver (a
+generated frame would blend two interlaced pictures) but not for side by side:
+
+- **Settings:** the 3D Mode handler (`RVA 0x2073C00`) calls `SetFrameGeneration(0, 1)` (Off) and sets the greyed
+  flag (`0x800` at `+0x44`) on Frame Generation whenever 3D Mode is on and available. It runs at start-up, on
+  display changes and when 3D Mode is switched, so a saved "on" never survives.
+- **Render:** `FlagCompute` (`RVA 0x227E5D0`) builds each view's render-feature bits every frame. It sets feature
+  88 (DLSS-G) from the game's DLSS-G checks, then clears it while stereo is on (likewise 89, FSR FG, and 75, XeSS
+  FG). The frame graph and the Streamline resource tagging read feature 88, so without it DLSS-G gets no input.
+
+The RED4ext plugin (`src/braindance3d_framegen.c`) attaches three detours, resolved by hash from CDPR's address
+library like `GpuApi::Present`:
+
+| Detour | What it changes |
+| --- | --- |
+| 3D Mode handler | Marks that it's running; afterwards puts Frame Generation's greyed flag back as it was |
+| `SetFrameGeneration` | Skips the handler's Off while DLSS frame generation is selected (FSR and XeSS stay blocked in stereo, so the game still turns those off) |
+| `FlagCompute` | On stereo frames, sets feature 88 again when the game's own DLSS-G checks for the frame passed (`sl+0x1F2` and `IsDlssgEnabled`) |
+
+All three pass straight through unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor
+keeps the game's rule. Before attaching, the plugin checks byte patterns in each function (start, the Off call and
+its target, the grey, the DLSS-G check and its target, the stereo clear) and the SBSDebug var's name. If any
+check fails, nothing is attached and the hooks log says which. DLSS-G loads only when Frame Generation is DLSS at
+game start (Streamline is set up once), so choosing it needs a restart, as in 2D.
 
 ## Building and testing
 

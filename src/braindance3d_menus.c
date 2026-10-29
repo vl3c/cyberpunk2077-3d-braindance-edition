@@ -36,7 +36,8 @@
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
 //   on:             every frame (for testing)
 //   off:            never; no hooks are installed
-// Log: Braindance3D-menus.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose).
+// Log: Braindance3D-hooks.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose), shared with the
+// frame generation hooks (braindance3d_framegen.c).
 //
 // License: MIT (see LICENSE).
 
@@ -141,7 +142,7 @@ static struct {
 
 // ---------------------------------------------------------------- logging
 
-static void mlog(const char *fmt, ...)
+static void vmlog(const char *fmt, va_list ap)
 {
     if (!g.log) return;
     EnterCriticalSection(&g.logLock);
@@ -149,13 +150,27 @@ static void mlog(const char *fmt, ...)
     GetLocalTime(&st);
     fprintf(g.log, "%04d-%02d-%02d %02d:%02d:%02d.%03d [%lu] ", st.wYear, st.wMonth, st.wDay, st.wHour,
             st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap;
-    va_start(ap, fmt);
     vfprintf(g.log, fmt, ap);
-    va_end(ap);
     fputc('\n', g.log);
     fflush(g.log);
     LeaveCriticalSection(&g.logLock);
+}
+
+static void mlog(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vmlog(fmt, ap);
+    va_end(ap);
+}
+
+void plugin_log(int level, const char *fmt, ...)
+{
+    if (g.level < level) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vmlog(fmt, ap);
+    va_end(ap);
 }
 
 #define VLOG(...) do { if (g.level >= 2) mlog(__VA_ARGS__); } while (0)
@@ -168,27 +183,27 @@ static int fail(const char *what, HRESULT hr)
     return 0;
 }
 
-static FILE *open_menu_log_in(const wchar_t *dir)
+static FILE *open_hooks_log_in(const wchar_t *dir)
 {
     wchar_t path[MAX_PATH], old[MAX_PATH];
-    if (_snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-menus.log", dir) < 0) return NULL;
-    if (_snwprintf(old, MAX_PATH, L"%ls\\Braindance3D-menus.old.log", dir) < 0) return NULL;
+    if (_snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-hooks.log", dir) < 0) return NULL;
+    if (_snwprintf(old, MAX_PATH, L"%ls\\Braindance3D-hooks.old.log", dir) < 0) return NULL;
     path[MAX_PATH - 1] = old[MAX_PATH - 1] = 0;
     MoveFileExW(path, old, MOVEFILE_REPLACE_EXISTING);
     return _wfopen(path, L"w");
 }
 
 // Next to the settings file, or %LOCALAPPDATA%\Braindance3D if the game folder is read-only (like the stand-in's log).
-static void open_menu_log(const wchar_t *dir)
+static void open_hooks_log(const wchar_t *dir)
 {
-    g.log = open_menu_log_in(dir);
+    g.log = open_hooks_log_in(dir);
     if (g.log) return;
     wchar_t local[MAX_PATH], fallback[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
     if (!n || n >= MAX_PATH || _snwprintf(fallback, MAX_PATH, L"%ls\\Braindance3D", local) < 0) return;
     fallback[MAX_PATH - 1] = 0;
     CreateDirectoryW(fallback, NULL);
-    g.log = open_menu_log_in(fallback);
+    g.log = open_hooks_log_in(fallback);
 }
 
 // ---------------------------------------------------------------- settings
@@ -783,7 +798,7 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
 {
     InitializeCriticalSection(&g.logLock);
     read_menu_settings(installDir);
-    if (g.level > 0) open_menu_log(installDir);
+    if (g.level > 0) open_hooks_log(installDir);
     mlog("==== 3D Braindance Edition menu squeeze, mode %s, log level %d",
          g.mode == MODE_OFF ? "off" : g.mode == MODE_ON ? "on (every frame)" : "auto", g.level);
     if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no hooks installed"); return 1; }

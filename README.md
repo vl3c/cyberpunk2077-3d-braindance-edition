@@ -85,13 +85,13 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
 
 ## Troubleshooting
 
-Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-menus.log` in `bin\x64\Braindance3D`
+Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.log` in `bin\x64\Braindance3D`
 (`%LOCALAPPDATA%\Braindance3D` if the game folder is read-only).
 
 - **Crash or no start after install or a game update:** disable the mod and report your game version.
 - **3D Mode greyed out:** check RED4ext and the autosetup log. With several monitors, use `Monitor = primary` and
   the primary monitor.
-- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the menus log. OptiScaler's menu and FPS counter
+- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log. OptiScaler's menu and FPS counter
   draw after the fix and stay split; `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter
   readable in the left eye.
 - **Depth inside out:** use your viewer's swap-eyes option.
