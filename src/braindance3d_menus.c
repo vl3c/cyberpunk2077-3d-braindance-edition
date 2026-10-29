@@ -34,7 +34,6 @@
 //                     was switched (the game re-checks the 3D display then; opening Settings alone asks
 //                     once), so it flips, and the next gameplay frame confirms it.
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
-//                   Ctrl+F8 flips the squeeze by hand until the next menu opens or closes.
 //   on:             every frame (for testing)
 //   off:            never; no hooks are installed
 // Log: Braindance3D-menus.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose).
@@ -116,9 +115,6 @@ static struct {
     volatile LONG busy;      // a squeeze is being recorded (guards against re-entry from wrappers)
     LONG64 lastSqueezeFrame; // game frame of the last squeeze (one per frame at most)
     LONG64 gameFrames;
-    int forced;       // Ctrl+F8 flips the squeeze for the screen that is showing
-    int forcedFor;    // what detection said when Ctrl+F8 was pressed
-    int keyWasDown;
     int lastSqueeze;  // for logging changes
     LONG64 frames, squeezed;
     DWORD lastSummary;
@@ -646,36 +642,7 @@ static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
 
-// Whether Ctrl+F8 is held, counting only while the game has focus.
-static int ctrl_f8_down(void)
-{
-    DWORD fgPid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
-    return fgPid == GetCurrentProcessId() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
-           (GetAsyncKeyState(VK_F8) & 0x8000);
-}
-
-// Whether to squeeze this frame, given whether Ctrl+F8 is held (split out of want_squeeze for the tests).
-static int decide_squeeze(int down)
-{
-    int want = g.mode == MODE_ON ? 1 : menu_open();
-    // Ctrl+F8 flips the squeeze by hand for the screen that is showing (edge-triggered, polled once per
-    // frame). It lasts until detection changes its mind, so a menu flipped by hand doesn't leave gameplay
-    // squeezed (which would show four pictures) after the menu closes.
-    if (g.forced && want != g.forcedFor) {
-        g.forced = 0;
-        mlog("Ctrl+F8: the screen changed (detection now says %s), back to automatic", want ? "flat" : "stereo");
-    }
-    if (down && !g.keyWasDown) {
-        g.forced = !g.forced;
-        g.forcedFor = want;
-        mlog("Ctrl+F8: squeeze flipped by hand, now %s for this screen", g.forced ? (want ? "off" : "ON") : "automatic");
-    }
-    g.keyWasDown = down;
-    return g.forced ? !want : want;
-}
-
-static int want_squeeze(void) { return decide_squeeze(ctrl_f8_down()); }
+static int want_squeeze(void) { return g.mode == MODE_ON ? 1 : menu_open(); }
 
 // Whether sc is the game's swap chain. The patched vtable can be shared by other swap chains (every DXGI swap
 // chain, or every one Streamline wraps), and the game can recreate its own, so the entry is read every time.

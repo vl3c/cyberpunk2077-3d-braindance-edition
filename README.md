@@ -48,8 +48,7 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 
 - In game: **Depth** (0.5 to 1.0 suits a headset), **Weapon Depth**, **Motion Comfort** and **Preset**.
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
-  multi-monitor PCs) and menu fix (`[Menus] Squeeze = auto` or `off`). **Ctrl+F8** flips the menu fix for
-  the current screen.
+  multi-monitor PCs) and menu fix (`[Menus] Squeeze = auto` or `off`).
 - Each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice lowers
   the frame rate versus 2D.
 - Stereo 3D can strain your eyes: take breaks or lower Depth.

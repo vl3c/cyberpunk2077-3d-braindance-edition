@@ -3,9 +3,8 @@
 ## 0.2.0 (in progress)
 
 - Menus, the map and loading screens are readable in 3D: the flat picture is squeezed into each half of the
-  side-by-side image, so both eyes see the same screen. Only while 3D Mode is on; Ctrl+F8 flips it by hand for
-  the screen that is showing (needs RED4ext; `[Menus] Squeeze` in `Braindance3D-Settings.ini`). The RED4ext
-  plugin now hooks the game's present to do this.
+  side-by-side image, so both eyes see the same screen, only while 3D Mode is on (needs RED4ext; `[Menus] Squeeze`
+  in `Braindance3D-Settings.ini`). The RED4ext plugin now hooks the game's present to do this.
 - Turning 3D Mode off in the game's settings now really turns side-by-side off (before, the mod's engine ini
   forced stereo on).
 - The stand-in now reports a real 27" panel size (59.77 x 33.62 cm) instead of 10000. No visible change in testing;

@@ -1,5 +1,5 @@
 // White-box tests for the menu squeeze: this file #includes src/braindance3d_menus.c so it can drive its
-// detection state machine, the Ctrl+F8 logic, the UserSettings.json seed and the settings reader without the
+// detection state machine, the UserSettings.json seed and the settings reader without the
 // game or a GPU. The hook and the D3D12 squeeze itself are only tested in game.
 //
 // Run: test_menus.exe [--list] [name filters...]
@@ -34,7 +34,6 @@ static void mt_begin(void)
     g.rectLast = 0;
     g.rectRun = 0;
     g.rectHandled = 0;
-    g.forced = g.forcedFor = g.keyWasDown = 0;
     g.gameFrames = 0;
 }
 
@@ -54,11 +53,11 @@ TEST(stereo_frame_means_3d_on_and_menus_are_squeezed)
     mt_begin();
     stereo_frame();
     CHECK_EQ_INT(g.stereo, STEREO_ON);
-    CHECK_EQ_INT(decide_squeeze(0), 0); // gameplay in stereo: untouched
+    CHECK_EQ_INT(want_squeeze(), 0); // gameplay in stereo: untouched
     menu_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 1); // inventory: squeezed
+    CHECK_EQ_INT(want_squeeze(), 1); // inventory: squeezed
     map_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 1); // the map asks IsAvailable twice but no eye positions
+    CHECK_EQ_INT(want_squeeze(), 1); // the map asks IsAvailable twice but no eye positions
     CHECK_EQ_INT(g.stereo, STEREO_ON);
 }
 
@@ -67,7 +66,7 @@ TEST(nothing_is_squeezed_before_3d_mode_is_known)
     mt_begin();
     frames(menu_frame, 100); // intro and splash screens with no saved setting
     CHECK_EQ_INT(g.stereo, STEREO_UNKNOWN);
-    CHECK_EQ_INT(decide_squeeze(0), 0);
+    CHECK_EQ_INT(want_squeeze(), 0);
 }
 
 TEST(nothing_is_squeezed_before_the_stand_in_counters_are_found)
@@ -76,7 +75,7 @@ TEST(nothing_is_squeezed_before_the_stand_in_counters_are_found)
     g.stereo = STEREO_ON;
     g.flatFrame = 1;
     g.deviceCalls = NULL;
-    CHECK_EQ_INT(decide_squeeze(0), 0);
+    CHECK_EQ_INT(want_squeeze(), 0);
 }
 
 TEST(a_run_of_2d_gameplay_frames_means_3d_off)
@@ -87,9 +86,9 @@ TEST(a_run_of_2d_gameplay_frames_means_3d_off)
     CHECK_EQ_INT(g.stereo, STEREO_ON); // a few such frames turn up in Settings too
     flat_2d_frame();
     CHECK_EQ_INT(g.stereo, STEREO_OFF);
-    CHECK_EQ_INT(decide_squeeze(0), 0); // 2D gameplay is never squeezed (the run-1 bug)
+    CHECK_EQ_INT(want_squeeze(), 0); // 2D gameplay is never squeezed (the run-1 bug)
     menu_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 0); // nor a menu in 2D
+    CHECK_EQ_INT(want_squeeze(), 0); // nor a menu in 2D
 }
 
 TEST(an_interrupted_run_of_2d_frames_does_not_switch_3d_off)
@@ -119,7 +118,7 @@ TEST(opening_settings_alone_does_not_change_3d_mode)
     menu_frame();
     rect_calls(1, 16); // one GetMonitorRect when Settings opens (run 2's weak spot)
     CHECK_EQ_INT(g.stereo, STEREO_ON);
-    CHECK_EQ_INT(decide_squeeze(0), 1);
+    CHECK_EQ_INT(want_squeeze(), 1);
     rect_calls(1, 5000); // backing out and opening it again later is another single call
     CHECK_EQ_INT(g.stereo, STEREO_ON);
 }
@@ -132,13 +131,13 @@ TEST(switching_3d_mode_in_settings_flips_it_at_once)
     rect_calls(1, 16);
     rect_calls(2, 34); // run 3: 1 then 2 calls 34 ms apart when 3D Mode was switched
     CHECK_EQ_INT(g.stereo, STEREO_OFF);
-    CHECK_EQ_INT(decide_squeeze(0), 0); // the settings menu is no longer squeezed
+    CHECK_EQ_INT(want_squeeze(), 0); // the settings menu is no longer squeezed
     rect_calls(1, 800); // a late call in the same burst doesn't flip it back
     CHECK_EQ_INT(g.stereo, STEREO_OFF);
     rect_calls(1, 3000); // switched back on after a pause: a new burst
     rect_calls(2, 30);
     CHECK_EQ_INT(g.stereo, STEREO_ON);
-    CHECK_EQ_INT(decide_squeeze(0), 1);
+    CHECK_EQ_INT(want_squeeze(), 1);
 }
 
 TEST(a_display_check_before_any_frame_tells_is_ignored)
@@ -158,62 +157,14 @@ TEST(a_switch_while_3d_mode_is_unknown_stays_unknown)
     CHECK_EQ_INT(g.stereo, STEREO_UNKNOWN);
 }
 
-// ===================================================================================== Ctrl+F8
-
-static void press(void)
-{
-    decide_squeeze(1);
-    decide_squeeze(0);
-}
-
-TEST(ctrl_f8_flips_only_the_screen_that_is_showing)
-{
-    mt_begin();
-    stereo_frame();
-    menu_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 1);
-    CHECK_EQ_INT(decide_squeeze(1), 0); // pressed in a menu: back to the split picture
-    CHECK_EQ_INT(decide_squeeze(1), 0); // held: no repeat
-    CHECK_EQ_INT(decide_squeeze(0), 0);
-    stereo_frame(); // the menu closes
-    CHECK_EQ_INT(decide_squeeze(0), 0); // gameplay is NOT squeezed (the four-pictures bug)
-    menu_frame();   // the next menu
-    CHECK_EQ_INT(decide_squeeze(0), 1); // automatic again
-}
-
-TEST(ctrl_f8_twice_goes_back_to_automatic)
-{
-    mt_begin();
-    stereo_frame();
-    menu_frame();
-    press();
-    CHECK_EQ_INT(decide_squeeze(0), 0);
-    press();
-    CHECK_EQ_INT(decide_squeeze(0), 1);
-}
-
-TEST(ctrl_f8_in_gameplay_squeezes_until_a_menu_opens)
-{
-    mt_begin();
-    stereo_frame();
-    press();
-    CHECK_EQ_INT(decide_squeeze(0), 1);
-    stereo_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 1);
-    menu_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 1); // detection now agrees, so it's automatic again
-    stereo_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 0);
-}
-
 TEST(squeeze_on_mode_squeezes_every_frame)
 {
     mt_begin();
     g.mode = MODE_ON;
     stereo_frame();
-    CHECK_EQ_INT(decide_squeeze(0), 1);
+    CHECK_EQ_INT(want_squeeze(), 1);
     g.deviceCalls = NULL;
-    CHECK_EQ_INT(decide_squeeze(0), 1);
+    CHECK_EQ_INT(want_squeeze(), 1);
 }
 
 // ===================================================================================== UserSettings.json seed

@@ -120,7 +120,7 @@ different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes thos
   | `GetMonitorRect` twice or more in one burst (gaps under 1.5 s) | 3D Mode was switched in Settings (opening Settings asks once) |
 
   At start-up the saved `Odyssey3D_StereoEnabled` in `%LOCALAPPDATA%\CD Projekt Red\Cyberpunk 2077\UserSettings.json`
-  is the first guess. Ctrl+F8 flips the squeeze for the screen that is showing, until detection changes.
+  is the first guess.
 - **Safety:** only the game's own swap chain is squeezed (the patched vtable can be shared by other swap chains),
   at most once per game frame and never re-entered. GPU resources are only replaced once the GPU is done with
   them, and both DLLs are pinned so the patched pointers never dangle.
