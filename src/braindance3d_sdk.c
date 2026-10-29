@@ -36,16 +36,9 @@
 // Braindance3D-Settings.ini in the install folder (two levels above the DLL's folder):
 //   [Log]     Level = 0 off, 1 normal (default), 2 verbose
 //   [Display] Monitor = auto (default: the monitor the game window is on) or primary
-//   [Display] PanelSize = default, or the 3D screen's physical size in cm as "width x height"
 #define SETTINGS_FILE L"Braindance3D-Settings.ini"
 static int g_logLevel = 1;
 static int g_monitorPrimaryOnly = 0;
-// Device slot +0x18. The game keeps x * 0.01, so the default 10000 is its own 100.0 (no Samsung panel).
-// The CyberpunkVR port reads this slot as the panel's physical size in cm (27" 16:9: 59.77 x 33.62).
-#define PANEL_SIZE_DEFAULT 10000.0f
-static float g_panelSize[2] = { PANEL_SIZE_DEFAULT, PANEL_SIZE_DEFAULT };
-static int g_panelSizeSet = 0;
-static wchar_t g_panelSizeIgnored[64];  // a PanelSize value that wasn't understood, for the log
 
 // Per-slot logging budget, set from the level.
 static LONG64 g_fullLogCalls = 10;      // calls logged in full per slot
@@ -126,27 +119,6 @@ static int parse_level(const wchar_t *v)
     return n <= 0 ? 0 : n >= 2 ? 2 : (int)n;
 }
 
-// Parses "<width> x <height>" in cm (x or X between, spaces allowed, then an optional ; or # comment).
-// Each must be 1-100000. Returns 1 and fills out[2] on success; "default", empty or anything else returns 0.
-static int parse_panel_size(const wchar_t *v, float out[2])
-{
-    wchar_t *end;
-    double w = wcstod(v, &end);
-    if (end == v) return 0;
-    while (*end == L' ' || *end == L'\t') end++;
-    if (*end != L'x' && *end != L'X') return 0;
-    end++;
-    const wchar_t *h0 = end;
-    double h = wcstod(h0, &end);
-    if (end == h0) return 0;
-    while (*end == L' ' || *end == L'\t') end++;
-    if (*end && *end != L'#' && *end != L';') return 0;
-    if (!(w >= 1.0 && w <= 100000.0 && h >= 1.0 && h <= 100000.0)) return 0;
-    out[0] = (float)w;
-    out[1] = (float)h;
-    return 1;
-}
-
 static void read_settings(void)
 {
     wchar_t ini[MAX_PATH], v[64];
@@ -156,16 +128,6 @@ static void read_settings(void)
     g_logLevel = parse_level(v);
     GetPrivateProfileStringW(L"Display", L"Monitor", L"auto", v, 64, ini);
     g_monitorPrimaryOnly = _wcsnicmp(v, L"primary", 7) == 0 && (!v[7] || wcschr(L" \t;#", v[7]));
-    GetPrivateProfileStringW(L"Display", L"PanelSize", L"default", v, 64, ini);
-    float size[2];
-    g_panelSizeSet = parse_panel_size(v, size);
-    g_panelSize[0] = g_panelSizeSet ? size[0] : PANEL_SIZE_DEFAULT;
-    g_panelSize[1] = g_panelSizeSet ? size[1] : PANEL_SIZE_DEFAULT;
-    const wchar_t *t = v;
-    while (*t == L' ' || *t == L'\t') t++;
-    int isDefault = !*t || *t == L';' || *t == L'#'
-                    || (_wcsnicmp(t, L"default", 7) == 0 && (!t[7] || wcschr(L" \t;#", t[7])));
-    if (!g_panelSizeSet && !isDefault) wcscpy(g_panelSizeIgnored, t);
     if (g_logLevel >= 2) { g_fullLogCalls = 120; g_summaryInterval = 1.0; }
     else { g_fullLogCalls = 10; g_summaryInterval = 60.0; }
 }
@@ -491,16 +453,19 @@ static float *dev_GetResolution(Device *self, float *out)
     return out;
 }
 
-// vtbl+0x18: float2. The game multiplies x by 0.01 and stores it in a field that defaults
-// to 100.0, so 10000 reproduces that default. Likely the panel's physical size in cm (see
-// g_panelSize); [Display] PanelSize overrides it for testing how that changes the depth.
+// vtbl+0x18: float2, the 3D panel's physical size in cm as the CyberpunkVR port reads it (the game keeps x * 0.01,
+// i.e. metres). Answers a real 27" 16:9 Odyssey 3D, the hardware the game's 3D Mode was tuned on. The game reads
+// it every stereo frame, but world depth showed no visible change between 10000 and 120 x 67.5, so it isn't a
+// setting.
+#define PANEL_WIDTH_CM 59.77f
+#define PANEL_HEIGHT_CM 33.62f
 static float *dev_GetFloat2_18(Device *self, float *out)
 {
-    out[0] = g_panelSize[0];
-    out[1] = g_panelSize[1];
+    out[0] = PANEL_WIDTH_CM;
+    out[1] = PANEL_HEIGHT_CM;
     if (should_log(&g_devStats[3], "device.GetFloat2_18"))
-        slog("device.GetFloat2_18 -> %.2f %.2f (game stores x*0.01 = %.4f; %s)", out[0], out[1], out[0] * 0.01,
-             g_panelSizeSet ? "PanelSize from the settings file, cm" : "default");
+        slog("device.GetFloat2_18 -> %.2f %.2f (27\" panel in cm; the game keeps x*0.01 = %.4f)", out[0], out[1],
+             out[0] * 0.01);
     return out;
 }
 
@@ -783,14 +748,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         slog("log file %s", utf8(g_logPath, b1, sizeof(b1)));
         slog("settings: monitor %s; host %s", g_monitorPrimaryOnly ? "primary" : "auto (game window's monitor)",
              g_hostAllowed ? "allowed" : "NOT Cyberpunk2077.exe, the SDK will not be offered");
-        if (g_panelSizeSet)
-            slog("settings: panel size %.2f x %.2f cm (device slot +0x18; the game keeps x * 0.01 = %.4f)",
-                 g_panelSize[0], g_panelSize[1], g_panelSize[0] * 0.01);
-        else if (g_panelSizeIgnored[0])
-            slog("settings: panel size \"%s\" not understood (want width x height in cm, e.g. 59.77 x 33.62), "
-                 "using the default %.0f", utf8(g_panelSizeIgnored, b1, sizeof(b1)), PANEL_SIZE_DEFAULT);
-        else
-            slog("settings: panel size default (%.0f, the game keeps 100.0, its own default)", PANEL_SIZE_DEFAULT);
         install_known_slots();
     } else if (reason == DLL_PROCESS_DETACH) {
         // At process exit other threads were killed, possibly while holding the log lock, so only

@@ -8,9 +8,8 @@
   plugin now hooks the game's present to do this.
 - Turning 3D Mode off in the game's settings now really turns side-by-side off (before, the mod's engine ini
   forced stereo on).
-- Experimental `PanelSize` setting in `Braindance3D-Settings.ini` (`[Display]`): the 3D screen's physical size in cm,
-  which the game may use to work out the depth. `default` keeps the previous behaviour; a value it can't read is
-  logged and ignored.
+- The stand-in now reports a real 27" panel size (59.77 x 33.62 cm) instead of 10000. No visible change in testing;
+  it's what the game's 3D Mode was tuned on.
 - README: recommended setup for Quest 3 and Virtual Desktop (4K virtual monitor, matching refresh rates,
   DLSS Performance with path tracing, frame generation through OptiScaler), and a known issue for menus.
 
