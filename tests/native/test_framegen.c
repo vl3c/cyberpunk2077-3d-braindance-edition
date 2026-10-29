@@ -16,6 +16,9 @@
 // ===================================================================================== fakes
 
 static char ft_log[8192];
+static int f_noted3d = -1; // what the menu squeeze was last told
+
+void menus_note_3d_mode(int on) { f_noted3d = on; }
 
 void plugin_log(int level, const char *fmt, ...)
 {
@@ -29,7 +32,7 @@ void plugin_log(int level, const char *fmt, ...)
 }
 
 // A fake copy of the game's code and data, inside this exe's image (like the real targets are inside the game's).
-static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_fgMode[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
+static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint64_t f_cnames[2];
 static const char *f_sbsVar[8];
 static int f_attachFails; // which Attach call fails (1-based), 0 = none
@@ -79,7 +82,6 @@ static uintptr_t fake_resolve(uint32_t hash)
     switch (hash) {
     case HASH_O3D_CHANGED: return (uintptr_t)f_o3d;
     case HASH_SET_FG: return (uintptr_t)f_setFg;
-    case HASH_FG_MODE: return (uintptr_t)f_fgMode;
     case HASH_FLAG_COMPUTE: return (uintptr_t)f_flag;
     case HASH_DLSSG_ENABLED: return (uintptr_t)f_dlssg;
     case HASH_VAR_SBSDEBUG: return (uintptr_t)f_sbsVar;
@@ -105,9 +107,51 @@ static bool fake_detach(void *handle, void *target)
 static R4eHooking f_hooking = { fake_attach, fake_detach };
 
 // Fake originals and game functions for the hook tests.
-static uint32_t f_mode = FG_MODE_DLSS;
 static int f_setFgCalls, f_setFgIndex, f_o3dSetsFgOff, f_o3dGreys, f_eligible, f_dlssgOn, f_dlssgCalls;
-static uint8_t f_var[0x50];
+static uint8_t f_var[SETTING_SIZE];
+static uint8_t f_values[5][CSTRING_SIZE]; // the setting's list, as the game builds it
+
+// Puts a short CString (inline) or a long one (on the heap) at p.
+static void put_cstring(uint8_t *p, const char *text)
+{
+    static char heap[5][64];
+    static int next;
+    memset(p, 0, CSTRING_SIZE);
+    uint32_t len = (uint32_t)strlen(text);
+    if (len < 16) {
+        memcpy(p, text, len);
+        *(uint32_t *)(p + CSTRING_LEN_FLAGS) = len;
+    } else {
+        char *h = heap[next++ % 5];
+        strcpy(h, text);
+        *(char **)p = h;
+        *(uint32_t *)(p + CSTRING_LEN_FLAGS) = len | CSTRING_HEAP;
+    }
+}
+
+// The menu shows `value` from a built list (Off, DLSS, FSR3, XESS on this "PC"), or, with list < 0, the setting still
+// holds the value read from the file.
+static void set_fg_value(const char *value, int list)
+{
+    static const char *const names[] = { "Off", "DLSS", "FSR3", "XESS" };
+    uint32_t *flags = (uint32_t *)(f_var + SETTING_FLAGS);
+    *flags &= ~(FLAG_FROM_FILE | FLAG_LIST_BUILT);
+    if (list < 0) {
+        *flags |= FLAG_FROM_FILE;
+        put_cstring(f_var + SETTING_FILE_VALUE, value);
+        return;
+    }
+    *flags |= FLAG_LIST_BUILT;
+    int index = -1;
+    for (int i = 0; i < 4; i++) {
+        put_cstring(f_values[i], names[i]);
+        if (!strcmp(names[i], value)) index = i;
+    }
+    *(uint8_t **)(f_var + SETTING_VALUES) = &f_values[0][0];
+    *(uint32_t *)(f_var + SETTING_VALUES + 0xC) = 4;
+    *(int32_t *)(f_var + SETTING_PENDING) = index;
+    *(int32_t *)(f_var + SETTING_APPLIED) = index;
+}
 
 static uint8_t orig_set_fg(int32_t index, uint8_t mode)
 {
@@ -123,7 +167,6 @@ static void orig_o3d(uint8_t *event)
     if (f_o3dGreys) *(uint32_t *)(f_var + SETTING_FLAGS) |= FLAG_GREYED;
 }
 
-static uint32_t fake_fg_mode(void) { return f_mode; }
 static void *fake_root(void) { return f_lookup; }
 static void *fake_find(void *parent, uint64_t cname) { return cname == f_cnames[1] ? (void *)f_var : (void *)f_lookup; }
 
@@ -155,21 +198,21 @@ static void ft_begin(void)
     if (tls == TLS_OUT_OF_INDEXES) tls = TlsAlloc();
     memset(&fg, 0, sizeof(fg));
     fg.tls = tls;
+    f_noted3d = -1;
     ft_log[0] = 0;
     fake_game();
     f_attachFails = f_attached = f_detached = 0;
-    f_mode = FG_MODE_DLSS;
     f_setFgCalls = f_setFgIndex = 0;
     f_o3dSetsFgOff = f_o3dGreys = 1;
     f_eligible = f_dlssgOn = 1;
     f_dlssgCalls = 0;
     memset(f_var, 0, sizeof(f_var));
+    set_fg_value("DLSS", 1);
     f_cnames[0] = 0x1AF15AB3D7A612E0ull;
     f_cnames[1] = 0x1ACE52F474ADA088ull;
     fg.setFgOrig = orig_set_fg;
     fg.o3dOrig = orig_o3d;
     fg.flagOrig = orig_flag_compute;
-    fg.fgMode = fake_fg_mode;
     fg.dlssgOrig = fake_dlssg;
     fg.root = fake_root;
     fg.group = fake_find;
@@ -232,7 +275,6 @@ TEST(all_four_hooks_attach_when_every_check_passes)
     CHECK(fg.presetsName == &f_cnames[0]);
     CHECK(fg.fgName == &f_cnames[1]);
     CHECK(fg.dlssgOrig == (DlssgEnabledFn)(void *)f_dlssg);
-    CHECK(fg.fgMode == (FgModeFn)(void *)f_fgMode);
     CHECK(strstr(ft_log, "all checks passed (SBSDebug is on right now)") != NULL);
 }
 
@@ -267,7 +309,7 @@ TEST(nothing_attaches_when_the_handler_changed)
     put(f_o3d + 0x400, AOB_O3D_FG_OFF); // twice: not sure which one
     expect_no_hooks("the Frame Generation Off call isn't there");
     ft_begin();
-    put_rel32(f_o3d + 0x188 + aob_len(AOB_O3D_FG_OFF) + 4, f_fgMode);
+    put_rel32(f_o3d + 0x188 + aob_len(AOB_O3D_FG_OFF) + 4, f_other);
     expect_no_hooks("doesn't go to SetFrameGeneration");
     ft_begin();
     f_o3d[0x2FE + 7] = 0x0C; // bts eax,0Ch
@@ -293,7 +335,7 @@ TEST(nothing_attaches_when_flag_compute_changed)
     f_flag[0x5BC + 3] = 0x60; // another renderer offset
     expect_no_hooks("the DLSS-G check isn't there");
     ft_begin();
-    put_rel32(f_flag + 0x5BC + FLAG_DLSSG_CALL + 5, f_fgMode);
+    put_rel32(f_flag + 0x5BC + FLAG_DLSSG_CALL + 5, f_other);
     expect_no_hooks("doesn't call IsDlssgEnabled");
     ft_begin();
     f_flag[0x6F0 + 14] = 0x59; // feature 89
@@ -344,7 +386,9 @@ TEST(handler_with_sbs_keeps_dlss_frame_generation_and_its_greyed_flag)
     CHECK_EQ_INT(f_setFgCalls, 0); // the Off was skipped
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, 0);
     CHECK_EQ_INT(fg.handlerThread, 0);
-    CHECK(strstr(ft_log, "kept DLSS Frame Generation") != NULL);
+    CHECK(strstr(ft_log, "Frame Generation kept and choosable") != NULL);
+    CHECK(strstr(ft_log, "index 1 (applied 1) of 4, value 'DLSS'") != NULL);
+    CHECK_EQ_INT(f_noted3d, 1); // the menu squeeze hears 3D Mode is on
 }
 
 TEST(handler_keeps_a_greyed_flag_that_was_already_there)
@@ -363,16 +407,58 @@ TEST(handler_without_sbs_debug_does_what_the_game_does)
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK_EQ_INT(f_setFgIndex, 0);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
+    CHECK_EQ_INT(f_noted3d, 1); // the squeeze still follows the handler
 }
 
 TEST(handler_still_turns_off_fsr_and_xess_frame_generation)
 {
     ft_begin();
-    f_mode = 2;
+    set_fg_value("FSR3", 1);
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
-    CHECK(strstr(ft_log, "isn't DLSS") != NULL);
+    CHECK(strstr(ft_log, "Frame Generation is FSR3, which can't run in 3D") != NULL);
+}
+
+TEST(handler_keeps_frame_generation_off_choosable)
+{
+    // Off stays choosable (not greyed), so DLSS can be chosen in 3D Mode; so does a value that can't be read.
+    ft_begin();
+    set_fg_value("Off", 1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, 0);
+    ft_begin();
+    set_fg_value("nothing", 1); // index -1
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    CHECK(strstr(ft_log, "value '?'") != NULL);
+    ft_begin();
+    set_fg_value("XESS", 1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+}
+
+TEST(frame_generation_value_is_read_from_the_list_or_from_the_file)
+{
+    char value[32];
+    ft_begin();
+    set_fg_value("FSR3", 1);
+    REQUIRE(fg_value(f_var, value, sizeof(value)));
+    CHECK_EQ_STR(value, "FSR3");
+    set_fg_value("DLSS", -1); // start-up, before the list is built
+    REQUIRE(fg_value(f_var, value, sizeof(value)));
+    CHECK_EQ_STR(value, "DLSS");
+    put_cstring(f_var + SETTING_FILE_VALUE, "A value long enough for the heap");
+    char longValue[64];
+    REQUIRE(fg_value(f_var, longValue, sizeof(longValue)));
+    CHECK_EQ_STR(longValue, "A value long enough for the heap");
+    CHECK(!fg_value(f_var, value, 8)); // doesn't fit
+    *(uint32_t *)(f_var + SETTING_FLAGS) &= ~FLAG_FROM_FILE; // neither: nothing to read
+    CHECK(!fg_value(f_var, value, sizeof(value)));
+    set_fg_value("DLSS", 1);
+    *(uint32_t *)(f_var + SETTING_VALUES + 0xC) = 1; // index past the end
+    CHECK(!fg_value(f_var, value, sizeof(value)));
 }
 
 TEST(handler_with_3d_off_leaves_the_setting_alone)
@@ -384,6 +470,11 @@ TEST(handler_with_3d_off_leaves_the_setting_alone)
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 0);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS), 0x1);
+    CHECK_EQ_INT(f_noted3d, 0); // the menu squeeze hears 3D Mode is off (the in-game test's inverted squeeze)
+    set_sbs_debug(0);
+    f_noted3d = -1;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_noted3d, 0);
 }
 
 TEST(set_frame_generation_outside_the_handler_passes_through)

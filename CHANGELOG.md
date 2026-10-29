@@ -6,6 +6,8 @@
   it out, and the renderer keeps DLSS-G on side-by-side frames. Needs RED4ext; choose DLSS frame generation and
   restart the game once. FSR and XeSS frame generation still turn off in 3D Mode. Done with four small hooks that
   check the game's code first and do nothing if it changed; a real 3D monitor keeps the game's rule.
+- The menu squeeze now follows the game's own 3D Mode switch. Before, it guessed from display re-checks, and a
+  resolution change could flip it, so menus were squeezed in 2D and not in 3D.
 - The RED4ext plugin's log is now `Braindance3D-hooks.log` (was `Braindance3D-menus.log`).
 
 ## 0.2.0 (2026-10-29)

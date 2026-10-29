@@ -21,6 +21,9 @@ typedef struct {
 // It also reads [Log] Level and opens that log, so call it before framegen_load.
 int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir);
 
+// Tells the menu squeeze which way the game's 3D Mode handler just set 3D Mode (from braindance3d_framegen.c).
+void menus_note_3d_mode(int on);
+
 // Writes a line to Braindance3D-hooks.log when [Log] Level is at least level (1 normal, 2 verbose).
 void plugin_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 

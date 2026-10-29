@@ -11,13 +11,15 @@
 //
 // Four detours through RED4ext's hooking, the addresses resolved by hash from CDPR's address library (like
 // GpuApi::Present in braindance3d_menus.c):
-//   - the 3D Mode handler: marks that it is running, and puts Frame Generation's greyed flag back afterwards;
-//   - SetFrameGeneration: skips the handler's "Off" while DLSS frame generation is selected. FSR and XeSS frame
-//     generation stay blocked in stereo (features 89 and 75), so the game still turns those off as before;
+//   - the 3D Mode handler: marks that it is running, and puts Frame Generation's greyed flag back afterwards. It
+//     also tells the menu squeeze which way 3D Mode was set (whether the handler asked for Off);
+//   - SetFrameGeneration: skips the handler's "Off" (and so the grey), so Frame Generation keeps its setting and can
+//     be chosen in 3D Mode. Only DLSS frame generation is let through in stereo (FSR and XeSS stay blocked by
+//     features 89 and 75), so with FSR or XeSS selected the game still turns it off and greys it out as before;
 //   - FlagCompute and IsDlssgEnabled: FlagCompute calls IsDlssgEnabled only for a view that passed its other DLSS-G
 //     checks, so its answer, noted per thread (FlagCompute runs for several views at once on worker threads), is
 //     the game's own DLSS-G decision for that view; on stereo frames feature 88 is set again from it.
-// All of them pass straight through unless SBSDebug is on (read on every call: the engine ini may not be applied yet
+// They change nothing unless SBSDebug is on (read on every call: the engine ini may not be applied yet
 // when the plugin loads), so a real 3D monitor keeps the game's rule. Each is entered through a thunk that keeps the
 // caller's registers (see REGISTER_KEEPING_THUNK). Before anything is attached, the addresses and byte patterns are
 // checked (see find_targets); if one doesn't match (a game update), nothing is attached and the log says which.
@@ -37,7 +39,6 @@
 
 #define HASH_O3D_CHANGED 224667842u    // 3D Mode settings handler: void (uint8_t *event)
 #define HASH_SET_FG 2555059473u        // SetFrameGeneration: uint8_t (int32_t index, uint8_t mode)
-#define HASH_FG_MODE 3828097397u       // GetFrameGenerationMode: the selected back end, 1 = DLSS
 #define HASH_FLAG_COMPUTE 102052349u   // FlagCompute: uint64_t *(renderer, uint64_t flags[2], frame, settings), returns flags
 #define HASH_DLSSG_ENABLED 1336151854u // IsDlssgEnabled: bool (Streamline object)
 #define HASH_VAR_SBSDEBUG 3257143555u  // the [Odyssey3D] SBSDebug config var
@@ -47,9 +48,19 @@
 #define VAR_NAME 0x08            // config var: const char *name
 #define VAR_GROUP 0x10           // config var: const char *group
 #define VAR_VALUE 0x30           // config var: the bool value
-#define SETTING_FLAGS 0x44       // settings var: flags, FLAG_GREYED = shown greyed out
-#define FLAG_GREYED 0x800u
-#define FG_MODE_DLSS 1
+// Frame Generation's settings var (a list setting whose values the game fills in at run time).
+#define SETTING_FLAGS 0x44       // flags:
+#define FLAG_FROM_FILE 0x20u     //   SETTING_FILE_VALUE holds the value read from UserSettings.json (list not built yet)
+#define FLAG_LIST_BUILT 0x40u    //   SETTING_VALUES is filled, SETTING_PENDING indexes it
+#define FLAG_GREYED 0x800u       //   shown greyed out
+#define SETTING_FILE_VALUE 0x58  // CString
+#define SETTING_APPLIED 0x78     // int32: applied index
+#define SETTING_PENDING 0x84     // int32: index the menu shows (what SetFrameGeneration writes)
+#define SETTING_VALUES 0x90      // CString *entries at +0, uint32 size at +0xC: "Off", "DLSS", "FSR3", "FSR4", "XESS"
+#define SETTING_SIZE 0xA0        //   (only those the PC supports, so indices differ between PCs)
+#define CSTRING_SIZE 0x20        // CString: inline text at +0, or a heap pointer at +0 if CSTRING_HEAP;
+#define CSTRING_LEN_FLAGS 0x14   //   the length in the low 30 bits of the uint32 at +0x14
+#define CSTRING_HEAP 0x40000000u
 #define FEATURE_DLSSG 88
 #define FEATURE_STEREO 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
@@ -86,7 +97,6 @@ static const char AOB_FLAG_CLEAR[] = "40 84 ED 74 08 45 84 E4 75 03 41 B0 01 BA 
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
 typedef uint8_t (*SetFgFn)(int32_t index, uint8_t mode);
-typedef uint32_t (*FgModeFn)(void);
 typedef uint64_t *(*FlagComputeFn)(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
 typedef uint8_t (*DlssgEnabledFn)(uint8_t *sl);
 typedef void *(*RootFn)(void);
@@ -97,14 +107,14 @@ static struct {
     SetFgFn setFgOrig;
     FlagComputeFn flagOrig;
     DlssgEnabledFn dlssgOrig;
-    FgModeFn fgMode;
     RootFn root;
     FindFn group, var;
     const uint64_t *presetsName, *fgName; // the CNames SetFrameGeneration passes
     const uint8_t *sbsVar;
     DWORD tls;                    // per thread: a T_* state, while FlagCompute runs on that thread
     volatile DWORD handlerThread; // the thread running the 3D Mode handler, 0 when it isn't running
-    uint32_t *keptFlags;          // that handler call kept Frame Generation: its flags, NULL if not kept
+    int offAsked;                 // that handler call asked for Frame Generation Off (its 3D-on branch)
+    uint32_t *keptFlags;          // and it was kept: Frame Generation's flags, NULL if not kept
     uint32_t keptBefore;          // and their value before the handler greyed it
     volatile LONG64 restored;     // frames whose feature 88 was put back
     LONG64 lastRestored;
@@ -208,12 +218,43 @@ static int text_is(const char *p, const char *want) { return readable(p, strlen(
 
 static int sbs_debug(void) { return fg.sbsVar[VAR_VALUE] != 0; }
 
-// Frame Generation's flags, in the settings var found the way SetFrameGeneration finds it. NULL if they aren't
-// readable as expected.
-static uint32_t *fg_flags(void)
+// Frame Generation's settings var, found the way SetFrameGeneration finds it. NULL if it isn't readable as expected.
+static uint8_t *fg_var(void)
 {
     uint8_t *var = fg.var(fg.group(fg.root(), *fg.presetsName), *fg.fgName);
-    return var && readable(var + SETTING_FLAGS, sizeof(uint32_t)) ? (uint32_t *)(var + SETTING_FLAGS) : NULL;
+    return readable(var, SETTING_SIZE) ? var : NULL;
+}
+
+// Copies a CString into out (NUL-terminated). 0 if it isn't readable or doesn't fit.
+static int read_cstring(const uint8_t *s, char *out, size_t size)
+{
+    if (!readable(s, CSTRING_SIZE)) return 0;
+    uint32_t lenFlags = *(const uint32_t *)(s + CSTRING_LEN_FLAGS), len = lenFlags & 0x3FFFFFFFu;
+    const char *text = lenFlags & CSTRING_HEAP ? *(const char *const *)s : (const char *)s;
+    if (len >= size || (len && !readable(text, len))) return 0;
+    memcpy(out, text, len);
+    out[len] = 0;
+    return 1;
+}
+
+// The Frame Generation value the menu shows ("Off", "DLSS", "FSR3", "FSR4" or "XESS"), logged with the var's state.
+// 0 if it can't be read. (The game's own GetFrameGenerationMode reads only the value from the file, which the game
+// empties once the list is built: it answers "unknown" from then on.)
+static int fg_value(const uint8_t *var, char *out, size_t size)
+{
+    uint32_t flags = *(const uint32_t *)(var + SETTING_FLAGS);
+    int32_t pending = *(const int32_t *)(var + SETTING_PENDING), applied = *(const int32_t *)(var + SETTING_APPLIED);
+    const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
+    uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
+    int ok = 0;
+    if (flags & FLAG_LIST_BUILT)
+        ok = pending >= 0 && (uint32_t)pending < count && count <= 16 &&
+             read_cstring(values + (size_t)pending * CSTRING_SIZE, out, size);
+    else if (flags & FLAG_FROM_FILE)
+        ok = read_cstring(var + SETTING_FILE_VALUE, out, size);
+    plugin_log(1, "framegen: Frame Generation setting: flags 0x%X, index %d (applied %d) of %u, value '%s'",
+               (unsigned)flags, (int)pending, (int)applied, (unsigned)count, ok ? out : "?");
+    return ok;
 }
 
 // ---------------------------------------------------------------- hooks
@@ -240,16 +281,18 @@ static uint32_t *fg_flags(void)
 
 HOOK void hook_o3d_changed(uint8_t *event)
 {
-    int sbs = sbs_debug();
-    plugin_log(1, "framegen: 3D Mode settings handler runs (SBSDebug %s)", sbs ? "on" : "off");
-    if (!sbs) {
-        fg.o3dOrig(event);
-        return;
-    }
+    fg.offAsked = 0;
     fg.keptFlags = NULL;
     fg.handlerThread = GetCurrentThreadId();
     fg.o3dOrig(event);
     fg.handlerThread = 0;
+    // Its branch for "3D Mode on and the 3D display available" is the only place it calls SetFrameGeneration (checked
+    // at load), so that call tells which way it set 3D Mode. The menu squeeze follows it.
+    // event[1] is 1 when 3D Mode was switched in the menu, 0 at start-up and on a display change.
+    int ev1 = readable(event, 2) ? event[1] : -1;
+    plugin_log(1, "framegen: 3D Mode settings handler ran (event %d): 3D Mode %s (SBSDebug %s)", ev1,
+               fg.offAsked ? "on" : "off", sbs_debug() ? "on" : "off");
+    menus_note_3d_mode(fg.offAsked);
     uint32_t *flags = fg.keptFlags;
     if (!flags) return;
     uint32_t after = *flags;
@@ -262,20 +305,26 @@ HOOK uint8_t hook_set_fg(int32_t index, uint8_t mode)
 {
     // Only the handler's own "Off": SetFrameGeneration(0, 1), on its thread, while it runs.
     if (index == 0 && mode == 1 && fg.handlerThread == GetCurrentThreadId()) {
-        uint32_t selected = fg.fgMode();
-        if (selected == FG_MODE_DLSS) {
-            uint32_t *flags = fg_flags(); // the lookup SetFrameGeneration would have done; the grey comes later
-            if (flags) {
-                fg.keptFlags = flags;
-                fg.keptBefore = *flags;
+        fg.offAsked = 1;
+        if (!sbs_debug()) return fg.setFgOrig(index, mode); // a real 3D monitor: the game's rule
+        uint8_t *var = fg_var();
+        char value[32];
+        int known = var && fg_value(var, value, sizeof(value));
+        // Off and DLSS stay as they are and choosable. FSR and XeSS frame generation can't run in stereo, so the game
+        // turns those off and greys the setting, as without this mod. A value that can't be read counts as Off.
+        if (!known || (strncmp(value, "FSR", 3) != 0 && strcmp(value, "XESS") != 0)) {
+            // The grey comes later in the handler: note the flags before it.
+            if (var) {
+                fg.keptFlags = (uint32_t *)(var + SETTING_FLAGS);
+                fg.keptBefore = *fg.keptFlags;
             } else {
-                plugin_log(1, "framegen: couldn't read the Frame Generation setting's flags, so it may show greyed out");
+                plugin_log(1, "framegen: couldn't read the Frame Generation setting, so it may show greyed out");
             }
-            plugin_log(1, "framegen: 3D Mode is on, kept DLSS Frame Generation (the game would turn it off)");
+            plugin_log(1, "framegen: 3D Mode is on, Frame Generation kept and choosable (the game would turn it off)");
             return 1; // what SetFrameGeneration always returns
         }
-        plugin_log(1, "framegen: 3D Mode is on and frame generation mode %u isn't DLSS, so the game turns it off",
-                   (unsigned)selected);
+        plugin_log(1, "framegen: 3D Mode is on and Frame Generation is %s, which can't run in 3D, so the game turns it off",
+                   value);
     }
     return fg.setFgOrig(index, mode);
 }
@@ -339,13 +388,12 @@ static int find_targets(ResolveFn resolve, uint8_t **t)
     *o3d = (uint8_t *)resolve(HASH_O3D_CHANGED);
     *setFg = (uint8_t *)resolve(HASH_SET_FG);
     *flagCompute = (uint8_t *)resolve(HASH_FLAG_COMPUTE);
-    uint8_t *fgMode = (uint8_t *)resolve(HASH_FG_MODE);
     uint8_t *dlssg = t[T_DLSSG] = (uint8_t *)resolve(HASH_DLSSG_ENABLED);
     uint8_t *sbs = (uint8_t *)resolve(HASH_VAR_SBSDEBUG);
-    plugin_log(1, "framegen: resolved 3D Mode handler %p, SetFrameGeneration %p, GetFrameGenerationMode %p, "
-                  "FlagCompute %p, IsDlssgEnabled %p, SBSDebug var %p",
-               (void *)*o3d, (void *)*setFg, (void *)fgMode, (void *)*flagCompute, (void *)dlssg, (void *)sbs);
-    if (!in_exe((uintptr_t)*o3d, O3D_SIZE) || !in_exe((uintptr_t)*setFg, 64) || !in_exe((uintptr_t)fgMode, 16) ||
+    plugin_log(1, "framegen: resolved 3D Mode handler %p, SetFrameGeneration %p, FlagCompute %p, IsDlssgEnabled %p, "
+                  "SBSDebug var %p",
+               (void *)*o3d, (void *)*setFg, (void *)*flagCompute, (void *)dlssg, (void *)sbs);
+    if (!in_exe((uintptr_t)*o3d, O3D_SIZE) || !in_exe((uintptr_t)*setFg, 64) ||
         !in_exe((uintptr_t)*flagCompute, FLAG_COMPUTE_SIZE) || !in_exe((uintptr_t)dlssg, 16) ||
         !in_exe((uintptr_t)sbs, VAR_VALUE + 1))
         return fail("an address didn't resolve into the game exe");
@@ -382,7 +430,6 @@ static int find_targets(ResolveFn resolve, uint8_t **t)
     if (!text_is(names[VAR_NAME / 8], "SBSDebug") || !text_is(names[VAR_GROUP / 8], "Odyssey3D"))
         return fail("the SBSDebug config var isn't named [Odyssey3D] SBSDebug");
 
-    fg.fgMode = (FgModeFn)(void *)fgMode;
     fg.root = (RootFn)root;
     fg.group = (FindFn)group;
     fg.var = (FindFn)var;

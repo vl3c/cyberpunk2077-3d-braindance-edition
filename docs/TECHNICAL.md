@@ -117,7 +117,7 @@ different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes thos
   | `GetEyePosition` (both eyes) | Stereo frame: 3D Mode is on, nothing to squeeze |
   | No eye positions | Flat frame (menus, map, loading): squeezed while 3D Mode is on |
   | `IsAvailable` once and no eye positions, 30 frames in a row | 2D gameplay: 3D Mode is off |
-  | `GetMonitorRect` twice or more in one burst (gaps under 1.5 s) | 3D Mode was switched in Settings (opening Settings asks once) |
+  | The game's 3D Mode handler ran (hooked for frame generation, below) | 3D Mode is on if it took its 3D-on branch, else off: at start-up, on a switch in Settings and on a display change |
 
   At start-up the saved `Odyssey3D_StereoEnabled` in `%LOCALAPPDATA%\CD Projekt Red\Cyberpunk 2077\UserSettings.json`
   is the first guess.
@@ -145,12 +145,16 @@ library like `GpuApi::Present`:
 
 | Detour | What it changes |
 | --- | --- |
-| 3D Mode handler | Marks that it's running; afterwards puts Frame Generation's greyed flag back as it was |
-| `SetFrameGeneration` | Skips the handler's Off while DLSS frame generation is selected (FSR and XeSS stay blocked in stereo, so the game still turns those off) |
+| 3D Mode handler | Marks that it's running; afterwards puts Frame Generation's greyed flag back as it was, and tells the menu squeeze which way 3D Mode was set |
+| `SetFrameGeneration` | Skips the handler's Off unless FSR or XeSS frame generation is selected (those stay blocked in stereo, so the game still turns them off). Off stays choosable, so DLSS can be picked in 3D Mode |
 | `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its other DLSS-G checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it |
 
-All of them pass straight through unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor
-keeps the game's rule. Before attaching, the plugin checks byte patterns in each function (start, the Off call and
+They change nothing unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor keeps the
+game's rule. Each is entered through a small assembly thunk that keeps `rcx`, `rdx`, `r8`-`r11` and `xmm0`-`xmm5`:
+the game is built with whole-program optimisation, and FlagCompute keeps using `rcx` after calling
+`IsDlssgEnabled`. The selected Frame Generation value is read from the setting itself (`+0x84` indexes the list of
+values at `+0x90`; before the list is built, the value from the file is at `+0x58`), because the game's
+`GetFrameGenerationMode` reads only the file value, which is emptied once the list is built. Before attaching, the plugin checks byte patterns in each function (start, the Off call and
 its target, the grey, the DLSS-G check and its target as the only `IsDlssgEnabled` call, the stereo clear) and the
 SBSDebug var's name. If any
 check fails, nothing is attached and the hooks log says which. DLSS-G loads only when Frame Generation is DLSS at

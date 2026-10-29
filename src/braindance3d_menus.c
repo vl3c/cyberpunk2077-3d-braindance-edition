@@ -30,9 +30,8 @@
 //                     Mode is on;
 //                   - one IsAvailable and no eye positions for STEREO_OFF_FRAMES frames in a row: 2D
 //                     gameplay, so 3D Mode is off;
-//                   - GetMonitorRect twice or more in one burst (gaps under RECT_BURST_GAP_MS): 3D Mode
-//                     was switched (the game re-checks the 3D display then; opening Settings alone asks
-//                     once), so it flips, and the next gameplay frame confirms it.
+//                   - the game's 3D Mode handler (hooked in braindance3d_framegen.c) says which way 3D Mode
+//                     was switched in Settings, or set at start-up or on a display change.
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
 //   on:             every frame (for testing)
 //   off:            never; no hooks are installed
@@ -88,10 +87,8 @@ enum { STEREO_UNKNOWN = -1, STEREO_OFF, STEREO_ON }; // whether the game's 3D Mo
 
 // Stand-in device slots read once per game frame (see braindance3d_device_calls in braindance3d_sdk.c).
 #define SLOT_EYE_POSITION 1
-#define SLOT_MONITOR_RECT 6
 #define SLOT_IS_AVAILABLE 10
 #define STEREO_OFF_FRAMES 30 // 2D gameplay frames in a row before 3D Mode counts as off
-#define RECT_BURST_GAP_MS 1500 // GetMonitorRect calls this close together are one display re-check
 
 static struct {
     int mode, level;
@@ -104,14 +101,10 @@ static struct {
     PresentFn presentOrig;
     Present1Fn present1Orig;
     DeviceCallsFn deviceCalls;
-    LONG64 lastEye, lastAvailable, lastRect;
+    LONG64 lastEye, lastAvailable;
     volatile LONG flatFrame; // the game's last frame asked for no eye positions
     volatile LONG stereo;    // STEREO_*: whether 3D Mode is on, as far as the frames tell
-    int stereoSeen;          // a frame has shown it (until then GetMonitorRect is the start-up check)
     int flatStreak;          // 2D gameplay frames in a row
-    DWORD rectLast;          // when the last GetMonitorRect call of the current burst came
-    LONG64 rectRun;          // GetMonitorRect calls in that burst
-    int rectHandled;         // that burst already flipped 3D Mode
     int scIndex;             // the game's swap chain: entry in the device data (device index - 1)
     volatile LONG busy;      // a squeeze is being recorded (guards against re-entry from wrappers)
     LONG64 lastSqueezeFrame; // game frame of the last squeeze (one per frame at most)
@@ -578,7 +571,7 @@ static void read_saved_stereo_setting(void)
     else mlog("3D Mode setting: Odyssey3D_StereoEnabled value not understood, starting as unknown");
 }
 
-static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now);
+static void note_frame_calls(LONG64 dEye, LONG64 dAvail);
 
 // Called once per game frame, from GpuApi::Present: what the game asked the stand-in since the last one.
 static void note_game_frame(void)
@@ -595,64 +588,43 @@ static void note_game_frame(void)
                            (LPCWSTR)(void *)g.deviceCalls, &pinned);
         g.lastEye = g.deviceCalls(SLOT_EYE_POSITION);
         g.lastAvailable = g.deviceCalls(SLOT_IS_AVAILABLE);
-        g.lastRect = g.deviceCalls(SLOT_MONITOR_RECT);
         mlog("menu detection: the stand-in's call counters found (game frame %lld: %lld eye positions, %lld "
-             "IsAvailable, %lld GetMonitorRect so far)", (long long)g.gameFrames, (long long)g.lastEye,
-             (long long)g.lastAvailable, (long long)g.lastRect);
+             "IsAvailable so far)", (long long)g.gameFrames, (long long)g.lastEye, (long long)g.lastAvailable);
         return;
     }
-    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE),
-           rect = g.deviceCalls(SLOT_MONITOR_RECT);
-    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable, dRect = rect - g.lastRect;
+    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE);
+    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable;
     g.lastEye = eye;
     g.lastAvailable = avail;
-    g.lastRect = rect;
-    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable, %lld GetMonitorRect -> %s", (long long)g.gameFrames,
-         (long long)dEye, (long long)dAvail, (long long)dRect, dEye ? "stereo" : "flat");
-    note_frame_calls(dEye, dAvail, dRect, GetTickCount());
+    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable -> %s", (long long)g.gameFrames, (long long)dEye,
+         (long long)dAvail, dEye ? "stereo" : "flat");
+    note_frame_calls(dEye, dAvail);
 }
 
 // What one game frame's stand-in calls say (split out of note_game_frame for the tests).
-static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now)
+static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
 {
     LONG flat = dEye == 0;
     InterlockedExchange(&g.flatFrame, flat);
     if (!flat) {
         // Only a frame rendered in stereo asks for eye positions.
         g.flatStreak = 0;
-        g.stereoSeen = 1;
         set_stereo(STEREO_ON, "a frame rendered in stereo");
         return;
     }
     if (dAvail == 1) {
         // 2D gameplay asks IsAvailable once per frame (stereo asks twice); a few such frames also turn up while
         // the settings menu re-checks the display, so it takes a run of them.
-        if (++g.flatStreak == STEREO_OFF_FRAMES) {
-            g.stereoSeen = 1;
-            set_stereo(STEREO_OFF, "2D gameplay frames");
-        }
+        if (++g.flatStreak == STEREO_OFF_FRAMES) set_stereo(STEREO_OFF, "2D gameplay frames");
     } else {
         g.flatStreak = 0;
     }
-    // The game re-checks the 3D display at start-up (before any frame tells), once when Settings opens, and two or
-    // three times within a second or so when 3D Mode is switched there. Flip on a switch, so the settings menu is
-    // squeezed or not to match; the next gameplay frame confirms it either way.
-    if (dRect > 0 && g.stereoSeen) {
-        if (g.rectRun && now - g.rectLast <= RECT_BURST_GAP_MS) {
-            g.rectRun += dRect;
-        } else {
-            g.rectRun = dRect;
-            g.rectHandled = 0;
-        }
-        g.rectLast = now;
-        VLOG("GetMonitorRect: %lld call(s) in this burst", (long long)g.rectRun);
-        if (g.rectRun >= 2 && !g.rectHandled) {
-            g.rectHandled = 1;
-            LONG cur = g.stereo;
-            if (cur == STEREO_ON) set_stereo(STEREO_OFF, "3D Mode switched in Settings (display re-checked)");
-            else if (cur == STEREO_OFF) set_stereo(STEREO_ON, "3D Mode switched in Settings (display re-checked)");
-        }
-    }
+}
+
+void menus_note_3d_mode(int on)
+{
+    // The handler runs on the main thread while frames go on: only the state changes, the frame counters don't.
+    set_stereo(on ? STEREO_ON : STEREO_OFF, "the game's 3D Mode handler");
 }
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
