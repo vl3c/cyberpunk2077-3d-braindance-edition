@@ -89,7 +89,8 @@ work too; this one gives the sharpest and smoothest picture we've found.
    [OptiScaler](https://github.com/optiscaler/OptiScaler) can add it on top. The `dlssg` output used here is
    only in OptiScaler's development (nightly) builds so far; the 0.9.x releases don't have it.
    - Install OptiScaler as `winhttp.dll` in `bin\x64` (what we tested). Don't use `winmm.dll` or `version.dll`:
-     RED4ext and Cyber Engine Tweaks already use those names, and without RED4ext 3D Mode stays greyed out.
+     RED4ext and Cyber Engine Tweaks already use those names, and replacing `winmm.dll` stops RED4ext (and
+     with it this mod's automatic setup) from loading.
    - Leave the game's Frame Generation off, and pick DLSS as the upscaler in game, so OptiScaler can take it
      over (`FGInput = upscaler` needs that).
    - In `OptiScaler.ini`, `[FrameGen]`: `Enabled = true`, `FGInput = upscaler`, `FGOutput = dlssg` (NVIDIA DLSS

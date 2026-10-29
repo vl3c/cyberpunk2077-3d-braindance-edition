@@ -1372,8 +1372,8 @@ TEST(panel_size_setting_overrides_slot_18)
         sdk_unload(s);
         char *t = tu_read_file(s->log, NULL);
         REQUIRE(t != NULL);
-        // Freed here, not with tt_defer: this many cases would fill the test's defer slots.
-        CHECK_MSG(strstr(t, cases[k].log) != NULL, "settings \"%s\": the log does not say \"%s\"", cases[k].ini, cases[k].log);
+        CHECK_MSG(strstr(t, cases[k].log) != NULL, "settings \"%s\": the log does not say \"%s\"",
+                  cases[k].ini, cases[k].log);
         free(t);
     }
 }
