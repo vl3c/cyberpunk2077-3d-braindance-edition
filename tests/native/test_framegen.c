@@ -144,7 +144,10 @@ static void orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, v
 
 static void ft_begin(void)
 {
+    static DWORD tls = TLS_OUT_OF_INDEXES;
+    if (tls == TLS_OUT_OF_INDEXES) tls = TlsAlloc();
     memset(&fg, 0, sizeof(fg));
+    fg.tls = tls;
     ft_log[0] = 0;
     fake_game();
     f_attachFails = f_attached = f_detached = 0;

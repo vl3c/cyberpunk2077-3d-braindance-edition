@@ -101,6 +101,7 @@ static struct {
     FindFn group, var;
     const uint64_t *presetsName, *fgName; // the CNames SetFrameGeneration passes
     const uint8_t *sbsVar;
+    DWORD tls;                    // per thread: a T_* state, while FlagCompute runs on that thread
     volatile DWORD handlerThread; // the thread running the 3D Mode handler, 0 when it isn't running
     int kept;                     // that handler call kept Frame Generation
     volatile LONG64 restored;     // frames whose feature 88 was put back
@@ -108,8 +109,10 @@ static struct {
     DWORD lastSummary;
 } fg;
 
-// Set while this thread runs FlagCompute; then what IsDlssgEnabled answered in it (-1: it wasn't asked).
-static __thread int t_inFlagCompute, t_dlssg;
+// Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
+enum { TS_OUTSIDE, TS_NOT_ASKED, TS_DLSSG_OFF, TS_DLSSG_ON }; // TS_OUTSIDE: not inside FlagCompute
+static uintptr_t thread_state(void) { return (uintptr_t)TlsGetValue(fg.tls); }
+static void set_thread_state(uintptr_t v) { TlsSetValue(fg.tls, (void *)v); }
 
 // ---------------------------------------------------------------- byte patterns
 
@@ -256,18 +259,18 @@ static uint8_t hook_set_fg(int32_t index, uint8_t mode)
 static uint8_t hook_dlssg_enabled(uint8_t *sl)
 {
     uint8_t on = fg.dlssgOrig(sl);
-    if (t_inFlagCompute) t_dlssg = on;
+    if (thread_state() != TS_OUTSIDE) set_thread_state(on ? TS_DLSSG_ON : TS_DLSSG_OFF);
     return on;
 }
 
 static void hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
 {
-    t_inFlagCompute = 1;
-    t_dlssg = -1;
+    set_thread_state(TS_NOT_ASKED);
     fg.flagOrig(renderer, flags, frame, settings);
-    t_inFlagCompute = 0;
+    uintptr_t dlssg = thread_state();
+    set_thread_state(TS_OUTSIDE);
     // The original's own DLSS-G decision for this view, without its "and not stereo".
-    if (t_dlssg != 1 || !(flags[1] & FEATURE_BIT(FEATURE_STEREO)) || (flags[1] & FEATURE_BIT(FEATURE_DLSSG)) ||
+    if (dlssg != TS_DLSSG_ON || !(flags[1] & FEATURE_BIT(FEATURE_STEREO)) || (flags[1] & FEATURE_BIT(FEATURE_DLSSG)) ||
         !sbs_debug())
         return;
     flags[1] |= FEATURE_BIT(FEATURE_DLSSG);
@@ -356,6 +359,7 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
     uint8_t *t[T_COUNT];
     if (!find_targets(resolve, t)) return 0;
+    if ((fg.tls = TlsAlloc()) == TLS_OUT_OF_INDEXES) return fail("no thread-local storage slot left");
     static const char *const names[T_COUNT] = { "SetFrameGeneration", "the 3D Mode handler", "IsDlssgEnabled", "FlagCompute" };
     void *const detours[T_COUNT] = { (void *)hook_set_fg, (void *)hook_o3d_changed, (void *)hook_dlssg_enabled,
                                      (void *)hook_flag_compute };
