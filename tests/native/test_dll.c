@@ -304,6 +304,28 @@ TEST(exports_are_present_and_undecorated)
     CHECK(GetProcAddress(s->h, "braindance3d_version") != NULL);
 }
 
+TEST(device_call_counter_counts_each_slot_on_its_own)
+{
+    typedef LONG64 (*DeviceCallsFn)(int);
+    Sdk *s = sdk_loaded(NULL);
+    DeviceCallsFn calls = (DeviceCallsFn)(void *)GetProcAddress(s->h, "braindance3d_device_calls");
+    REQUIRE(calls != NULL);
+    LONG64 eye = calls(DEV_GET_EYE_POSITION), avail = calls(DEV_IS_AVAILABLE), rect = calls(DEV_GET_MONITOR_RECT);
+    Obj *dev = sdk_device(s);
+    float v[3];
+    for (int i = 0; i < 5; i++) SLOT(dev, DEV_GET_EYE_POSITION, PFN_GetFloat3I)(dev, v, i & 1);
+    CHECK_EQ_INT(calls(DEV_GET_EYE_POSITION) - eye, 5);
+    CHECK_EQ_INT(calls(DEV_IS_AVAILABLE) - avail, 0); // other slots don't count
+    SLOT(dev, DEV_IS_AVAILABLE, PFN_IsAvailable)(dev);
+    SLOT(dev, DEV_IS_AVAILABLE, PFN_IsAvailable)(dev);
+    CHECK_EQ_INT(calls(DEV_IS_AVAILABLE) - avail, 2);
+    CHECK_EQ_INT(calls(DEV_GET_EYE_POSITION) - eye, 5);
+    CHECK_EQ_INT(calls(DEV_GET_MONITOR_RECT) - rect, 0);
+    CHECK_EQ_INT(calls(-1), -1);
+    CHECK_EQ_INT(calls(32), -1);
+    device_release(dev);
+}
+
 TEST(version_export_matches_version_h)
 {
     Sdk *s = sdk_loaded(NULL);
@@ -471,16 +493,16 @@ TEST(device_eye_position_writes_exactly_three_floats)
     device_release(dev);
 }
 
-TEST(device_float2_18_is_10000)
+TEST(device_float2_18_is_a_27_inch_panel_in_cm)
 {
     Sdk *s = sdk_loaded(NULL);
     Obj *dev = sdk_device(s);
     float v[4] = { 0, 0, 7, 7 };
     CHECK_EQ_PTR(SLOT(dev, DEV_GET_FLOAT2_18, PFN_GetFloat2)(dev, v), v);
-    CHECK_NEAR(v[0], 10000.0, 1e-3);
-    CHECK_NEAR(v[1], 10000.0, 1e-3);
+    CHECK_NEAR(v[0], 59.77, 1e-4);
+    CHECK_NEAR(v[1], 33.62, 1e-4);
     CHECK(v[2] == 7.0f && v[3] == 7.0f);
-    CHECK_NEAR(v[0] * 0.01, 100.0, 1e-6); // the game's default after scaling
+    CHECK_NEAR(v[0] * 0.01, 0.5977, 1e-6); // what the game keeps (metres)
     device_release(dev);
 }
 
@@ -887,7 +909,7 @@ static DWORD WINAPI hammer(LPVOID p)
                     InterlockedIncrement(a->errors);
                 float f[2];
                 SLOT(dev, DEV_GET_FLOAT2_18, PFN_GetFloat2)(dev, f);
-                if (f[0] != 10000.0f) InterlockedIncrement(a->errors);
+                if (f[0] != 59.77f || f[1] != 33.62f) InterlockedIncrement(a->errors);
             }
             if ((n & 15) == 0 && SLOT(dev, 5, PFN_Generic)(dev, (uintptr_t)n, 0, 0, 0, 0) != (uintptr_t)n)
                 InterlockedIncrement(a->errors);
@@ -1333,48 +1355,22 @@ TEST(two_copies_loaded_side_by_side)
     device_release(db);
 }
 
-// ===================================================================================== [Display] PanelSize
+// ===================================================================================== slot +0x18
 
-TEST(panel_size_setting_overrides_slot_18)
+TEST(slot_18_answers_a_27_inch_panel_in_cm)
 {
-    // log: what the startup line must contain ("not understood" when a value is rejected)
-    struct { const char *ini; float w, h; const char *log; } cases[] = {
-        { "[Display]\nPanelSize=59.77 x 33.62\n", 59.77f, 33.62f, "panel size 59.77 x 33.62 cm" },
-        { "[Display]\r\nPanelSize = 59.77X33.62 ; 27 inch\r\n", 59.77f, 33.62f, "panel size 59.77 x 33.62 cm" },
-        { "[Display]\nPanelSize=120\tx\t68 # big TV\n", 120.0f, 68.0f, "panel size 120.00 x 68.00 cm" },
-        { "[Display]\nPanelSize=1x100000\n", 1.0f, 100000.0f, "panel size 1.00 x 100000.00 cm" },
-        { "[Display]\nPanelSize=default\n", 10000.0f, 10000.0f, "panel size default" },
-        { "[Display]\nPanelSize=\n", 10000.0f, 10000.0f, "panel size default" },
-        { "[Display]\nPanelSize=Default ; same as no value\n", 10000.0f, 10000.0f, "panel size default" },
-        { "[Display]\n", 10000.0f, 10000.0f, "panel size default" },
-        { "[Display]\nPanelSize=59.77\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=120,68\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=59,77 x 33,62\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=60 ; 34\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=60;34\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=0 x 33\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=-60 x 34\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=60 x 100000.1\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=nan x 34\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=inf x 34\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=60 x 34 cm\n", 10000.0f, 10000.0f, "not understood" },
-        { "[Display]\nPanelSize=abc\n", 10000.0f, 10000.0f, "not understood" },
-    };
-    for (int k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++) {
-        Sdk *s = sdk_prepare(cases[k].ini);
+    // 0.2 drafts had a [Display] PanelSize setting for this slot; the game showed no effect, so it was dropped
+    // and an old settings file must not change the answer.
+    const char *inis[] = { "", "[Display]\nPanelSize=120 x 67.5\n" };
+    for (int k = 0; k < 2; k++) {
+        Sdk *s = sdk_prepare(inis[k]);
         sdk_load(s);
         Obj *dev = sdk_device(s);
         float v[2] = { 0, 0 };
-        SLOT(dev, DEV_GET_FLOAT2_18, PFN_GetFloat2)(dev, v);
-        CHECK_MSG(fabs(v[0] - cases[k].w) < 1e-3 && fabs(v[1] - cases[k].h) < 1e-3,
-                  "settings \"%s\" -> %.2f x %.2f, want %.2f x %.2f", cases[k].ini, v[0], v[1], cases[k].w, cases[k].h);
+        CHECK_EQ_PTR(SLOT(dev, DEV_GET_FLOAT2_18, PFN_GetFloat2)(dev, v), v);
+        CHECK_MSG(v[0] == 59.77f && v[1] == 33.62f, "settings \"%s\" -> %.2f x %.2f", inis[k], v[0], v[1]);
         device_release(dev);
         sdk_unload(s);
-        char *t = tu_read_file(s->log, NULL);
-        REQUIRE(t != NULL);
-        CHECK_MSG(strstr(t, cases[k].log) != NULL, "settings \"%s\": the log does not say \"%s\"",
-                  cases[k].ini, cases[k].log);
-        free(t);
     }
 }
 

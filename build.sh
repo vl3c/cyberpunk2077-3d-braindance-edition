@@ -36,7 +36,8 @@ mkdir -p "$R4E"
 "$WINDRES" -I src -DBD3D_AUTOSETUP src/version.rc -O coff -o build/version-autosetup.o
 "$CC" -O2 -Wall -Wextra -Wno-unused-parameter -Werror -std=gnu11 -shared -static-libgcc -s \
     -Wl,--no-insert-timestamp -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va \
-    -o build/Braindance3D.dll src/braindance3d_autosetup.c build/version-autosetup.o -ladvapi32 -lversion
+    -o build/Braindance3D.dll src/braindance3d_autosetup.c src/braindance3d_menus.c build/version-autosetup.o \
+    -ladvapi32 -lversion -ldxguid -luuid
 cp build/Braindance3D.dll "$R4E/Braindance3D.dll"
 echo "built build/Odyssey3DSDK.dll ($VERSION) sha256 $(sha256sum build/Odyssey3DSDK.dll | cut -d' ' -f1)"
 echo "built build/Braindance3D.dll ($VERSION) sha256 $(sha256sum build/Braindance3D.dll | cut -d' ' -f1)"
