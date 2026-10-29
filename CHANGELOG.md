@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (in progress)
+## 0.2.0 (2026-10-29)
 
 - Menus, the map and loading screens are readable in 3D: the flat picture is squeezed into each half of the
   side-by-side image, so both eyes see the same screen, only while 3D Mode is on (needs RED4ext; `[Menus] Squeeze`

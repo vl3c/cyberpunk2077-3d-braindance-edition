@@ -2,7 +2,7 @@
 <fomod>
   <Name>3D Braindance Edition</Name>
   <Author>vl3c</Author>
-  <Version>0.1.0</Version>
+  <Version>0.2.0</Version>
   <Website>https://github.com/vl3c/cyberpunk2077-3d-braindance-edition</Website>
   <Description>Stereoscopic 3D for Cyberpunk 2077 2.5, side by side (half-SBS), using the game's own 3D renderer. Requires RED4ext, which sets the mod up automatically every time the game starts. Nothing else to run.</Description>
 </fomod>
