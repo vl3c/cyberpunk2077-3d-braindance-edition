@@ -80,25 +80,30 @@ static void alog(const char *fmt, ...)
     fflush(g_log);
 }
 
+// Opens a log for appending; starts it over once it passes 256 KB (a few lines per game start). NULL if it can't.
+static FILE *open_append_log(const wchar_t *path)
+{
+    FILE *f = _wfopen(path, L"a");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    if (ftell(f) > 256 * 1024) f = _wfreopen(path, L"w", f);
+    return f;
+}
+
 // Opens <dir>\Braindance3D-autosetup.log for appending, or %LOCALAPPDATA%\Braindance3D\ if dir is read-only.
 static void open_log(const wchar_t *dir)
 {
     wchar_t path[MAX_PATH];
     int n = _snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-autosetup.log", dir);
-    if (n > 0 && n < MAX_PATH) g_log = _wfopen(path, L"a");
-    if (g_log) {
-        // A few lines per game start; start over once it passes 256 KB.
-        fseek(g_log, 0, SEEK_END);
-        if (ftell(g_log) > 256 * 1024) g_log = _wfreopen(path, L"w", g_log);
-        return;
-    }
+    if (n > 0 && n < MAX_PATH) g_log = open_append_log(path);
+    if (g_log) return;
     wchar_t local[MAX_PATH];
     DWORD m = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
     if (m == 0 || m >= MAX_PATH - 48) return;
     wcscat(local, L"\\Braindance3D");
     CreateDirectoryW(local, NULL);
     wcscat(local, L"\\Braindance3D-autosetup.log");
-    g_log = _wfopen(local, L"a");
+    g_log = open_append_log(local);
 }
 
 // ---------------------------------------------------------------- helpers
@@ -234,99 +239,117 @@ typedef enum {
     AUTO_ERROR = 5,       // registry error: nothing (or not everything) changed
 } AutoResult;
 
-// Points HKCU\<subkey>\InstallPath at target if that is safe. samsungDir is Samsung's default folder.
-// Kept free of game state so the tests can run it against a scratch registry key.
-static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, const wchar_t *samsungDir)
-{
-    char b1[MAX_PATH * 3], b2[MAX_PATH * 3];
-    if (!sdk_info(target).exists) {
-        alog("The SDK stand-in is missing under %s. Nothing changed.", utf8(target, b1, sizeof(b1)));
-        return AUTO_NO_SDK;
-    }
+#define AUTO_GO_ON (-1) // from the steps below: no result yet, carry on
 
+// What the registry key holds before anything changes.
+typedef struct {
+    wchar_t current[MAX_PATH]; // InstallPath
+    wchar_t own[MAX_PATH];     // the folder this mod registered last time
+    wchar_t previous[MAX_PATH]; // the InstallPath this mod replaced, for the uninstaller
+    wchar_t marker[MAX_PATH];  // which version of this mod registered it
+} RegState;
+
+// Reads HKCU\<subkey> into st (all empty when the key isn't there). AUTO_GO_ON, or the result to stop with.
+static int read_reg_state(const wchar_t *subkey, RegState *st)
+{
+    char b1[MAX_PATH * 3];
+    memset(st, 0, sizeof(*st));
     HKEY key = NULL;
-    wchar_t current[MAX_PATH] = L"", own[MAX_PATH] = L"", previous[MAX_PATH] = L"", marker[MAX_PATH] = L"";
     LONG openRc = RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &key);
-    if (openRc != ERROR_SUCCESS && openRc != ERROR_FILE_NOT_FOUND) {
+    if (openRc == ERROR_FILE_NOT_FOUND) return AUTO_GO_ON;
+    if (openRc != ERROR_SUCCESS) {
         alog("Couldn't read HKCU\\%s (error %ld). Nothing changed.", utf8(subkey, b1, sizeof(b1)), openRc);
         return AUTO_ERROR;
     }
-    if (openRc == ERROR_SUCCESS) {
-        int rcCurrent = reg_get(key, VALUE_INSTALL_PATH, current);
-        reg_get(key, VALUE_OWN_PATH, own);
-        int rcPrevious = reg_get(key, VALUE_PREVIOUS, previous);
-        reg_get(key, VALUE_MARKER, marker);
-        RegCloseKey(key);
-        if (rcCurrent < 0) {
-            alog("InstallPath is set but isn't a readable path (not a string, or too long). It may belong to "
-                 "Samsung's Odyssey 3D Hub, so nothing changed. To use this mod anyway, run "
-                 "Install-Braindance3D.bat -Force.");
-            return AUTO_FOREIGN_SDK;
-        }
-        if (rcPrevious < 0) {
-            alog("The saved previous InstallPath can't be read, so it couldn't be kept. Nothing changed.");
-            return AUTO_ERROR;
-        }
+    int rcCurrent = reg_get(key, VALUE_INSTALL_PATH, st->current);
+    reg_get(key, VALUE_OWN_PATH, st->own);
+    int rcPrevious = reg_get(key, VALUE_PREVIOUS, st->previous);
+    reg_get(key, VALUE_MARKER, st->marker);
+    RegCloseKey(key);
+    if (rcCurrent < 0) {
+        alog("InstallPath is set but isn't a readable path (not a string, or too long). It may belong to "
+             "Samsung's Odyssey 3D Hub, so nothing changed. To use this mod anyway, run "
+             "Install-Braindance3D.bat -Force.");
+        return AUTO_FOREIGN_SDK;
     }
-    {
-        char b3[MAX_PATH * 3], b4[MAX_PATH * 3];
-        alog("Registry before: InstallPath='%s' ownPath='%s' previous='%s' installedBy='%s'", utf8(current, b1, sizeof(b1)),
-             utf8(own, b2, sizeof(b2)), utf8(previous, b3, sizeof(b3)), utf8(marker, b4, sizeof(b4)));
+    if (rcPrevious < 0) {
+        alog("The saved previous InstallPath can't be read, so it couldn't be kept. Nothing changed.");
+        return AUTO_ERROR;
     }
+    return AUTO_GO_ON;
+}
 
-    if (current[0] && same_path(current, target)) {
-        alog("InstallPath already points at %s. Nothing to do.", utf8(target, b1, sizeof(b1)));
-        return AUTO_ALREADY;
-    }
+static void log_reg_state(const RegState *st)
+{
+    char b1[MAX_PATH * 3], b2[MAX_PATH * 3], b3[MAX_PATH * 3], b4[MAX_PATH * 3];
+    alog("Registry before: InstallPath='%s' ownPath='%s' previous='%s' installedBy='%s'", utf8(st->current, b1, sizeof(b1)),
+         utf8(st->own, b2, sizeof(b2)), utf8(st->previous, b3, sizeof(b3)), utf8(st->marker, b4, sizeof(b4)));
+}
 
-    const wchar_t *keep = NO_PREVIOUS;
-    if (current[0]) {
-        SdkInfo other = sdk_info(current);
-        if ((own[0] && same_path(current, own)) || other.ours) {
-            alog("Replacing another copy of this mod at %s.", utf8(current, b1, sizeof(b1)));
-            if (previous[0]) keep = previous;
-        } else if (!other.exists && other.gone) {
-            SdkInfo samsung = samsungDir && samsungDir[0] ? sdk_info(samsungDir) : (SdkInfo){0};
-            if (samsung.exists && !samsung.ours) {
-                alog("The current InstallPath %s is gone, but Samsung's Odyssey 3D Hub is installed in %s. Not "
-                     "changing anything. To use this mod anyway, run Install-Braindance3D.bat -Force.",
-                     utf8(current, b1, sizeof(b1)), utf8(samsungDir, b2, sizeof(b2)));
-                return AUTO_SAMSUNG_DEFAULT;
-            }
-            alog("The current InstallPath %s has no SDK in it, so nothing uses it. Saving it for the uninstaller.",
-                 utf8(current, b1, sizeof(b1)));
-            keep = current;
-        } else if (!other.exists) {
-            alog("The current InstallPath %s can't be checked right now (offline or network drive, or no access). "
-                 "It may be Samsung's Odyssey 3D Hub, so nothing changed.", utf8(current, b1, sizeof(b1)));
-            return AUTO_FOREIGN_SDK;
-        } else {
-            alog("Another Odyssey 3D SDK is registered at %s (product '%s'), probably Samsung's Odyssey 3D Hub. "
-                 "Not changing it. To use this mod anyway, run Install-Braindance3D.bat -Force.",
-                 utf8(current, b1, sizeof(b1)), utf8(other.product, b2, sizeof(b2)));
-            return AUTO_FOREIGN_SDK;
-        }
-    } else if (samsungDir && samsungDir[0]) {
-        SdkInfo samsung = sdk_info(samsungDir);
-        if (samsung.exists && !samsung.ours) {
-            alog("Samsung's Odyssey 3D Hub is installed in %s. Not changing anything. To use this mod anyway, run "
-                 "Install-Braindance3D.bat -Force.", utf8(samsungDir, b1, sizeof(b1)));
-            return AUTO_SAMSUNG_DEFAULT;
-        }
-    }
+// Whether Samsung's Odyssey 3D Hub (an SDK that isn't this mod's) is installed in samsungDir.
+static int samsung_hub_in(const wchar_t *samsungDir)
+{
+    if (!samsungDir || !samsungDir[0]) return 0;
+    SdkInfo samsung = sdk_info(samsungDir);
+    return samsung.exists && !samsung.ours;
+}
 
+// Decides what to do about the InstallPath already set (st->current), and what to save as the previous one for the
+// uninstaller (*keep). AUTO_GO_ON to register, or the result to stop with.
+static int decide_over_current(const RegState *st, const wchar_t *samsungDir, const wchar_t **keep)
+{
+    char b1[MAX_PATH * 3], b2[MAX_PATH * 3];
+    const wchar_t *current = st->current;
+    *keep = NO_PREVIOUS;
+    if (!current[0]) {
+        if (!samsung_hub_in(samsungDir)) return AUTO_GO_ON;
+        alog("Samsung's Odyssey 3D Hub is installed in %s. Not changing anything. To use this mod anyway, run "
+             "Install-Braindance3D.bat -Force.", utf8(samsungDir, b1, sizeof(b1)));
+        return AUTO_SAMSUNG_DEFAULT;
+    }
+    SdkInfo other = sdk_info(current);
+    if ((st->own[0] && same_path(current, st->own)) || other.ours) {
+        alog("Replacing another copy of this mod at %s.", utf8(current, b1, sizeof(b1)));
+        if (st->previous[0]) *keep = st->previous;
+        return AUTO_GO_ON;
+    }
+    if (other.exists) {
+        alog("Another Odyssey 3D SDK is registered at %s (product '%s'), probably Samsung's Odyssey 3D Hub. "
+             "Not changing it. To use this mod anyway, run Install-Braindance3D.bat -Force.",
+             utf8(current, b1, sizeof(b1)), utf8(other.product, b2, sizeof(b2)));
+        return AUTO_FOREIGN_SDK;
+    }
+    if (!other.gone) {
+        alog("The current InstallPath %s can't be checked right now (offline or network drive, or no access). "
+             "It may be Samsung's Odyssey 3D Hub, so nothing changed.", utf8(current, b1, sizeof(b1)));
+        return AUTO_FOREIGN_SDK;
+    }
+    if (samsung_hub_in(samsungDir)) {
+        alog("The current InstallPath %s is gone, but Samsung's Odyssey 3D Hub is installed in %s. Not "
+             "changing anything. To use this mod anyway, run Install-Braindance3D.bat -Force.",
+             utf8(current, b1, sizeof(b1)), utf8(samsungDir, b2, sizeof(b2)));
+        return AUTO_SAMSUNG_DEFAULT;
+    }
+    alog("The current InstallPath %s has no SDK in it, so nothing uses it. Saving it for the uninstaller.",
+         utf8(current, b1, sizeof(b1)));
+    *keep = current;
+    return AUTO_GO_ON;
+}
+
+// Writes the registration: the bookkeeping first, so an interrupted run can still be undone by the uninstaller,
+// then InstallPath = target.
+static AutoResult write_registration(const wchar_t *subkey, const wchar_t *target, const wchar_t *keep)
+{
+    char b1[MAX_PATH * 3], b2[MAX_PATH * 3];
     wchar_t normTarget[MAX_PATH];
     if (!normalize(target, normTarget)) return AUTO_ERROR;
+    HKEY key = NULL;
     LONG rc = RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, NULL, 0, KEY_READ | KEY_WRITE, NULL, &key, NULL);
     if (rc != ERROR_SUCCESS) {
         alog("Couldn't open or create HKCU\\%s (error %ld). Nothing changed.", utf8(subkey, b1, sizeof(b1)), rc);
         return AUTO_ERROR;
     }
-    // Bookkeeping first, so an interrupted run can still be undone by the uninstaller.
-    wchar_t keepCopy[MAX_PATH];
-    wcsncpy(keepCopy, keep, MAX_PATH - 1);
-    keepCopy[MAX_PATH - 1] = 0;
-    rc = reg_set(key, VALUE_PREVIOUS, keepCopy);
+    rc = reg_set(key, VALUE_PREVIOUS, keep);
     if (rc == ERROR_SUCCESS) rc = reg_set(key, VALUE_OWN_PATH, normTarget);
     if (rc == ERROR_SUCCESS) rc = reg_set(key, VALUE_MARKER, BD3D_VERSION_WSTR L" (RED4ext auto-setup)");
     if (rc == ERROR_SUCCESS) rc = reg_set(key, VALUE_INSTALL_PATH, normTarget);
@@ -335,9 +358,31 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
         alog("Writing the registry failed (error %ld).", rc);
         return AUTO_ERROR;
     }
-    alog("Registered: InstallPath='%s' (previous saved: '%s').", utf8(normTarget, b1, sizeof(b1)),
-         utf8(keepCopy, b2, sizeof(b2)));
+    alog("Registered: InstallPath='%s' (previous saved: '%s').", utf8(normTarget, b1, sizeof(b1)), utf8(keep, b2, sizeof(b2)));
     return AUTO_INSTALLED;
+}
+
+// Points HKCU\<subkey>\InstallPath at target if that is safe. samsungDir is Samsung's default folder.
+// Kept free of game state so the tests can run it against a scratch registry key.
+static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, const wchar_t *samsungDir)
+{
+    char b1[MAX_PATH * 3];
+    if (!sdk_info(target).exists) {
+        alog("The SDK stand-in is missing under %s. Nothing changed.", utf8(target, b1, sizeof(b1)));
+        return AUTO_NO_SDK;
+    }
+    RegState st;
+    int r = read_reg_state(subkey, &st);
+    if (r != AUTO_GO_ON) return (AutoResult)r;
+    log_reg_state(&st);
+    if (st.current[0] && same_path(st.current, target)) {
+        alog("InstallPath already points at %s. Nothing to do.", utf8(target, b1, sizeof(b1)));
+        return AUTO_ALREADY;
+    }
+    const wchar_t *keep;
+    r = decide_over_current(&st, samsungDir, &keep);
+    if (r != AUTO_GO_ON) return (AutoResult)r;
+    return write_registration(subkey, target, keep);
 }
 
 // <exe folder>\Braindance3D, where the mod puts the stand-in (<game>\bin\x64\Braindance3D).

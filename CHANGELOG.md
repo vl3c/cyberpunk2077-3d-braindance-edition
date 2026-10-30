@@ -12,6 +12,10 @@
 - The menu squeeze now follows the game's own 3D Mode switch. Before, it guessed from display re-checks, and a
   resolution change could flip it, so menus were squeezed in 2D and not in 3D.
 - The RED4ext plugin's log is now `Braindance3D-hooks.log` (was `Braindance3D-menus.log`).
+- Code split into small functions, each with its own tests (the menu squeeze is now also tested on a software
+  D3D12 device). Small changes on the way: the frame generation hooks also check that the game turns DLSS-G off for
+  stereo after it decides on DLSS-G (as in 2.5), and the auto-setup log in `%LOCALAPPDATA%\Braindance3D` (used when
+  the game folder is read-only) now starts over past 256 KB, like the one in the game folder.
 
 ## 0.2.0 (2026-10-29)
 

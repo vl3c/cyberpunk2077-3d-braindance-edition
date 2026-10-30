@@ -797,6 +797,288 @@ TEST(create_weaver_initialises_the_control_block)
     rc_DeleteThis(sp.rc);
 }
 
+// ===================================================================================== one function at a time
+
+// The log's text so far (freed after the test).
+static const char *wb_log_text(void)
+{
+    fflush(g_log);
+    char *t = tu_read_file(g_logPath, NULL);
+    REQUIRE(t != NULL);
+    tt_defer(wb_free, t);
+    return t;
+}
+
+TEST(install_dir_is_two_folders_above_the_dlls_folder)
+{
+    wchar_t out[MAX_PATH];
+    install_dir_of(L"C:\\Games\\CP\\Braindance3D\\GameLauncherData\\core\\Odyssey3DSDK.dll", out);
+    CHECK_EQ_WSTR(out, L"C:\\Games\\CP\\Braindance3D");
+    install_dir_of(L"C:\\core\\Odyssey3DSDK.dll", out); // not enough folders: the DLL's own
+    CHECK_EQ_WSTR(out, L"C:\\core");
+    install_dir_of(L"Odyssey3DSDK.dll", out);
+    CHECK_EQ_WSTR(out, L"Odyssey3DSDK.dll");
+}
+
+TEST(monitor_primary_values)
+{
+    struct { const wchar_t *v; int want; } cases[] = {
+        { L"primary", 1 }, { L"PRIMARY", 1 }, { L"primary ; the main one", 1 }, { L"primary#x", 1 },
+        { L"auto", 0 }, { L"", 0 }, { L"primaryx", 0 }, { L"prim", 0 },
+    };
+    for (int k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
+        CHECK_MSG(parse_monitor_primary(cases[k].v) == cases[k].want, "\"%ls\" -> %d, want %d", cases[k].v,
+                  parse_monitor_primary(cases[k].v), cases[k].want);
+}
+
+TEST(log_budget_follows_the_level)
+{
+    set_log_budget(2);
+    CHECK_EQ_INT((int)g_fullLogCalls, 120);
+    CHECK_NEAR(g_summaryInterval, 1.0, 1e-9);
+    set_log_budget(1);
+    CHECK_EQ_INT((int)g_fullLogCalls, 10);
+    CHECK_NEAR(g_summaryInterval, 60.0, 1e-9);
+    set_log_budget(0);
+    CHECK_EQ_INT((int)g_fullLogCalls, 10);
+}
+
+TEST(summary_is_logged_only_when_its_interval_has_passed)
+{
+    wb_begin();
+    wb_open_log();
+    SlotStats s = { 0 };
+    s.lastSummaryTime = now_seconds();
+    s.lastSummaryCalls = 5;
+    log_summary_if_due(&s, "device.Thing", 50);
+    CHECK(strstr(wb_log_text(), "device.Thing") == NULL);
+    CHECK_EQ_INT((int)s.lastSummaryCalls, 5);
+    s.lastSummaryTime = now_seconds() - 61.0;
+    log_summary_if_due(&s, "device.Thing", 50);
+    CHECK(strstr(wb_log_text(), "device.Thing: 50 calls total (+45 in last 61.0s)") != NULL);
+    CHECK_EQ_INT((int)s.lastSummaryCalls, 50);
+}
+
+// A resource that answers GetDesc (the C++ way: this in RCX, the return buffer in RDX) and nothing else.
+typedef struct { void **vtbl; D3D12_RESOURCE_DESC desc; } WbResource;
+static void *g_wbResVtbl[sizeof(ID3D12ResourceVtbl) / sizeof(void *)];
+
+static D3D12_RESOURCE_DESC *STDMETHODCALLTYPE wb_getdesc(WbResource *self, D3D12_RESOURCE_DESC *ret)
+{
+    *ret = self->desc;
+    return ret;
+}
+
+static ID3D12Resource *wb_resource(WbResource *r, UINT64 w, UINT h, DXGI_FORMAT format)
+{
+    g_wbResVtbl[offsetof(ID3D12ResourceVtbl, GetDesc) / sizeof(void *)] = (void *)wb_getdesc;
+    memset(r, 0, sizeof(*r));
+    r->vtbl = g_wbResVtbl;
+    r->desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    r->desc.Width = w;
+    r->desc.Height = h;
+    r->desc.DepthOrArraySize = 1;
+    r->desc.MipLevels = 1;
+    r->desc.Format = format;
+    r->desc.SampleDesc.Count = 1;
+    return (ID3D12Resource *)r;
+}
+
+TEST(describe_resource_logs_the_resources_shape)
+{
+    wb_begin();
+    wb_open_log();
+    WbResource r;
+    describe_resource("input", wb_resource(&r, 3840, 2160, DXGI_FORMAT_R10G10B10A2_UNORM));
+    describe_resource("output", NULL);
+    const char *t = wb_log_text();
+    CHECK(strstr(t, "input = ") != NULL);
+    CHECK(strstr(t, "dim=3 3840x2160 array=1 mips=1 format=24(R10G10B10A2_UNORM) samples=1 flags=0x0") != NULL);
+    CHECK(strstr(t, "output = NULL") != NULL);
+}
+
+TEST(texture_changed_follows_the_size)
+{
+    WbResource r;
+    ID3D12Resource *tex = wb_resource(&r, 1920, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
+    uint64_t w = 0;
+    unsigned h = 0;
+    CHECK_EQ_INT(texture_changed(tex, 0, &w, &h), 1);
+    CHECK_EQ_INT((int)w, 1920);
+    CHECK_EQ_INT((int)h, 1080);
+    CHECK_EQ_INT(texture_changed(tex, 0, &w, &h), 0);
+    CHECK_EQ_INT(texture_changed(tex, 1, &w, &h), 1); // logged in full anyway
+    r.desc.Height = 1200;
+    CHECK_EQ_INT(texture_changed(tex, 0, &w, &h), 1);
+    CHECK_EQ_INT((int)h, 1200);
+}
+
+TEST(weaver_textures_are_described_when_new_or_resized)
+{
+    wb_begin();
+    wb_open_log();
+    g_fullLogCalls = 1;
+    SharedPtr sp;
+    REQUIRE(make_shared_weaver(&sp));
+    Weaver *wv = sp.ptr;
+    WbResource r;
+    ID3D12Resource *tex = wb_resource(&r, 3840, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
+    wv_SetInputViewTexture(wv, tex, 28); // logged in full
+    wv_SetInputViewTexture(wv, tex, 28); // same size: quiet
+    r.desc.Width = 1920;
+    wv_SetInputViewTexture(wv, tex, 28); // resized
+    wv_SetOutputFrameBuffer(wv, tex);
+    const char *t = wb_log_text();
+    int described = 0;
+    for (const char *p = t; (p = strstr(p, "input = ")) != NULL; p++) described++;
+    CHECK_EQ_INT(described, 2);
+    CHECK(strstr(t, "1920x1080") != NULL);
+    CHECK(strstr(t, "output = ") != NULL);
+    CHECK_EQ_PTR(wv->input, tex);
+    CHECK_EQ_PTR(wv->output, tex);
+    rc_Destroy(sp.rc);
+    rc_DeleteThis(sp.rc);
+}
+
+TEST(make_shared_weaver_gives_one_use_and_one_weak)
+{
+    SharedPtr sp = { NULL, NULL };
+    CHECK_EQ_INT(make_shared_weaver(&sp), 1);
+    REQUIRE(sp.ptr && sp.rc);
+    CHECK_EQ_PTR(((Weaver *)sp.ptr)->vtbl, g_wvVtbl);
+    CHECK_EQ_PTR(sp.rc->vtbl, g_rcVtbl);
+    CHECK_EQ_PTR(sp.rc->obj, sp.ptr);
+    CHECK_EQ_INT(sp.rc->uses, 1);
+    CHECK_EQ_INT(sp.rc->weaks, 1);
+    rc_Destroy(sp.rc);
+    rc_DeleteThis(sp.rc);
+}
+
+TEST(log_window_names_the_window_and_its_rectangle)
+{
+    wb_begin();
+    wb_open_log();
+    HWND hwnd = tu_window(L"log window test", 10, 20, 300, 200);
+    log_window("game window found", hwnd);
+    CHECK(strstr(wb_log_text(), "class='bd3d-test-window' rect 10,20-310,220 (300x200)") != NULL);
+}
+
+TEST(monitor_for_3d_is_the_game_windows_or_the_primary)
+{
+    wb_begin();
+    POINT origin = { 0, 0 };
+    HMONITOR primary = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+    CHECK_EQ_PTR(monitor_for_3d(now_seconds()), primary); // no window yet
+    HWND hwnd = tu_window(L"monitor test", 10, 10, 300, 200);
+    g_gameWnd = hwnd;
+    CHECK_EQ_PTR(monitor_for_3d(now_seconds()), MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST));
+    g_monitorPrimaryOnly = 1;
+    CHECK_EQ_PTR(monitor_for_3d(now_seconds()), primary);
+    g_gameWnd = NULL;
+}
+
+TEST(monitor_is_logged_only_when_it_changes)
+{
+    wb_begin();
+    wb_open_log();
+    MONITORINFOEXW mi;
+    memset(&mi, 0, sizeof(mi));
+    wcscpy(mi.szDevice, L"\\\\.\\DISPLAY9");
+    SetRect(&mi.rcMonitor, 0, 0, 3840, 2160);
+    HMONITOR mon = (HMONITOR)(uintptr_t)0x1234;
+    log_monitor_if_changed(mon, &mi);
+    log_monitor_if_changed(mon, &mi);
+    SetRect(&mi.rcMonitor, 0, 0, 1920, 1080);
+    log_monitor_if_changed(mon, &mi);
+    const char *t = wb_log_text();
+    CHECK(strstr(t, "3D monitor = \\\\.\\DISPLAY9 (primary, no game window) rect l=0 t=0 r=3840 b=2160 (3840x2160)") != NULL);
+    CHECK(strstr(t, "(1920x1080)") != NULL);
+    CHECK_EQ_INT(tu_count_lines(t), 2);
+    CHECK_EQ_PTR(g_lastMonitor, mon);
+}
+
+TEST(device_calls_counts_each_slot)
+{
+    wb_begin();
+    float out[3];
+    dev_GetEyePosition(NULL, out, 0);
+    dev_GetEyePosition(NULL, out, 1);
+    dev_IsAvailable(NULL);
+    CHECK_EQ_INT((int)braindance3d_device_calls(1), 2);
+    CHECK_EQ_INT((int)braindance3d_device_calls(10), 1);
+    CHECK_EQ_INT((int)braindance3d_device_calls(2), 0);
+    CHECK_EQ_INT((int)braindance3d_device_calls(-1), -1);
+    CHECK_EQ_INT((int)braindance3d_device_calls(NSLOTS), -1);
+}
+
+TEST(destroy_factory_only_logs)
+{
+    wb_begin();
+    wb_open_log();
+    destroy_odyssey3d_factory_instance(&g_factory);
+    CHECK(strstr(wb_log_text(), "destroy_odyssey3d_factory_instance(") != NULL);
+    CHECK_EQ_PTR(g_factory.vtbl, g_facVtbl);
+}
+
+TEST(log_start_says_what_loaded_the_stand_in_and_its_settings)
+{
+    wb_begin();
+    wchar_t *dir = wb_open_log();
+    wcscpy(g_installDir, dir);
+    g_logLevel = 2;
+    g_monitorPrimaryOnly = 1;
+    g_hostAllowed = 0;
+    log_start();
+    const char *t = wb_log_text();
+    CHECK(strstr(t, "==== 3D Braindance Edition, Odyssey3DSDK stand-in v" BD3D_VERSION_STR " loaded into ") != NULL);
+    CHECK(strstr(t, "test_whitebox.exe") != NULL);
+    CHECK(strstr(t, ", log level 2 (") != NULL);
+    CHECK(strstr(t, "settings: monitor primary; host NOT Cyberpunk2077.exe") != NULL);
+}
+
+// After the attach test: the test's own module and host check again.
+static void wb_after_attach(void *module)
+{
+    g_module = module;
+    g_hostAllowed = 0;
+}
+
+TEST(process_attach_and_detach_set_up_and_close_the_log)
+{
+    wb_begin();
+    wb_close_log(NULL);
+    wchar_t *tmp = tu_tempdir(L"attach");
+    wchar_t root[TU_PATH], log[TU_PATH], ini[TU_PATH];
+    tu_join(root, TU_PATH, tmp, L"Braindance3D");
+    HMODULE h = wb_load_copy(root);
+    tt_defer(wb_free_library, h);
+    tu_join(ini, TU_PATH, root, SETTINGS_FILE);
+    REQUIRE(tu_write_text(ini, "[Log]\nLevel=1\n"));
+    tu_setenv(L"BRAINDANCE3D_ANY_EXE", L"1");
+    tt_defer(wb_after_attach, g_module);
+    DeleteCriticalSection(&g_logLock); // on_process_attach makes both locks
+    DeleteCriticalSection(&g_monLock);
+    on_process_attach(h); // as if the game loaded this copy
+    CHECK_EQ_WSTR(g_installDir, root);
+    CHECK_EQ_INT(g_hostAllowed, 1);
+    CHECK_EQ_PTR(g_devVtbl[1], (void *)dev_GetEyePosition);
+    REQUIRE(g_log != NULL);
+    tu_join(log, TU_PATH, root, L"braindance3d.log");
+    CHECK_EQ_WSTR(g_logPath, log);
+    float out[3];
+    dev_GetEyePosition(NULL, out, 0);
+    on_process_detach(0); // deletes both locks
+    CHECK(g_log == NULL);
+    InitializeCriticalSection(&g_logLock);
+    InitializeCriticalSection(&g_monLock);
+    char *t = tu_read_file(log, NULL);
+    REQUIRE(t != NULL);
+    CHECK(strstr(t, "==== 3D Braindance Edition, Odyssey3DSDK stand-in") != NULL);
+    CHECK(strstr(t, "==== unloading. Call totals:") != NULL);
+    CHECK(strstr(t, "device[1] GetEyePosition: 1 calls") != NULL);
+    free(t);
+}
+
 int main(int argc, char **argv)
 {
     tt_set_args(argc, argv);

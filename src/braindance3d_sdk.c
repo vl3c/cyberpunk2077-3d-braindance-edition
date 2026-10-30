@@ -97,17 +97,24 @@ static int strip_last(wchar_t *path)
     return 1;
 }
 
-// Finds the install folder: <InstallPath>\GameLauncherData\core\Odyssey3DSDK.dll -> <InstallPath>.
+// The install folder for the DLL at dllPath (shorter than MAX_PATH), two levels above the DLL's folder:
+// <InstallPath>\GameLauncherData\core\Odyssey3DSDK.dll -> <InstallPath>. The DLL's own folder when there are none.
+static void install_dir_of(const wchar_t *dllPath, wchar_t *out)
+{
+    wchar_t path[MAX_PATH];
+    wcscpy(path, dllPath);
+    strip_last(path); // ...\GameLauncherData\core
+    wcscpy(out, path);
+    if (strip_last(path) && strip_last(path)) wcscpy(out, path);
+}
+
+// Finds the install folder from this DLL's path ("." if it can't be read).
 static void find_install_dir(void)
 {
     wchar_t path[MAX_PATH];
     DWORD n = GetModuleFileNameW(g_module, path, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) { wcscpy(g_installDir, L"."); return; }
-    strip_last(path); // ...\GameLauncherData\core
-    wchar_t dllDir[MAX_PATH];
-    wcscpy(dllDir, path);
-    if (strip_last(path) && strip_last(path)) wcscpy(g_installDir, path);
-    else wcscpy(g_installDir, dllDir);
+    install_dir_of(path, g_installDir);
 }
 
 // Parses a log level. A value that doesn't start with a digit means the default, 1.
@@ -119,6 +126,19 @@ static int parse_level(const wchar_t *v)
     return n <= 0 ? 0 : n >= 2 ? 2 : (int)n;
 }
 
+// [Display] Monitor: 1 for primary (alone or before a space or a comment), 0 for auto (anything else).
+static int parse_monitor_primary(const wchar_t *v)
+{
+    return _wcsnicmp(v, L"primary", 7) == 0 && (!v[7] || wcschr(L" \t;#", v[7]));
+}
+
+// The per-slot logging budget for a log level: more calls in full and a summary every second at level 2.
+static void set_log_budget(int level)
+{
+    if (level >= 2) { g_fullLogCalls = 120; g_summaryInterval = 1.0; }
+    else { g_fullLogCalls = 10; g_summaryInterval = 60.0; }
+}
+
 static void read_settings(void)
 {
     wchar_t ini[MAX_PATH], v[64];
@@ -127,9 +147,8 @@ static void read_settings(void)
     GetPrivateProfileStringW(L"Log", L"Level", L"1", v, 64, ini);
     g_logLevel = parse_level(v);
     GetPrivateProfileStringW(L"Display", L"Monitor", L"auto", v, 64, ini);
-    g_monitorPrimaryOnly = _wcsnicmp(v, L"primary", 7) == 0 && (!v[7] || wcschr(L" \t;#", v[7]));
-    if (g_logLevel >= 2) { g_fullLogCalls = 120; g_summaryInterval = 1.0; }
-    else { g_fullLogCalls = 10; g_summaryInterval = 60.0; }
+    g_monitorPrimaryOnly = parse_monitor_primary(v);
+    set_log_budget(g_logLevel);
 }
 
 // Opens <dir>\braindance3d.log, keeping the previous session as braindance3d.old.log.
@@ -171,7 +190,22 @@ static void log_open(void)
 // Full log for the first g_fullLogCalls calls of a slot, then one call-count summary per interval.
 typedef struct { volatile LONG64 calls; LONG64 lastSummaryCalls; double lastSummaryTime; } SlotStats;
 
-// Returns 1 when this call should be logged in full; logs a periodic summary otherwise.
+// Logs a slot's call count when a summary interval has passed since the last one (n: its calls so far).
+static void log_summary_if_due(SlotStats *s, const char *name, LONG64 n)
+{
+    double t = now_seconds();
+    if (t - s->lastSummaryTime < g_summaryInterval) return;
+    // Checked again under the lock: only one of several threads logs it.
+    EnterCriticalSection(&g_logLock);
+    int due = t - s->lastSummaryTime >= g_summaryInterval;
+    LONG64 since = n - s->lastSummaryCalls;
+    double span = t - s->lastSummaryTime;
+    if (due) { s->lastSummaryCalls = n; s->lastSummaryTime = t; }
+    LeaveCriticalSection(&g_logLock);
+    if (due) slog("%s: %lld calls total (+%lld in last %.1fs)", name, (long long)n, (long long)since, span);
+}
+
+// Counts a call. Returns 1 when it should be logged in full; logs a periodic summary otherwise.
 static int should_log(SlotStats *s, const char *name)
 {
     LONG64 n = InterlockedIncrement64(&s->calls);
@@ -181,16 +215,7 @@ static int should_log(SlotStats *s, const char *name)
             slog("%s: reached %lld calls, now logging a count every %.0fs", name, (long long)n, g_summaryInterval);
         return 1;
     }
-    double t = now_seconds();
-    if (t - s->lastSummaryTime >= g_summaryInterval) {
-        EnterCriticalSection(&g_logLock);
-        int due = t - s->lastSummaryTime >= g_summaryInterval;
-        LONG64 since = n - s->lastSummaryCalls;
-        double span = t - s->lastSummaryTime;
-        if (due) { s->lastSummaryCalls = n; s->lastSummaryTime = t; }
-        LeaveCriticalSection(&g_logLock);
-        if (due) slog("%s: %lld calls total (+%lld in last %.1fs)", name, (long long)n, (long long)since, span);
-    }
+    log_summary_if_due(s, name, n);
     return 0;
 }
 
@@ -304,7 +329,8 @@ static void update_game_window(double t)
     if (g_gameWnd) log_window("game window found", g_gameWnd);
 }
 
-static void refresh_monitor(double t)
+// The monitor 3D Mode uses: the game window's, or the primary one ([Display] Monitor = primary, or no window yet).
+static HMONITOR monitor_for_3d(double t)
 {
     HMONITOR mon = NULL;
     if (!g_monitorPrimaryOnly) {
@@ -315,21 +341,32 @@ static void refresh_monitor(double t)
         POINT origin = {0, 0};
         mon = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
     }
+    return mon;
+}
+
+// Logs the 3D monitor when it or its rectangle changed since the last time.
+static void log_monitor_if_changed(HMONITOR mon, const MONITORINFOEXW *mi)
+{
+    if (mon == g_lastMonitor && EqualRect(&g_lastLoggedRect, &mi->rcMonitor)) return;
+    char dev[100];
+    const RECT *r = &mi->rcMonitor;
+    slog("3D monitor = %s (%s) rect l=%ld t=%ld r=%ld b=%ld (%ldx%ld)", utf8(mi->szDevice, dev, sizeof(dev)),
+         g_monitorPrimaryOnly ? "primary, from the settings file"
+         : g_gameWnd          ? "the game window's monitor"
+                              : "primary, no game window",
+         r->left, r->top, r->right, r->bottom, r->right - r->left, r->bottom - r->top);
+    g_lastMonitor = mon;
+    g_lastLoggedRect = *r;
+}
+
+static void refresh_monitor(double t)
+{
+    HMONITOR mon = monitor_for_3d(t);
     MONITORINFOEXW mi;
     mi.cbSize = sizeof(mi);
     if (mon && GetMonitorInfoW(mon, (MONITORINFO *)&mi)) {
         g_monitorRect = mi.rcMonitor;
-        if (mon != g_lastMonitor || !EqualRect(&g_lastLoggedRect, &mi.rcMonitor)) {
-            char dev[100];
-            slog("3D monitor = %s (%s) rect l=%ld t=%ld r=%ld b=%ld (%ldx%ld)", utf8(mi.szDevice, dev, sizeof(dev)),
-                 g_monitorPrimaryOnly ? "primary, from the settings file"
-                 : g_gameWnd          ? "the game window's monitor"
-                                      : "primary, no game window",
-                 mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom,
-                 mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top);
-            g_lastMonitor = mon;
-            g_lastLoggedRect = mi.rcMonitor;
-        }
+        log_monitor_if_changed(mon, &mi);
     } else if (g_monitorTime < 0) {
         slog("GetMonitorInfo failed (error %lu), using %ldx%ld at 0,0", GetLastError(),
              g_monitorRect.right, g_monitorRect.bottom);
@@ -430,7 +467,8 @@ static Factory g_factory = { g_facVtbl };
 // ---- device (known slots)
 
 // vtbl+0x08: eye position in millimetres. eye 0 = left, 1 = right. Returns out.
-// The game polls this ~110 times per second; the in-game Depth setting scales the result.
+// The game polls this ~110 times per second (both eyes on every stereo frame). The values don't enter the eye
+// separation (research/stereo-strength); the menu squeeze counts the calls to tell stereo frames from flat ones.
 static float *dev_GetEyePosition(Device *self, float *out, int eye)
 {
     // Nominal viewer: 64 mm IPD, centred, 600 mm in front of the screen.
@@ -453,10 +491,10 @@ static float *dev_GetResolution(Device *self, float *out)
     return out;
 }
 
-// vtbl+0x18: float2, the 3D panel's physical size in cm as the CyberpunkVR port reads it (the game keeps x * 0.01,
-// i.e. metres). Answers a real 27" 16:9 Odyssey 3D, the hardware the game's 3D Mode was tuned on. The game reads
-// it every stereo frame, but world depth showed no visible change between 10000 and 120 x 67.5, so it isn't a
-// setting.
+// vtbl+0x18: float2, the 3D panel's physical size in cm as the CyberpunkVR port reads it. Answers a real 27" 16:9
+// Odyssey 3D, the hardware the game's 3D Mode was tuned on. The game reads it every stereo frame, but only keeps
+// x * 0.01 (metres) once, when it sets the device up, as one input to a parallax limit; world depth showed no visible
+// change between 10000 and 120 x 67.5, so it isn't a setting.
 #define PANEL_WIDTH_CM 59.77f
 #define PANEL_HEIGHT_CM 33.62f
 static float *dev_GetFloat2_18(Device *self, float *out)
@@ -517,6 +555,18 @@ static void wv_Weave(Weaver *self, unsigned w, unsigned h, int x, int y)
              (void *)self->input, (void *)self->output, (void *)self->cmdList);
 }
 
+// Whether a texture set on the weaver should be described in the log: when the call is logged in full (full), or
+// its size changed from *lastW x *lastH (which then follow it).
+static int texture_changed(ID3D12Resource *tex, int full, uint64_t *lastW, unsigned *lastH)
+{
+    D3D12_RESOURCE_DESC d;
+    tex->lpVtbl->GetDesc(tex, &d);
+    if (!full && d.Width == *lastW && d.Height == *lastH) return 0;
+    *lastW = d.Width;
+    *lastH = d.Height;
+    return 1;
+}
+
 // vtbl+0x20: the stereo input texture (both eyes) and its DXGI format.
 static void wv_SetInputViewTexture(Weaver *self, ID3D12Resource *tex, int format)
 {
@@ -524,13 +574,9 @@ static void wv_SetInputViewTexture(Weaver *self, ID3D12Resource *tex, int format
     self->inputFormat = format;
     int full = should_log(&g_wvStats[4], "weaver.SetInputViewTexture");
     if (tex && g_log) {
-        D3D12_RESOURCE_DESC d;
-        tex->lpVtbl->GetDesc(tex, &d);
-        if (full || d.Width != self->lastInputW || d.Height != self->lastInputH) {
+        if (texture_changed(tex, full, &self->lastInputW, &self->lastInputH)) {
             slog("weaver.SetInputViewTexture(format=%d %s)", format, dxgi_format_name(format));
             describe_resource("input", tex);
-            self->lastInputW = d.Width;
-            self->lastInputH = d.Height;
         }
     } else if (full) {
         slog("weaver.SetInputViewTexture(NULL, format=%d)", format);
@@ -543,13 +589,9 @@ static void wv_SetOutputFrameBuffer(Weaver *self, ID3D12Resource *tex)
     self->output = tex;
     int full = should_log(&g_wvStats[6], "weaver.SetOutputFrameBuffer");
     if (tex && g_log) {
-        D3D12_RESOURCE_DESC d;
-        tex->lpVtbl->GetDesc(tex, &d);
-        if (full || d.Width != self->lastOutputW || d.Height != self->lastOutputH) {
+        if (texture_changed(tex, full, &self->lastOutputW, &self->lastOutputH)) {
             slog("weaver.SetOutputFrameBuffer");
             describe_resource("output", tex);
-            self->lastOutputW = d.Width;
-            self->lastOutputH = d.Height;
         }
     } else if (full) {
         slog("weaver.SetOutputFrameBuffer(NULL)");
@@ -608,9 +650,8 @@ typedef struct { void *ptr; RefCount *rc; } SharedPtr;
 
 // vtbl+0x10: create the D3D12 weaver. Returns a std::shared_ptr by hidden pointer.
 // Args from the game: device, ID3D12Device, ID3D12CommandAllocator, queue-or-similar, 0, 0, HWND.
-static SharedPtr *fac_CreateWeaver(Factory *self, SharedPtr *ret, Device *dev, IUnknown *d3dDevice,
-                                   IUnknown *allocator, void *arg5, uintptr_t arg6, uintptr_t arg7,
-                                   HWND hwnd)
+// Fills ret with a new weaver in a shared_ptr (one use, one weak), or an empty one when out of memory. 1 if made.
+static int make_shared_weaver(SharedPtr *ret)
 {
     Weaver *wv = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Weaver));
     RefCount *rc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(RefCount));
@@ -620,8 +661,7 @@ static SharedPtr *fac_CreateWeaver(Factory *self, SharedPtr *ret, Device *dev, I
         if (rc) HeapFree(GetProcessHeap(), 0, rc);
         ret->ptr = NULL;
         ret->rc = NULL;
-        slog("factory.CreateWeaver: out of memory, returning an empty weaver");
-        return ret;
+        return 0;
     }
     wv->vtbl = g_wvVtbl;
     rc->vtbl = g_rcVtbl;
@@ -630,6 +670,18 @@ static SharedPtr *fac_CreateWeaver(Factory *self, SharedPtr *ret, Device *dev, I
     rc->obj = wv;
     ret->ptr = wv;
     ret->rc = rc;
+    return 1;
+}
+
+static SharedPtr *fac_CreateWeaver(Factory *self, SharedPtr *ret, Device *dev, IUnknown *d3dDevice,
+                                   IUnknown *allocator, void *arg5, uintptr_t arg6, uintptr_t arg7,
+                                   HWND hwnd)
+{
+    if (!make_shared_weaver(ret)) {
+        slog("factory.CreateWeaver: out of memory, returning an empty weaver");
+        return ret;
+    }
+    Weaver *wv = ret->ptr;
 
     // No GetWindowText here: it sends WM_GETTEXT and can block on a busy window thread.
     slog("factory.CreateWeaver dev=%p d3dDevice=%p allocator=%p arg5=%p arg6=0x%llx arg7=0x%llx hwnd=%p -> weaver %p",
@@ -723,49 +775,62 @@ EXPORT LONG64 braindance3d_device_calls(int slot)
     return slot >= 0 && slot < NSLOTS ? g_devStats[slot].calls : -1;
 }
 
+// The first lines of the log: what loaded this DLL, and the settings it read.
+static void log_start(void)
+{
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    char b1[MAX_PATH * 3], b2[MAX_PATH * 3];
+    slog("==== 3D Braindance Edition, Odyssey3DSDK stand-in v%s loaded into %s (pid %lu)",
+         BD3D_VERSION_STR, utf8(exe, b1, sizeof(b1)), GetCurrentProcessId());
+    slog("install folder %s, log level %d (" "Braindance3D-Settings.ini [Log] Level: 0 off, 1 normal, 2 verbose)",
+         utf8(g_installDir, b2, sizeof(b2)), g_logLevel);
+    slog("log file %s", utf8(g_logPath, b1, sizeof(b1)));
+    slog("settings: monitor %s; host %s", g_monitorPrimaryOnly ? "primary" : "auto (game window's monitor)",
+         g_hostAllowed ? "allowed" : "NOT Cyberpunk2077.exe, the SDK will not be offered");
+}
+
+static void on_process_attach(HINSTANCE inst)
+{
+    g_module = inst;
+    DisableThreadLibraryCalls(inst);
+    InitializeCriticalSection(&g_logLock);
+    InitializeCriticalSection(&g_monLock);
+    find_install_dir();
+    read_settings();
+    // Decide the host first: another program that loads the stand-in must not rotate away the game's log.
+    g_hostAllowed = is_allowed_host();
+    QueryPerformanceFrequency(&g_freq);
+    QueryPerformanceCounter(&g_t0);
+    if (g_hostAllowed) log_open();
+    log_start();
+    install_known_slots();
+}
+
+// processExit: the process is ending (DllMain's reserved is non-NULL), rather than a FreeLibrary.
+static void on_process_detach(int processExit)
+{
+    // At process exit other threads were killed, possibly while holding the log lock, so only
+    // log if the lock is free. Every line is already flushed, so skipping loses nothing else.
+    if (!TryEnterCriticalSection(&g_logLock)) return;
+    slog("==== unloading%s. Call totals:", processExit ? " (process exit)" : "");
+    log_call_totals("factory", g_facStats);
+    log_call_totals("device", g_devStats);
+    log_call_totals("weaver", g_wvStats);
+    // At process exit the lines are already flushed and Windows closes the file.
+    if (g_log && !processExit) fclose(g_log);
+    if (!processExit) g_log = NULL;
+    LeaveCriticalSection(&g_logLock);
+    if (!processExit) {
+        // FreeLibrary with the lock free: nothing can call in any more.
+        DeleteCriticalSection(&g_monLock);
+        DeleteCriticalSection(&g_logLock);
+    }
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
-    if (reason == DLL_PROCESS_ATTACH) {
-        g_module = inst;
-        DisableThreadLibraryCalls(inst);
-        InitializeCriticalSection(&g_logLock);
-        InitializeCriticalSection(&g_monLock);
-        find_install_dir();
-        read_settings();
-        // Decide the host first: another program that loads the stand-in must not rotate away the game's log.
-        g_hostAllowed = is_allowed_host();
-        QueryPerformanceFrequency(&g_freq);
-        QueryPerformanceCounter(&g_t0);
-        if (g_hostAllowed) log_open();
-        wchar_t exe[MAX_PATH] = L"";
-        GetModuleFileNameW(NULL, exe, MAX_PATH);
-        char b1[MAX_PATH * 3], b2[MAX_PATH * 3];
-        slog("==== 3D Braindance Edition, Odyssey3DSDK stand-in v%s loaded into %s (pid %lu)",
-             BD3D_VERSION_STR, utf8(exe, b1, sizeof(b1)), GetCurrentProcessId());
-        slog("install folder %s, log level %d (" "Braindance3D-Settings.ini [Log] Level: 0 off, 1 normal, 2 verbose)",
-             utf8(g_installDir, b2, sizeof(b2)), g_logLevel);
-        slog("log file %s", utf8(g_logPath, b1, sizeof(b1)));
-        slog("settings: monitor %s; host %s", g_monitorPrimaryOnly ? "primary" : "auto (game window's monitor)",
-             g_hostAllowed ? "allowed" : "NOT Cyberpunk2077.exe, the SDK will not be offered");
-        install_known_slots();
-    } else if (reason == DLL_PROCESS_DETACH) {
-        // At process exit other threads were killed, possibly while holding the log lock, so only
-        // log if the lock is free. Every line is already flushed, so skipping loses nothing else.
-        if (TryEnterCriticalSection(&g_logLock)) {
-            slog("==== unloading%s. Call totals:", reserved ? " (process exit)" : "");
-            log_call_totals("factory", g_facStats);
-            log_call_totals("device", g_devStats);
-            log_call_totals("weaver", g_wvStats);
-            // At process exit the lines are already flushed and Windows closes the file.
-            if (g_log && !reserved) fclose(g_log);
-            if (!reserved) g_log = NULL;
-            LeaveCriticalSection(&g_logLock);
-            if (!reserved) {
-                // FreeLibrary with the lock free: nothing can call in any more.
-                DeleteCriticalSection(&g_monLock);
-                DeleteCriticalSection(&g_logLock);
-            }
-        }
-    }
+    if (reason == DLL_PROCESS_ATTACH) on_process_attach(inst);
+    else if (reason == DLL_PROCESS_DETACH) on_process_detach(reserved != NULL);
     return TRUE;
 }

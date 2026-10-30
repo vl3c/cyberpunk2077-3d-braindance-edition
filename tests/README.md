@@ -8,7 +8,7 @@ windows-latest, job `package` on ubuntu-latest).
 | The DLL (`src/braindance3d_sdk.c`), black box | `tests/native/test_dll.c` | `tests/run-native-tests.sh` |
 | The DLL, white box (`#include`s the .c) | `tests/native/test_whitebox.c` | `tests/run-native-tests.sh` |
 | The RED4ext auto-setup plugin (`src/braindance3d_autosetup.c`), white and black box | `tests/native/test_autosetup.c` | `tests/run-native-tests.sh` |
-| The menu squeeze's detection, UserSettings.json seed and settings (`src/braindance3d_menus.c`), white box | `tests/native/test_menus.c` | `tests/run-native-tests.sh` |
+| The menu squeeze (`src/braindance3d_menus.c`), white box: detection, settings, the game's device data and swap chain (faked), the hooks, and the squeeze itself on a D3D12 WARP device | `tests/native/test_menus.c` | `tests/run-native-tests.sh` |
 | The frame generation hooks (`src/braindance3d_framegen.c`): byte-pattern checks, hook decisions, thunks, white box | `tests/native/test_framegen.c` | `tests/run-native-tests.sh` |
 | The installer (`Braindance3D-Setup.ps1`) | `tests/powershell/*.Tests.ps1` (Pester 5) | `tests/Run-PesterTests.ps1` |
 | The release zip | `tests/check-dist.sh` | `./build.sh dist && tests/check-dist.sh [--repro]` |
@@ -30,7 +30,8 @@ everything passed, 1 when a test failed, and 2 when a test crashed or hung. You 
 - **Linux**: the script uses `x86_64-w64-mingw32-gcc` and `wine`. Tests that create windows need a display, so
   without `DISPLAY` they run under `xvfb-run`. Non-ASCII paths need a UTF-8 locale, so the script sets
   `LC_ALL=C.UTF-8` when needed. A few tests skip under Wine: the read-only-folder ACL test, and the multi-monitor
-  tests unless there are two monitors.
+  tests unless there are two monitors. Wine has no D3D12 here, so the menu squeeze's GPU tests skip; on Windows they
+  run on WARP, Windows' software D3D12 device, and check the squeezed picture texel by texel.
 
 How the harness works:
 
