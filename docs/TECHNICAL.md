@@ -148,7 +148,7 @@ library like `GpuApi::Present`:
 | Detour | What it changes |
 | --- | --- |
 | 3D Mode handler | Marks that it's running; afterwards clears Frame Generation's greyed flag when it was kept, and tells the menu squeeze which way 3D Mode was set |
-| `SetFrameGeneration` | Skips the handler's Off when Frame Generation is Off or DLSS and the setting's list offers DLSS (an RTX 40 or 50; before the list is built, the saved value decides alone). FSR, XeSS, a value it doesn't know, or a PC without DLSS frame generation keep the game's rule (Off, greyed out), since those stay blocked in stereo. Off stays choosable, so DLSS can be picked in 3D Mode |
+| `SetFrameGeneration` | Skips the handler's Off when Frame Generation is Off or DLSS and the setting's list offers DLSS (an RTX 40 or 50; before the list is built, the saved value decides alone). FSR, XeSS, a value it doesn't know, or a list without DLSS (a PC without DLSS frame generation, or another mod such as OptiScaler holding DLSS-G) keep the game's rule (Off, greyed out), since those stay blocked in stereo. Off stays choosable, so DLSS can be picked in 3D Mode |
 | `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its other DLSS-G checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it |
 
 They change nothing unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor keeps the
