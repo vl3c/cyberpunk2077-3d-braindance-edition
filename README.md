@@ -69,9 +69,9 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
    loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50). The game's FSR and XeSS
    frame generation still turn off in 3D Mode.
    - On other GPUs, [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work
-     on the side-by-side frame, but we haven't tested it (we tested OptiScaler only with its DLSS-G output, on an
-     RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and Cyber Engine Tweaks
-     use. Use one frame generation, not both: with OptiScaler's on, keep the game's off.
+     on the side-by-side frame, but we haven't tested it (we tested OptiScaler's frame generation only with its
+     DLSS-G output, on an RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and
+     Cyber Engine Tweaks use. Use one frame generation, not both: with OptiScaler's on, keep the game's off.
    - To use the game's DLSS frame generation with OptiScaler installed (for its upscaling), set `FGInput = nofg` and
      `FGOutput = nofg` in `OptiScaler.ini`. With `FGOutput = DLSSG`, OptiScaler holds DLSS-G even with
      `[FrameGen] Enabled = false`, so the game's Streamline skips it and the game drops DLSS from its Frame Generation
@@ -81,7 +81,8 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
    - RTX 40: 72 Hz 2x needs 36; 90 Hz 2x needs 45.
 6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses, lower texture
-   quality or the multiplier.
+   quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave the frame rate
+   low afterwards; restart the game if it doesn't recover.
 
 ## Troubleshooting
 
@@ -92,10 +93,11 @@ Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.l
 - **3D Mode greyed out:** check RED4ext and the autosetup log. With several monitors, use `Monitor = primary` and
   the primary monitor.
 - **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log.
-- **Overlays look split in 3D:** overlays drawn over the game don't get the menu fix during 3D gameplay. Cyber Engine
-  Tweaks' overlay looks right over a game menu (the squeeze covers it), but not over 3D gameplay. OptiScaler's menu
-  and FPS counter are always split in 3D. Use them with 3D Mode off; settings changed there stay when you turn it
-  back on. `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter readable in the left eye.
+- **Overlays look split in 3D:** the menu fix covers only overlays drawn before it, and only over menus, the map and
+  loading screens. Cyber Engine Tweaks' overlay looks right over a game menu, so pause before opening it, but is split
+  over 3D gameplay. OptiScaler's menu and FPS counter are always split in 3D. To use them, turn 3D Mode off in the
+  game's settings; it switches live, with no restart. `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter
+  readable in the left eye.
 - **No DLSS in the game's Frame Generation list with OptiScaler:** set `FGInput = nofg` and `FGOutput = nofg` in
   `OptiScaler.ini` (see the recommended setup).
 - **Depth inside out:** use your viewer's swap-eyes option.

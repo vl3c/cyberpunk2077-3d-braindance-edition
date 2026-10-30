@@ -16,8 +16,8 @@
   256 KB, like the one in the game folder.
 - With OptiScaler's `FGOutput = DLSSG`, the game drops DLSS from its Frame Generation list. Setting `FGInput` and
   `FGOutput` to `nofg` brings it back (README).
-- Known limitation: overlays drawn over the game look split in 3D gameplay (fine in 2D): Cyber Engine Tweaks'
-  overlay (fine over a game menu) and OptiScaler's menu and FPS counter (always split in 3D).
+- Known limitation: overlays drawn over the game look split in 3D (fine in 2D): Cyber Engine Tweaks' overlay during
+  gameplay (fine over a game menu), and OptiScaler's menu and FPS counter always.
 
 ## 0.2.0 (2026-10-29)
 
