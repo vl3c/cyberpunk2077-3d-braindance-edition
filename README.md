@@ -73,8 +73,9 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
      RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and Cyber Engine Tweaks
      use. Use one frame generation, not both: with OptiScaler's on, keep the game's off.
    - To use the game's DLSS frame generation with OptiScaler installed (for its upscaling), set `FGInput = nofg` and
-     `FGOutput = nofg` in `OptiScaler.ini`. With `FGOutput = DLSSG`, OptiScaler keeps DLSS-G for itself even when its
-     frame generation is off, so the game drops DLSS from its Frame Generation list.
+     `FGOutput = nofg` in `OptiScaler.ini`. With `FGOutput = DLSSG`, OptiScaler holds DLSS-G even with
+     `[FrameGen] Enabled = false`, so the game's Streamline skips it and the game drops DLSS from its Frame Generation
+     list.
 5. **Multiplier:** refresh rate / multiplier = the base frame rate needed; input lag follows it. We find 24+ playable
    for a screen you look at; many want 40+. RTX 40 stops at 2x; 3x+ needs RTX 50.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
