@@ -13,14 +13,16 @@
 // GpuApi::Present in braindance3d_menus.c):
 //   - the 3D Mode handler: marks that it is running, and clears Frame Generation's greyed flag afterwards. It
 //     also tells the menu squeeze which way 3D Mode was set (whether the handler asked for Off);
-//   - SetFrameGeneration: skips the handler's "Off" (and so the grey), so Frame Generation keeps its setting and can
-//     be chosen in 3D Mode. Only DLSS frame generation is let through in stereo (FSR and XeSS stay blocked by
-//     features 89 and 75), so with FSR or XeSS selected the game still turns it off and greys it out as before;
+//   - SetFrameGeneration: skips the handler's "Off" (and so the grey) when Frame Generation is Off or DLSS on a PC
+//     that offers DLSS frame generation, so it keeps its setting and can be chosen in 3D Mode. Only DLSS frame
+//     generation is let through in stereo (FSR and XeSS stay blocked by features 89 and 75), so with FSR, XeSS or a
+//     value this doesn't know selected, or on a PC without DLSS frame generation, the game still turns it off and
+//     greys it out as before;
 //   - FlagCompute and IsDlssgEnabled: FlagCompute calls IsDlssgEnabled only for a view that passed its other DLSS-G
 //     checks, so its answer, noted per thread (FlagCompute runs for several views at once on worker threads), is
 //     the game's own DLSS-G decision for that view; on stereo frames feature 88 is set again from it.
-// They change nothing unless SBSDebug is on (read on every call: the engine ini may not be applied yet
-// when the plugin loads), so a real 3D monitor keeps the game's rule. Each is entered through a thunk that keeps the
+// Apart from telling the menu squeeze about 3D Mode, they change nothing unless SBSDebug is on (read on every call:
+// the engine ini isn't applied yet when the plugin loads), so a real 3D monitor keeps the game's rule. Each is entered through a thunk that keeps the
 // caller's registers (see REGISTER_KEEPING_THUNK). Before anything is attached, the addresses and byte patterns are
 // checked (check_handler, check_framegen); if one doesn't match (a game update), that group isn't attached and the log
 // says which: without the frame generation group the game keeps its rule, and without the handler group the menu squeeze
@@ -125,8 +127,21 @@ static struct {
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
 enum { TS_OUTSIDE, TS_NOT_ASKED, TS_DLSSG_OFF, TS_DLSSG_ON }; // TS_OUTSIDE: not inside FlagCompute
-static uintptr_t thread_state(void) { return (uintptr_t)TlsGetValue(fg.tls); }
-static void set_thread_state(uintptr_t v) { TlsSetValue(fg.tls, (void *)v); }
+// Both keep the thread's last-error value (TlsGetValue clears it), which the game's code around the hooks may use.
+static uintptr_t thread_state(void)
+{
+    DWORD err = GetLastError();
+    uintptr_t v = (uintptr_t)TlsGetValue(fg.tls);
+    SetLastError(err);
+    return v;
+}
+
+static void set_thread_state(uintptr_t v)
+{
+    DWORD err = GetLastError();
+    TlsSetValue(fg.tls, (void *)v);
+    SetLastError(err);
+}
 
 // ---------------------------------------------------------------- byte patterns
 
@@ -259,24 +274,49 @@ static int fg_value(const uint8_t *var, char *out, size_t size)
     return ok;
 }
 
+// Whether the setting's list offers DLSS frame generation (an RTX 40 or 50). Before the list is built (at start-up)
+// it can't tell, and the value from the file decides alone.
+static int offers_dlss(const uint8_t *var)
+{
+    if (!(*(const uint32_t *)(var + SETTING_FLAGS) & FLAG_LIST_BUILT)) return 1;
+    const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
+    uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
+    char value[32];
+    for (uint32_t i = 0; i < count && count <= 16; i++)
+        if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, "DLSS") == 0)
+            return 1;
+    return 0;
+}
+
+// Whether 3D Mode may keep this Frame Generation setting: Off or DLSS, on a PC that offers DLSS frame generation.
+// FSR and XeSS frame generation can't run in stereo (features 89 and 75), and neither can a value this doesn't know
+// (a game update's new one), so the game's rule applies to those: Off, greyed out. A value that can't be read
+// counts as Off.
+static int keep_in_3d(const uint8_t *var, const char *value, int known)
+{
+    if (!offers_dlss(var)) return 0;
+    return !known || strcmp(value, "Off") == 0 || strcmp(value, "DLSS") == 0;
+}
+
 // ---------------------------------------------------------------- hooks
 
 // The game is built with MSVC's whole-program optimiser, which lets a caller keep using a volatile register across a
 // call when it knows the callee leaves it alone: FlagCompute reads rcx again after calling IsDlssgEnabled. C code
 // (ours, kernel32's) doesn't keep such promises, so every hook is entered through this thunk. It saves rcx, rdx,
 // r8-r11 and xmm0-xmm5 around the C function and returns its rax; the arguments stay in their registers (no hooked
-// function takes more than four). The unwind info covers the pushes and the stack allocation.
+// function takes more than four). The unwind info covers the pushes and the stack allocation. Only the low 128 bits of
+// the xmm registers are kept: the game's code around the hooks is SSE (no VEX), which doesn't keep the upper ones.
 #define REGISTER_KEEPING_THUNK(thunk, impl)                                                                         \
     __asm__(".text\n.p2align 4\n.globl " #thunk "\n.def " #thunk "; .scl 2; .type 32; .endef\n"                  \
             ".seh_proc " #thunk "\n" #thunk ":\n"                                                                   \
             "push %rcx\n.seh_pushreg %rcx\npush %rdx\n.seh_pushreg %rdx\npush %r8\n.seh_pushreg %r8\n"             \
             "push %r9\n.seh_pushreg %r9\npush %r10\n.seh_pushreg %r10\npush %r11\n.seh_pushreg %r11\n"             \
             "sub $0x88, %rsp\n.seh_stackalloc 0x88\n.seh_endprologue\n" /* rsp is 16-aligned here */             \
-            "movdqa %xmm0, 0x20(%rsp)\nmovdqa %xmm1, 0x30(%rsp)\nmovdqa %xmm2, 0x40(%rsp)\n"                      \
-            "movdqa %xmm3, 0x50(%rsp)\nmovdqa %xmm4, 0x60(%rsp)\nmovdqa %xmm5, 0x70(%rsp)\n"                      \
+            "movdqu %xmm0, 0x20(%rsp)\nmovdqu %xmm1, 0x30(%rsp)\nmovdqu %xmm2, 0x40(%rsp)\n"                      \
+            "movdqu %xmm3, 0x50(%rsp)\nmovdqu %xmm4, 0x60(%rsp)\nmovdqu %xmm5, 0x70(%rsp)\n"                      \
             "call " #impl "\n"                                                                                      \
-            "movdqa 0x20(%rsp), %xmm0\nmovdqa 0x30(%rsp), %xmm1\nmovdqa 0x40(%rsp), %xmm2\n"                      \
-            "movdqa 0x50(%rsp), %xmm3\nmovdqa 0x60(%rsp), %xmm4\nmovdqa 0x70(%rsp), %xmm5\n"                      \
+            "movdqu 0x20(%rsp), %xmm0\nmovdqu 0x30(%rsp), %xmm1\nmovdqu 0x40(%rsp), %xmm2\n"                      \
+            "movdqu 0x50(%rsp), %xmm3\nmovdqu 0x60(%rsp), %xmm4\nmovdqu 0x70(%rsp), %xmm5\n"                      \
             "add $0x88, %rsp\npop %r11\npop %r10\npop %r9\npop %r8\npop %rdx\npop %rcx\nret\n.seh_endproc\n")
 
 #define HOOK __attribute__((used, noinline, noclone)) static // called by name from its thunk
@@ -286,18 +326,25 @@ HOOK void hook_o3d_changed(uint8_t *event)
     // event[1] is 1 when 3D Mode was switched in the menu, 0 at start-up and on a display change. Read before the
     // handler runs: it clears it on the way out.
     int ev1 = readable(event, 2) ? event[1] : -1;
+    // Saved and put back, in case the game ever runs the handler from inside itself.
+    int outerOffAsked = fg.offAsked;
+    uint32_t *outerKept = fg.keptFlags;
+    DWORD outerThread = fg.handlerThread;
     fg.offAsked = 0;
     fg.keptFlags = NULL;
     fg.handlerThread = GetCurrentThreadId();
     fg.o3dOrig(event);
-    fg.handlerThread = 0;
+    int offAsked = fg.offAsked;
+    uint32_t *flags = fg.keptFlags;
+    fg.offAsked = outerOffAsked;
+    fg.keptFlags = outerKept;
+    fg.handlerThread = outerThread;
     // Its branch for "3D Mode on and the 3D display available" starts with its only SetFrameGeneration call (checked at
     // load), and it has no other way out than that branch or the 3D-off one, so the call tells which way it set 3D
     // Mode. The menu squeeze follows it.
     plugin_log(1, "framegen: 3D Mode settings handler ran (event %d): 3D Mode %s (SBSDebug %s)", ev1,
-               fg.offAsked ? "on" : "off", !fg.framegen ? "not checked" : sbs_debug() ? "on" : "off");
-    menus_note_3d_mode(fg.offAsked);
-    uint32_t *flags = fg.keptFlags;
+               offAsked ? "on" : "off", !fg.framegen ? "not checked" : sbs_debug() ? "on" : "off");
+    menus_note_3d_mode(offAsked);
     if (!flags) return;
     // In the game's code only this handler greys Frame Generation, so with Off or DLSS kept it's choosable again (also
     // after an earlier run greyed it for FSR or XeSS).
@@ -314,22 +361,19 @@ HOOK uint8_t hook_set_fg(int32_t index, uint8_t mode)
         fg.offAsked = 1;
         if (!fg.framegen || !sbs_debug()) return fg.setFgOrig(index, mode); // the game's rule (a real 3D monitor)
         uint8_t *var = fg_var();
+        if (!var) {
+            plugin_log(1, "framegen: couldn't find the Frame Generation setting, so the game turns it off in 3D Mode");
+            return fg.setFgOrig(index, mode);
+        }
         char value[32];
-        int known = var && fg_value(var, value, sizeof(value));
-        // Off and DLSS stay as they are and choosable. FSR and XeSS frame generation can't run in stereo, so the game
-        // turns those off and greys the setting, as without this mod. A value that can't be read counts as Off.
-        if (!known || (strncmp(value, "FSR", 3) != 0 && strcmp(value, "XESS") != 0)) {
-            // The grey comes later in the handler: undone after it.
-            if (var) {
-                fg.keptFlags = (uint32_t *)(var + SETTING_FLAGS);
-            } else {
-                plugin_log(1, "framegen: couldn't read the Frame Generation setting, so it may show greyed out");
-            }
+        int known = fg_value(var, value, sizeof(value));
+        if (keep_in_3d(var, value, known)) {
+            fg.keptFlags = (uint32_t *)(var + SETTING_FLAGS); // the grey comes later in the handler: undone after it
             plugin_log(1, "framegen: 3D Mode is on, Frame Generation kept and choosable (the game would turn it off)");
             return 1; // what SetFrameGeneration always returns
         }
-        plugin_log(1, "framegen: 3D Mode is on and Frame Generation is %s, which can't run in 3D, so the game turns it off",
-                   value);
+        plugin_log(1, "framegen: 3D Mode is on and Frame Generation is %s%s, which can't run in 3D, so the game turns "
+                      "it off", known ? value : "?", offers_dlss(var) ? "" : " (no DLSS frame generation on this PC)");
     }
     return fg.setFgOrig(index, mode);
 }
@@ -341,18 +385,20 @@ HOOK uint8_t hook_dlssg_enabled(uint8_t *sl)
     return on;
 }
 
-// Returns what the original returns (flags): its caller reads the bits through it.
+// Returns what the original returns (the flags): its caller reads the bits through it.
 HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
 {
+    uintptr_t outer = thread_state(); // TS_OUTSIDE, unless FlagCompute ever runs inside itself
     set_thread_state(TS_NOT_ASKED);
     uint64_t *ret = fg.flagOrig(renderer, flags, frame, settings);
     uintptr_t dlssg = thread_state();
-    set_thread_state(TS_OUTSIDE);
+    set_thread_state(outer);
+    uint64_t *bits = ret ? ret : flags;
     // The original's own DLSS-G decision for this view, without its "and not stereo".
-    if (dlssg != TS_DLSSG_ON || !(flags[1] & FEATURE_BIT(FEATURE_STEREO)) || (flags[1] & FEATURE_BIT(FEATURE_DLSSG)) ||
+    if (dlssg != TS_DLSSG_ON || !(bits[1] & FEATURE_BIT(FEATURE_STEREO)) || (bits[1] & FEATURE_BIT(FEATURE_DLSSG)) ||
         !sbs_debug())
         return ret;
-    flags[1] |= FEATURE_BIT(FEATURE_DLSSG);
+    bits[1] |= FEATURE_BIT(FEATURE_DLSSG);
     LONG64 n = InterlockedIncrement64(&fg.restored);
     DWORD now = GetTickCount();
     if (n == 1) {
@@ -489,8 +535,8 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
         return 0;
     }
     fg.framegen = 1;
-    plugin_log(1, "framegen: hooks attached; with SBSDebug on (now %s), DLSS frame generation stays available in 3D "
-                  "Mode", sbs_debug() ? "on" : "off");
+    plugin_log(1, "framegen: hooks attached; DLSS frame generation stays available in 3D Mode while [Odyssey3D] "
+                  "SBSDebug is on (checked on every call: the engine ini sets it after this)");
     return 1;
 }
 

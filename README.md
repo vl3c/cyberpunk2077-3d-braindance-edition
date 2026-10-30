@@ -68,15 +68,16 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
 4. **Frame generation:** pick **DLSS** Frame Generation in the game's graphics settings and restart the game (DLSS-G
    loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50). The game's FSR and XeSS
    frame generation still turn off in 3D Mode.
-   - On other GPUs, [OptiScaler](https://github.com/optiscaler/OptiScaler)'s frame generation works on the side-by-side
-     frame too (install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and Cyber Engine Tweaks
-     use). Use one frame generation, not both: with OptiScaler's on, keep the game's off.
+   - On other GPUs, [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work
+     on the side-by-side frame, but we haven't tested it (we tested OptiScaler only with its DLSS-G output, on an
+     RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and Cyber Engine Tweaks
+     use. Use one frame generation, not both: with OptiScaler's on, keep the game's off.
 5. **Multiplier:** refresh rate / multiplier = the base frame rate needed; input lag follows it. We find 24+ playable
    for a screen you look at; many want 40+. RTX 40 stops at 2x; 3x+ needs RTX 50.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
    - RTX 40: 72 Hz 2x needs 36; 90 Hz 2x needs 45.
-6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses
-   (`OptiScaler.log` shows `eWarnOutOfVRAM`), lower texture quality or the multiplier.
+6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses, lower texture
+   quality or the multiplier.
 
 ## Troubleshooting
 

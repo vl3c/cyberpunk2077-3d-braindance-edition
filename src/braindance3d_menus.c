@@ -650,7 +650,9 @@ static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
 
 void menus_note_3d_mode(int on)
 {
-    // The handler runs on the main thread while frames go on: only the state changes, the frame counters don't.
+    // The handler runs on the main thread while frames go on. The 2D-gameplay run starts over (a plain store: the
+    // render thread's next frame counts from there either way).
+    g.flatStreak = 0;
     set_stereo(on ? STEREO_ON : STEREO_OFF, "the game's 3D Mode handler");
 }
 

@@ -283,7 +283,7 @@ TEST(all_four_hooks_attach_when_every_check_passes)
     CHECK(fg.presetsName == &f_cnames[0]);
     CHECK(fg.fgName == &f_cnames[1]);
     CHECK(fg.dlssgOrig == (DlssgEnabledFn)(void *)f_dlssg);
-    CHECK(strstr(ft_log, "hooks attached; with SBSDebug on (now on)") != NULL);
+    CHECK(strstr(ft_log, "hooks attached; DLSS frame generation stays available") != NULL);
     CHECK_EQ_INT(f_setFg[0], 0xE9); // checked before the handler group's hook patched it
 }
 
@@ -448,14 +448,81 @@ TEST(handler_ungreys_frame_generation_greyed_by_an_earlier_run)
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_LIST_BUILT, FLAG_LIST_BUILT); // other flags kept
 }
 
-TEST(handler_keeps_frame_generation_when_its_setting_cant_be_read)
+TEST(handler_does_what_the_game_does_when_the_setting_isnt_found)
 {
     ft_begin();
     fg.var = fake_find_nothing;
     hook_o3d_changed(NULL);
-    CHECK_EQ_INT(f_setFgCalls, 0);
-    CHECK(strstr(ft_log, "couldn't read the Frame Generation setting") != NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK(strstr(ft_log, "couldn't find the Frame Generation setting") != NULL);
     CHECK_EQ_INT(f_noted3d, 1);
+}
+
+TEST(handler_does_what_the_game_does_on_a_pc_without_dlss_frame_generation)
+{
+    // An AMD, Intel or RTX 20/30 PC: the list has no DLSS, and nothing it offers runs in stereo.
+    ft_begin();
+    set_fg_value("Off", 1);
+    put_cstring(f_values[1], "FSR4");
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
+    CHECK(strstr(ft_log, "Frame Generation is Off (no DLSS frame generation on this PC)") != NULL);
+}
+
+TEST(handler_keeps_the_value_from_the_file_before_the_list_is_built)
+{
+    // At start-up the list isn't there yet, so it can't tell whether the PC offers DLSS: the saved value decides.
+    ft_begin();
+    set_fg_value("DLSS", -1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    ft_begin();
+    set_fg_value("FSR3", -1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+}
+
+TEST(handler_does_what_the_game_does_with_a_value_it_doesnt_know)
+{
+    // A game update's new value: it may not run in stereo either.
+    ft_begin();
+    set_fg_value("DLSS", 1);
+    put_cstring(f_values[3], "XeSS2");
+    *(int32_t *)(f_var + SETTING_PENDING) = 3;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK(strstr(ft_log, "Frame Generation is XeSS2, which can't run in 3D") != NULL);
+}
+
+TEST(keep_in_3d_allows_only_off_and_dlss)
+{
+    ft_begin();
+    set_fg_value("DLSS", 1);
+    CHECK(keep_in_3d(f_var, "DLSS", 1));
+    CHECK(keep_in_3d(f_var, "Off", 1));
+    CHECK(keep_in_3d(f_var, "", 0)); // unreadable counts as Off
+    CHECK(!keep_in_3d(f_var, "FSR3", 1));
+    CHECK(!keep_in_3d(f_var, "XESS", 1));
+    CHECK(!keep_in_3d(f_var, "DLSS2", 1));
+    CHECK(offers_dlss(f_var));
+    put_cstring(f_values[1], "FSR4");
+    CHECK(!offers_dlss(f_var));
+    *(uint32_t *)(f_var + SETTING_VALUES + 0xC) = 17; // a size this can't trust
+    put_cstring(f_values[1], "DLSS");
+    CHECK(!offers_dlss(f_var));
+}
+
+TEST(a_handler_run_inside_another_leaves_the_outer_ones_state)
+{
+    ft_begin();
+    fg.offAsked = 1;
+    fg.keptFlags = (uint32_t *)(f_var + SETTING_FLAGS);
+    fg.handlerThread = 1234;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(fg.offAsked, 1);
+    CHECK(fg.keptFlags == (uint32_t *)(f_var + SETTING_FLAGS));
+    CHECK_EQ_INT((int)fg.handlerThread, 1234);
 }
 
 TEST(handler_without_sbs_debug_does_what_the_game_does)
@@ -558,6 +625,62 @@ static uint64_t run_flags(void)
     uint64_t *ret = hook_flag_compute(NULL, flags, NULL, NULL);
     CHECK(ret == flags); // a lost return value crashed the game in the first in-game test
     return flags[1];
+}
+
+static uint64_t f_otherFlags[2];
+static uint64_t *orig_flag_compute_other_buffer(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
+{
+    orig_flag_compute(renderer, f_otherFlags, frame, settings);
+    return f_otherFlags;
+}
+
+TEST(flag_compute_sets_the_bit_where_the_caller_reads_it)
+{
+    ft_begin();
+    fg.flagOrig = orig_flag_compute_other_buffer;
+    uint64_t flags[2] = { 0, 0 };
+    CHECK(hook_flag_compute(NULL, flags, NULL, NULL) == f_otherFlags);
+    CHECK(f_otherFlags[1] == (FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_DLSSG)));
+    CHECK(flags[1] == 0);
+}
+
+static uint64_t *orig_flag_compute_nested(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
+{
+    fg.flagOrig = orig_flag_compute;
+    uint64_t inner[2];
+    f_dlssgOn = 0;
+    hook_flag_compute(renderer, inner, frame, settings); // asks and gets "off"
+    f_dlssgOn = 1;
+    return orig_flag_compute(renderer, flags, frame, settings);
+}
+
+TEST(flag_compute_inside_flag_compute_keeps_each_ones_answer)
+{
+    ft_begin();
+    fg.flagOrig = orig_flag_compute_nested;
+    CHECK(run_flags() == (FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_DLSSG)));
+    CHECK_EQ_INT((int)thread_state(), TS_OUTSIDE);
+}
+
+TEST(thread_state_keeps_the_last_error)
+{
+    ft_begin();
+    SetLastError(1234);
+    set_thread_state(TS_NOT_ASKED);
+    CHECK_EQ_INT((int)thread_state(), TS_NOT_ASKED);
+    CHECK_EQ_INT((int)GetLastError(), 1234);
+    set_thread_state(TS_OUTSIDE);
+}
+
+TEST(thunks_have_unwind_info)
+{
+    // Without it an exception thrown through a hook (or a crash dump's stack) can't get past the thunk.
+    void *thunks[] = { (void *)bd3d_thunk_o3d_changed, (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_dlssg_enabled,
+                       (void *)bd3d_thunk_flag_compute };
+    for (int i = 0; i < 4; i++) {
+        DWORD64 base = 0;
+        CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
+    }
 }
 
 TEST(stereo_frames_get_dlssg_back_when_the_game_would_run_it)

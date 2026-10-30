@@ -4,7 +4,8 @@
 
 - The game's own DLSS frame generation now works in 3D Mode: 3D Mode no longer turns Frame Generation off or greys
   it out, and the renderer keeps DLSS-G on side-by-side frames. Needs RED4ext; choose DLSS frame generation and
-  restart the game once. FSR and XeSS frame generation still turn off in 3D Mode. Done with four small hooks that
+  restart the game once (RTX 40 or 50). FSR and XeSS frame generation still turn off in 3D Mode, as does Frame
+  Generation on PCs without DLSS frame generation. Done with four small hooks that
   check the game's code first and do nothing if it changed; a real 3D monitor keeps the game's rule.
 - The menu squeeze works with the game's DLSS frame generation on (Streamline then wraps the game's D3D12 queue; the
   squeeze uses the native one).
