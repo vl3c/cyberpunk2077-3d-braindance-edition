@@ -24,7 +24,7 @@ stereo stayed on whatever the toggle said.
 
 Other options in the group (not changed): `WeaponConvergenceDistance` (0.5), `AO/StereoMod` (true),
 `AO/NoDownsampleThreshold` (1440), `Dynamic3DSettings/EnableWidgetDepth` (true), `WidgetDepthValue` (0.008),
-`AimIpdCooldownMS` (150). The user settings live in `/video/display`: `Odyssey3D_StereoEnabled`,
+`AimIpdCooldownMS` (150, the fade time of both eye separations). The user settings live in `/video/display`: `Odyssey3D_StereoEnabled`,
 `Odyssey3D_Preset`, `Odyssey3D_Strength` (Depth), `Odyssey3D_WeaponStrength`, `Odyssey3D_MotionComfort`.
 
 ## The SDK interface
