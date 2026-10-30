@@ -807,4 +807,310 @@ TEST(thunks_keep_the_callers_registers_and_return_the_result)
     CHECK(strstr(ft_log, "kept and choosable") != NULL);
 }
 
+// ===================================================================================== one function at a time
+
+TEST(aob_at_compares_only_the_unmasked_bytes)
+{
+    const uint8_t code[] = { 0x48, 0x8B, 0x05, 0x11 };
+    uint8_t bytes[8], mask[8];
+    int n = aob_parse("48 ?? 05", bytes, mask, 8);
+    REQUIRE_EQ_INT(n, 3);
+    CHECK_EQ_INT(mask[1], 0);
+    CHECK(aob_at(code, bytes, mask, n));
+    CHECK(!aob_at(code + 1, bytes, mask, n));
+    CHECK_EQ_INT(aob_parse("48 8B 05 11", bytes, mask, 3), 0); // longer than max
+}
+
+TEST(count_calls_counts_only_calls_to_the_target)
+{
+    static uint8_t code[32]; // in the image, within rel32 reach of the targets
+    memset(code, 0x90, sizeof(code));
+    code[0] = code[10] = code[20] = 0xE8;
+    put_rel32(code + 5, f_dlssg);
+    put_rel32(code + 15, f_dlssg);
+    put_rel32(code + 25, f_setFg);
+    CHECK_EQ_INT(count_calls(code, sizeof(code), (uintptr_t)f_dlssg), 2);
+    CHECK_EQ_INT(count_calls(code, sizeof(code), (uintptr_t)f_setFg), 1);
+    CHECK_EQ_INT(count_calls(code, 24, (uintptr_t)f_setFg), 0); // the call doesn't fit
+}
+
+TEST(in_exe_wants_the_whole_range_inside_the_exe_image)
+{
+    const uint8_t *base = (const uint8_t *)GetModuleHandleW(NULL);
+    uintptr_t end = (uintptr_t)base + tu_nt((HMODULE)base)->OptionalHeader.SizeOfImage;
+    CHECK(in_exe((uintptr_t)f_o3d, sizeof(f_o3d)));
+    CHECK(in_exe(end - 1, 1));
+    CHECK(!in_exe(end - 1, 2));
+    CHECK(!in_exe(end, 1));
+    CHECK(!in_exe((uintptr_t)base - 1, 1));
+    void *heap = malloc(16);
+    CHECK(!in_exe((uintptr_t)heap, 16));
+    free(heap);
+}
+
+TEST(readable_and_text_is_need_committed_memory)
+{
+    CHECK(readable(f_o3d, sizeof(f_o3d)));
+    CHECK(!readable(NULL, 1));
+    CHECK(!readable((void *)(uintptr_t)8, 1));
+    CHECK(text_is("SBSDebug", "SBSDebug"));
+    CHECK(!text_is("SBSDebug2", "SBSDebug"));
+    CHECK(!text_is("SBS", "SBSDebug"));
+    CHECK(!text_is(NULL, "SBSDebug"));
+}
+
+TEST(sbs_debug_reads_the_config_vars_value)
+{
+    ft_begin();
+    CHECK_EQ_INT(sbs_debug(), 1);
+    set_sbs_debug(0);
+    CHECK_EQ_INT(sbs_debug(), 0);
+    set_sbs_debug(1);
+}
+
+TEST(fg_var_is_found_the_way_set_frame_generation_finds_it)
+{
+    ft_begin();
+    CHECK_EQ_PTR(fg_var(), f_var);
+    fg.var = fake_find_nothing;
+    CHECK(fg_var() == NULL);
+}
+
+TEST(read_cstring_reads_inline_and_heap_text)
+{
+    uint8_t s[CSTRING_SIZE];
+    char out[32];
+    put_cstring(s, "DLSS");
+    CHECK_EQ_INT(read_cstring(s, out, sizeof(out)), 1);
+    CHECK_EQ_STR(out, "DLSS");
+    put_cstring(s, "a value longer than sixteen");
+    CHECK_EQ_INT(read_cstring(s, out, sizeof(out)), 1);
+    CHECK_EQ_STR(out, "a value longer than sixteen");
+    CHECK_EQ_INT(read_cstring(s, out, 8), 0); // doesn't fit
+    put_cstring(s, "");
+    CHECK_EQ_INT(read_cstring(s, out, sizeof(out)), 1);
+    CHECK_EQ_STR(out, "");
+    *(const char **)s = (const char *)(uintptr_t)8; // a heap pointer that can't be read
+    *(uint32_t *)(s + CSTRING_LEN_FLAGS) = 4 | CSTRING_HEAP;
+    CHECK_EQ_INT(read_cstring(s, out, sizeof(out)), 0);
+    CHECK_EQ_INT(read_cstring(NULL, out, sizeof(out)), 0);
+}
+
+TEST(offers_dlss_looks_through_the_built_list)
+{
+    ft_begin();
+    set_fg_value("Off", 1);
+    CHECK_EQ_INT(offers_dlss(f_var), 1);
+    put_cstring(f_values[1], "FSR4"); // a PC without DLSS frame generation
+    CHECK_EQ_INT(offers_dlss(f_var), 0);
+    set_fg_value("Off", -1); // before the list is built it can't tell
+    CHECK_EQ_INT(offers_dlss(f_var), 1);
+}
+
+TEST(ungrey_clears_only_the_greyed_flag)
+{
+    ft_begin();
+    uint32_t flags = FLAG_GREYED | FLAG_LIST_BUILT | 1;
+    ungrey(&flags);
+    CHECK_EQ_INT(flags, FLAG_LIST_BUILT | 1);
+    CHECK(strstr(ft_log, "Frame Generation flags 0x841 -> 0x41 (not greyed)") != NULL);
+    ungrey(&flags);
+    CHECK_EQ_INT(flags, FLAG_LIST_BUILT | 1);
+}
+
+static DWORD f_threadInHandler;
+static void orig_o3d_marks(uint8_t *event)
+{
+    f_threadInHandler = fg.handlerThread;
+    fg.offAsked = 1;
+    fg.keptFlags = (uint32_t *)(f_var + SETTING_FLAGS);
+}
+
+TEST(run_handler_marks_the_thread_while_the_handler_runs)
+{
+    ft_begin();
+    fg.o3dOrig = orig_o3d_marks;
+    fg.offAsked = 7; // an outer run's marks
+    fg.handlerThread = 1234;
+    int offAsked = 0;
+    uint32_t *kept = NULL;
+    run_handler(NULL, &offAsked, &kept);
+    CHECK_EQ_INT(f_threadInHandler, GetCurrentThreadId());
+    CHECK_EQ_INT(offAsked, 1);
+    CHECK_EQ_PTR(kept, f_var + SETTING_FLAGS);
+    CHECK_EQ_INT(fg.offAsked, 7);
+    CHECK(fg.keptFlags == NULL);
+    CHECK_EQ_INT(fg.handlerThread, 1234);
+}
+
+TEST(only_the_handlers_own_off_call_counts)
+{
+    ft_begin();
+    CHECK(!is_handlers_off(0, 1)); // no handler running
+    fg.handlerThread = GetCurrentThreadId();
+    CHECK(is_handlers_off(0, 1));
+    CHECK(!is_handlers_off(1, 1));
+    CHECK(!is_handlers_off(0, 0));
+    fg.handlerThread = GetCurrentThreadId() + 1; // another thread's
+    CHECK(!is_handlers_off(0, 1));
+}
+
+TEST(keep_frame_generation_keeps_off_or_dlss_while_sbsdebug_is_on)
+{
+    ft_begin();
+    CHECK_EQ_INT(keep_frame_generation(), 1);
+    CHECK_EQ_PTR(fg.keptFlags, f_var + SETTING_FLAGS);
+    struct { int framegen, sbs, found; const char *value; const char *log; } cases[] = {
+        { 0, 1, 1, "DLSS", NULL },
+        { 1, 0, 1, "DLSS", NULL },
+        { 1, 1, 0, "DLSS", "couldn't find the Frame Generation setting" },
+        { 1, 1, 1, "FSR3", "Frame Generation is FSR3, which can't run in 3D" },
+    };
+    for (int k = 0; k < 4; k++) {
+        ft_begin();
+        fg.framegen = cases[k].framegen;
+        set_sbs_debug(cases[k].sbs);
+        if (!cases[k].found) fg.var = fake_find_nothing;
+        set_fg_value(cases[k].value, 1);
+        CHECK_MSG(keep_frame_generation() == 0, "case %d kept it", k);
+        CHECK_MSG(fg.keptFlags == NULL, "case %d set the flags to ungrey", k);
+        if (cases[k].log) CHECK_MSG(strstr(ft_log, cases[k].log) != NULL, "case %d: no \"%s\" in:\n%s", k, cases[k].log, ft_log);
+        set_sbs_debug(1);
+    }
+}
+
+TEST(dlssg_is_restored_only_when_only_stereo_took_it_away)
+{
+    ft_begin();
+    uint64_t stereo = FEATURE_BIT(FEATURE_STEREO), dlssg = FEATURE_BIT(FEATURE_DLSSG);
+    CHECK(should_restore_dlssg(TS_DLSSG_ON, stereo));
+    CHECK(!should_restore_dlssg(TS_DLSSG_OFF, stereo));
+    CHECK(!should_restore_dlssg(TS_NOT_ASKED, stereo));
+    CHECK(!should_restore_dlssg(TS_DLSSG_ON, 0));              // a flat view
+    CHECK(!should_restore_dlssg(TS_DLSSG_ON, stereo | dlssg)); // already on
+    set_sbs_debug(0);
+    CHECK(!should_restore_dlssg(TS_DLSSG_ON, stereo));
+    set_sbs_debug(1);
+}
+
+TEST(restored_frames_are_logged_first_and_then_once_a_minute)
+{
+    ft_begin();
+    count_restored();
+    CHECK(strstr(ft_log, "DLSS frame generation running on a 3D frame (first one)") != NULL);
+    count_restored();
+    CHECK(strstr(ft_log, "frames with DLSS frame generation in 3D") == NULL);
+    fg.lastSummary = GetTickCount() - 61000;
+    count_restored();
+    CHECK(strstr(ft_log, "3 frames with DLSS frame generation in 3D (3 in the last minute)") != NULL);
+    CHECK_EQ_INT((int)fg.lastRestored, 3);
+}
+
+TEST(fail_logs_and_returns_0)
+{
+    ft_begin();
+    CHECK_EQ_INT(fail("something moved"), 0);
+    CHECK(strstr(ft_log, "framegen: something moved (game update?)") != NULL);
+}
+
+TEST(check_handler_finds_the_handler_and_its_off_call)
+{
+    ft_begin();
+    uint8_t *t[T_COUNT] = { 0 };
+    CHECK_EQ_INT(check_handler(fake_resolve, t), 1);
+    CHECK_EQ_PTR(t[T_O3D], f_o3d);
+    CHECK_EQ_PTR(t[T_SET_FG], f_setFg);
+    ft_begin();
+    f_o3d[0x400] = 0xE8; // a second SetFrameGeneration call
+    put_rel32(f_o3d + 0x405, f_setFg);
+    CHECK_EQ_INT(check_handler(fake_resolve, t), 0);
+    CHECK(strstr(ft_log, "it calls SetFrameGeneration somewhere else too") != NULL);
+}
+
+TEST(check_settings_lookup_reads_set_frame_generations_lookup)
+{
+    ft_begin();
+    SettingsLookup l = { 0 };
+    CHECK_EQ_INT(check_settings_lookup(f_setFg, &l), 1);
+    CHECK(l.root == (uintptr_t)f_lookup[0]);
+    CHECK(l.group == (uintptr_t)f_lookup[1]);
+    CHECK(l.var == (uintptr_t)f_lookup[2]);
+    CHECK(l.presets == (uintptr_t)&f_cnames[0]);
+    CHECK(l.name == (uintptr_t)&f_cnames[1]);
+    const uint8_t *base = (const uint8_t *)GetModuleHandleW(NULL);
+    put_rel32(f_setFg + SET_FG_VAR + 5, base + tu_nt((HMODULE)base)->OptionalHeader.SizeOfImage + 16);
+    CHECK_EQ_INT(check_settings_lookup(f_setFg, &l), 0);
+    CHECK(strstr(ft_log, "its settings lookup points outside the exe") != NULL);
+}
+
+TEST(check_flag_compute_wants_one_dlssg_call_before_the_stereo_clear)
+{
+    ft_begin();
+    CHECK_EQ_INT(check_flag_compute(f_flag, f_dlssg), 1);
+    CHECK_EQ_INT(check_flag_compute(f_flag, f_other), 0);
+    CHECK(strstr(ft_log, "the DLSS-G check doesn't call IsDlssgEnabled") != NULL);
+    ft_begin();
+    memset(f_flag + 0x6F0, 0xCC, (size_t)aob_len(AOB_FLAG_CLEAR));
+    put(f_flag + 0x100, AOB_FLAG_CLEAR);
+    CHECK_EQ_INT(check_flag_compute(f_flag, f_dlssg), 0);
+    CHECK(strstr(ft_log, "the stereo clear comes before the DLSS-G check") != NULL);
+    ft_begin();
+    f_flag[0x900] = 0xE8;
+    put_rel32(f_flag + 0x905, f_dlssg);
+    CHECK_EQ_INT(check_flag_compute(f_flag, f_dlssg), 0);
+    CHECK(strstr(ft_log, "IsDlssgEnabled is called somewhere else in it too") != NULL);
+}
+
+TEST(check_sbs_var_wants_odyssey3d_sbsdebug)
+{
+    ft_begin();
+    CHECK_EQ_INT(check_sbs_var((const uint8_t *)f_sbsVar), 1);
+    f_sbsVar[VAR_GROUP / 8] = "Rendering";
+    CHECK_EQ_INT(check_sbs_var((const uint8_t *)f_sbsVar), 0);
+    f_sbsVar[VAR_GROUP / 8] = "Odyssey3D";
+    f_sbsVar[VAR_NAME / 8] = NULL;
+    CHECK_EQ_INT(check_sbs_var((const uint8_t *)f_sbsVar), 0);
+    CHECK(strstr(ft_log, "isn't named [Odyssey3D] SBSDebug") != NULL);
+}
+
+TEST(check_framegen_fills_in_the_lookup_and_the_sbsdebug_var)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    uint8_t *t[T_COUNT] = { 0 };
+    REQUIRE_EQ_INT(check_handler(fake_resolve, t), 1);
+    CHECK_EQ_INT(check_framegen(fake_resolve, t), 1);
+    CHECK_EQ_PTR(t[T_FLAG_COMPUTE], f_flag);
+    CHECK_EQ_PTR(t[T_DLSSG], f_dlssg);
+    CHECK_EQ_PTR((void *)fg.root, f_lookup[0]);
+    CHECK_EQ_PTR((void *)fg.group, f_lookup[1]);
+    CHECK_EQ_PTR((void *)fg.var, f_lookup[2]);
+    CHECK_EQ_PTR(fg.presetsName, &f_cnames[0]);
+    CHECK_EQ_PTR(fg.fgName, &f_cnames[1]);
+    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar);
+    CHECK(fg.tls != 0 && fg.tls != TLS_OUT_OF_INDEXES);
+    TlsFree(fg.tls);
+}
+
+TEST(attach_range_detaches_what_it_attached_when_one_fails)
+{
+    ft_begin();
+    uint8_t *t[T_COUNT] = { f_setFg, f_o3d, f_dlssg, f_flag };
+    f_attachFails = 2;
+    CHECK_EQ_INT(attach_range(NULL, &f_hooking, t, T_SET_FG, T_O3D), 0);
+    CHECK_EQ_INT(f_detached, 1);
+    CHECK(strstr(ft_log, "couldn't hook the 3D Mode handler") != NULL);
+    ft_begin();
+    t[T_DLSSG] = f_dlssg;
+    CHECK_EQ_INT(attach_range(NULL, &f_hooking, t, T_DLSSG, T_FLAG_COMPUTE), 1);
+    CHECK_EQ_INT(f_attached, 2);
+    CHECK_EQ_PTR((void *)fg.dlssgOrig, f_dlssg);
+    CHECK_EQ_PTR((void *)fg.flagOrig, f_flag);
+}
+
+TEST(red4ext_resolver_needs_red4ext)
+{
+    CHECK(red4ext_resolver() == NULL); // no RED4ext.dll in this process
+}
+
 int main(int argc, char **argv) { return tt_main(argc, argv); }
