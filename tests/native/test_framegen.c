@@ -91,9 +91,12 @@ static uintptr_t fake_resolve(uint32_t hash)
 
 static uintptr_t resolve_nothing(uint32_t hash) { return 0; }
 
+// Like RED4ext's: the target starts with a jump to the detour from then on (here only the jump's opcode and a zero
+// offset, enough to change the bytes the checks read).
 static bool fake_attach(void *handle, void *target, void *detour, void **original)
 {
     if (++f_attached == f_attachFails) return false;
+    memcpy(target, "\xE9\0\0\0\0", 5);
     *original = target;
     return true;
 }
@@ -161,10 +164,12 @@ static uint8_t orig_set_fg(int32_t index, uint8_t mode)
 }
 
 // Does what the game's handler does with 3D Mode on: Frame Generation Off, then the greyed flag.
+// Clears event[1] on the way out, as the game's does (the thunk test passes a junk event).
 static void orig_o3d(uint8_t *event)
 {
     if (f_o3dSetsFgOff) bd3d_thunk_set_fg(0, 1); // the game calls the patched function, so through the thunk
     if (f_o3dGreys) *(uint32_t *)(f_var + SETTING_FLAGS) |= FLAG_GREYED;
+    if (readable(event, 2)) event[1] = 0;
 }
 
 static void *fake_root(void) { return f_lookup; }
@@ -279,6 +284,7 @@ TEST(all_four_hooks_attach_when_every_check_passes)
     CHECK(fg.fgName == &f_cnames[1]);
     CHECK(fg.dlssgOrig == (DlssgEnabledFn)(void *)f_dlssg);
     CHECK(strstr(ft_log, "hooks attached; with SBSDebug on (now on)") != NULL);
+    CHECK_EQ_INT(f_setFg[0], 0xE9); // checked before the handler group's hook patched it
 }
 
 // A broken handler check: nothing is attached and the log names it.
@@ -418,6 +424,15 @@ TEST(handler_with_sbs_keeps_dlss_frame_generation_and_its_greyed_flag)
     CHECK(strstr(ft_log, "Frame Generation kept and choosable") != NULL);
     CHECK(strstr(ft_log, "index 1 (applied 1) of 4, value 'DLSS'") != NULL);
     CHECK_EQ_INT(f_noted3d, 1); // the menu squeeze hears 3D Mode is on
+}
+
+TEST(handler_logs_a_menu_switch_though_the_game_clears_it)
+{
+    ft_begin();
+    uint8_t event[8] = { 0, 1 };
+    hook_o3d_changed(event);
+    CHECK_EQ_INT(event[1], 0);
+    CHECK_MSG(strstr(ft_log, "handler ran (event 1): 3D Mode on (SBSDebug on)") != NULL, "got: %s", ft_log);
 }
 
 TEST(handler_ungreys_frame_generation_greyed_by_an_earlier_run)

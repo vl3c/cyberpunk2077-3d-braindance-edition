@@ -283,6 +283,9 @@ static int fg_value(const uint8_t *var, char *out, size_t size)
 
 HOOK void hook_o3d_changed(uint8_t *event)
 {
+    // event[1] is 1 when 3D Mode was switched in the menu, 0 at start-up and on a display change. Read before the
+    // handler runs: it clears it on the way out.
+    int ev1 = readable(event, 2) ? event[1] : -1;
     fg.offAsked = 0;
     fg.keptFlags = NULL;
     fg.handlerThread = GetCurrentThreadId();
@@ -291,8 +294,6 @@ HOOK void hook_o3d_changed(uint8_t *event)
     // Its branch for "3D Mode on and the 3D display available" starts with its only SetFrameGeneration call (checked at
     // load), and it has no other way out than that branch or the 3D-off one, so the call tells which way it set 3D
     // Mode. The menu squeeze follows it.
-    // event[1] is 1 when 3D Mode was switched in the menu, 0 at start-up and on a display change.
-    int ev1 = readable(event, 2) ? event[1] : -1;
     plugin_log(1, "framegen: 3D Mode settings handler ran (event %d): 3D Mode %s (SBSDebug %s)", ev1,
                fg.offAsked ? "on" : "off", !fg.framegen ? "not checked" : sbs_debug() ? "on" : "off");
     menus_note_3d_mode(fg.offAsked);
@@ -469,16 +470,20 @@ static int attach_range(void *pluginHandle, R4eHooking *h, uint8_t **t, int firs
 }
 
 // Two groups: the handler hooks (the menu squeeze follows 3D Mode switches through them), then, if all their checks
-// pass, the frame generation hooks. Either group is attached whole or not at all.
+// pass, the frame generation hooks. Either group is attached whole or not at all. Both groups are checked before
+// anything is attached: the frame generation checks read SetFrameGeneration's first bytes, which the handler group's
+// hook replaces with its jump.
 static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
     uint8_t *t[T_COUNT];
-    if (!check_handler(resolve, t) || !attach_range(pluginHandle, h, t, T_SET_FG, T_O3D)) {
+    int handlerOk = check_handler(resolve, t);
+    int framegenOk = handlerOk && check_framegen(resolve, t);
+    if (!handlerOk || !attach_range(pluginHandle, h, t, T_SET_FG, T_O3D)) {
         plugin_log(1, "framegen: nothing attached: frame generation stays off in 3D Mode, and the menu squeeze sees 3D "
                       "Mode switches only once gameplay shows them");
         return 0;
     }
-    if (!check_framegen(resolve, t) || !attach_range(pluginHandle, h, t, T_DLSSG, T_FLAG_COMPUTE)) {
+    if (!framegenOk || !attach_range(pluginHandle, h, t, T_DLSSG, T_FLAG_COMPUTE)) {
         plugin_log(1, "framegen: only the 3D Mode handler is hooked (the menu squeeze follows it); frame generation "
                       "stays off in 3D Mode, as in the game");
         return 0;

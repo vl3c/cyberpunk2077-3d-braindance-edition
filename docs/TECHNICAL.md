@@ -156,7 +156,8 @@ the game is built with whole-program optimisation, and FlagCompute keeps using `
 values at `+0x90`; before the list is built, the value from the file is at `+0x58`), because the game's
 `GetFrameGenerationMode` reads only the file value, which is emptied once the list is built.
 
-Before attaching, the plugin checks byte patterns, in two groups that are each attached whole or not at all:
+Before attaching anything, the plugin checks byte patterns in both groups (an attached hook replaces its target's first
+bytes with a jump, and the second group reads `SetFrameGeneration`'s). Each group is attached whole or not at all:
 
 - **3D Mode handler:** its start, the Off call going to `SetFrameGeneration`, and that call being its only one. The
   handler has no exit other than its 3D-on branch (which starts with that call) and its 3D-off branch, so the call
