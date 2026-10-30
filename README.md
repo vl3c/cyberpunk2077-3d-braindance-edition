@@ -30,7 +30,7 @@ generation hook a few game functions through RED4ext.
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
-  ([No RED4ext](#no-red4ext)), which leaves menus split.
+  ([No RED4ext](#no-red4ext)), which leaves menus split and frame generation off in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
@@ -87,9 +87,9 @@ Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.l
 - **Crash or no start after install or a game update:** disable the mod and report your game version.
 - **3D Mode greyed out:** check RED4ext and the autosetup log. With several monitors, use `Monitor = primary` and
   the primary monitor.
-- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log. OptiScaler's menu and FPS counter
-  draw after the fix and stay split; `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter
-  readable in the left eye.
+- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log. Overlays that draw after the fix
+  stay split in 3D (fine in 2D): Cyber Engine Tweaks' overlay, and OptiScaler's menu and FPS counter
+  (`FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter readable in the left eye).
 - **Depth inside out:** use your viewer's swap-eyes option.
 
 **Bugs:** report via [GitHub issues](https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues) or the
