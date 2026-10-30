@@ -321,7 +321,15 @@ static int keep_in_3d(const uint8_t *var, const char *value, int known)
 
 #define HOOK __attribute__((used, noinline, noclone)) static // called by name from its thunk
 
-static void ungrey(uint32_t *flags);
+// Clears Frame Generation's greyed flag. In the game's code only the 3D Mode handler greys it, so with Off or DLSS
+// kept it's choosable again (also after an earlier run greyed it for FSR or XeSS).
+static void ungrey(uint32_t *flags)
+{
+    uint32_t before = *flags;
+    *flags = before & ~FLAG_GREYED;
+    plugin_log(before != *flags ? 1 : 2, "framegen: Frame Generation flags 0x%X -> 0x%X (not greyed)", (unsigned)before,
+               (unsigned)*flags);
+}
 
 // Runs the game's handler with this thread marked as running it. *offAsked: it asked for Frame Generation Off;
 // *kept: the flags of the Frame Generation setting that was kept (NULL if none). The marks are saved and put back, in
@@ -357,16 +365,6 @@ HOOK void hook_o3d_changed(uint8_t *event)
                offAsked ? "on" : "off", !fg.framegen ? "not checked" : sbs_debug() ? "on" : "off");
     menus_note_3d_mode(offAsked);
     if (flags) ungrey(flags);
-}
-
-// Clears Frame Generation's greyed flag. In the game's code only the 3D Mode handler greys it, so with Off or DLSS
-// kept it's choosable again (also after an earlier run greyed it for FSR or XeSS).
-static void ungrey(uint32_t *flags)
-{
-    uint32_t before = *flags;
-    *flags = before & ~FLAG_GREYED;
-    plugin_log(before != *flags ? 1 : 2, "framegen: Frame Generation flags 0x%X -> 0x%X (not greyed)", (unsigned)before,
-               (unsigned)*flags);
 }
 
 // Whether this SetFrameGeneration call is the 3D Mode handler's own "Off": (0, 1), on its thread, while it runs.

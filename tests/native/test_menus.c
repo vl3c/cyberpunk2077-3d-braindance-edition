@@ -69,6 +69,13 @@ static const char *log_text(void)
 
 static int log_has(const char *what) { return strstr(log_text(), what) != NULL; }
 
+static int log_count(const char *what)
+{
+    int n = 0;
+    for (const char *p = log_text(); (p = strstr(p, what)) != NULL; p++) n++;
+    return n;
+}
+
 // ===================================================================================== the game, faked
 
 // The game's SDeviceData, with the swap chain table and the direct queue at the real offsets.
@@ -404,7 +411,7 @@ TEST(stand_in_counters_are_looked_up_every_60_frames_until_found)
     CHECK_MSG(GetModuleHandleW(L"Odyssey3DSDK.dll") != NULL, "the stand-in must stay loaded (pinned)");
 }
 
-TEST(saved_stereo_is_the_options_own_true_or_false)
+TEST(saved_stereo_is_the_options_own_true_or_false_or_unknown)
 {
     struct { const char *json; LONG want; } cases[] = {
         { "{\"name\": \"Odyssey3D_StereoEnabled\", \"value\": true}", STEREO_ON },
@@ -416,9 +423,12 @@ TEST(saved_stereo_is_the_options_own_true_or_false)
         { "{\"name\": \"Odyssey3D_Strength\", \"value\": true}", STEREO_UNKNOWN },
         { "", STEREO_UNKNOWN },
     };
-    for (int k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
-        CHECK_MSG(parse_saved_stereo(cases[k].json) == cases[k].want, "case %d: %ld, want %ld", k,
-                  (long)parse_saved_stereo(cases[k].json), (long)cases[k].want);
+    for (int k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++) {
+        LONG got = parse_stereo_value(saved_stereo_value(cases[k].json));
+        CHECK_MSG(got == cases[k].want, "case %d: %ld, want %ld", k, (long)got, (long)cases[k].want);
+    }
+    CHECK(saved_stereo_value("{\"name\": \"Odyssey3D_StereoEnabled\"}, {\"value\": true}") == NULL);
+    CHECK_EQ_STR(saved_stereo_value("{\"name\": \"Odyssey3D_StereoEnabled\", \"value\": 1}"), "1}");
 }
 
 TEST(read_text_file_reads_at_most_the_buffer_and_ends_it)
@@ -499,6 +509,18 @@ TEST(no_localappdata_starts_as_unknown)
     tu_setenv(L"LOCALAPPDATA", NULL);
     read_saved_stereo_setting();
     CHECK_EQ_INT(g.stereo, STEREO_UNKNOWN);
+}
+
+TEST(the_log_says_whether_the_saved_setting_is_missing_or_not_understood)
+{
+    mt_begin();
+    log_to_file();
+    write_user_settings("{\"name\": \"Odyssey3D_Preset\", \"value\": true}");
+    read_saved_stereo_setting();
+    CHECK(log_has("no Odyssey3D_StereoEnabled value in UserSettings.json"));
+    write_user_settings("{\"name\": \"Odyssey3D_StereoEnabled\", \"value\": 1}");
+    read_saved_stereo_setting();
+    CHECK(log_has("Odyssey3D_StereoEnabled value not understood"));
 }
 
 // ===================================================================================== settings file
@@ -900,11 +922,11 @@ TEST(same_com_object_compares_identities)
     fake_sc(&wrapper);
     wrapper.identity = &a;
     int notCom = 0;
-    CHECK(same_com_object(&a, &a));
-    CHECK(!same_com_object(&a, &b));
-    CHECK(same_com_object(&wrapper, &a));
-    CHECK(!same_com_object(&a, &notCom));
-    CHECK(!same_com_object(&a, NULL));
+    CHECK(same_com_object(&a, (IUnknown *)&a));
+    CHECK(!same_com_object(&a, (IUnknown *)&b));
+    CHECK(same_com_object(&wrapper, (IUnknown *)&a));
+    CHECK(!same_com_object(&notCom, (IUnknown *)&a)); // only the first is checked: the second is the one presenting
+    CHECK(!same_com_object(NULL, (IUnknown *)&a));
     CHECK_EQ_INT(a.refs, 1); // every reference given back
     CHECK_EQ_INT(b.refs, 1);
     CHECK_EQ_INT(wrapper.refs, 1);
@@ -1277,6 +1299,7 @@ static wchar_t *install_dir_with(const char *ini)
     if (ini) REQUIRE(tu_write_text(file, ini));
     tu_join(m_logPath, TU_PATH, dir, L"Braindance3D-hooks.log");
     tt_defer(close_log, NULL);
+    DeleteCriticalSection(&g.logLock); // menus_load makes it
     return dir;
 }
 
@@ -1618,9 +1641,11 @@ TEST(squeeze_reuses_its_objects_and_remakes_them_for_a_new_size_or_format)
     squeeze_and_check(bb);
     CHECK_EQ_PTR(g.copy, copy);
     CHECK_EQ_PTR(g.pso, pso);
+    CHECK_EQ_INT(log_count("copy texture 8x2,"), 1); // made once (a new one could land at the same address)
+    CHECK_EQ_INT(log_count("squeeze pipeline created for DXGI format 28"), 1);
     squeeze_and_check(back_buffer_texture(16, 2, DXGI_FORMAT_R8G8B8A8_UNORM)); // a new size: a new copy
     CHECK_EQ_INT((int)g.copyW, 16);
-    CHECK_EQ_PTR(g.pso, pso);
+    CHECK_EQ_INT(log_count("squeeze pipeline created for DXGI format 28"), 1);
     squeeze_and_check(back_buffer_texture(16, 2, DXGI_FORMAT_B8G8R8A8_UNORM)); // a new format: both new
     CHECK_EQ_INT(g.copyFormat, DXGI_FORMAT_B8G8R8A8_UNORM);
     CHECK_EQ_INT(g.psoFormat, DXGI_FORMAT_B8G8R8A8_UNORM);
@@ -1642,6 +1667,7 @@ TEST(squeezes_go_round_the_command_allocators)
     CHECK_EQ_INT((int)g.fenceValue, RING + 2);
     CHECK_EQ_INT((int)g.allocFence[1], RING + 2); // slot 1 was used again by the last one
     CHECK_EQ_INT((int)g.squeezed, RING + 2);
+    REQUIRE(wait_fence(g.fenceValue, 5000)); // the GPU is done with bb before it is released
 }
 
 TEST(wait_fence_gives_up_after_its_time)

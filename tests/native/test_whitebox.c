@@ -1036,6 +1036,13 @@ TEST(log_start_says_what_loaded_the_stand_in_and_its_settings)
     CHECK(strstr(t, "settings: monitor primary; host NOT Cyberpunk2077.exe") != NULL);
 }
 
+// After the attach test: the test's own module and host check again.
+static void wb_after_attach(void *module)
+{
+    g_module = module;
+    g_hostAllowed = 0;
+}
+
 TEST(process_attach_and_detach_set_up_and_close_the_log)
 {
     wb_begin();
@@ -1048,7 +1055,9 @@ TEST(process_attach_and_detach_set_up_and_close_the_log)
     tu_join(ini, TU_PATH, root, SETTINGS_FILE);
     REQUIRE(tu_write_text(ini, "[Log]\nLevel=1\n"));
     tu_setenv(L"BRAINDANCE3D_ANY_EXE", L"1");
-    HMODULE saved = g_module;
+    tt_defer(wb_after_attach, g_module);
+    DeleteCriticalSection(&g_logLock); // on_process_attach makes both locks
+    DeleteCriticalSection(&g_monLock);
     on_process_attach(h); // as if the game loaded this copy
     CHECK_EQ_WSTR(g_installDir, root);
     CHECK_EQ_INT(g_hostAllowed, 1);
@@ -1058,13 +1067,10 @@ TEST(process_attach_and_detach_set_up_and_close_the_log)
     CHECK_EQ_WSTR(g_logPath, log);
     float out[3];
     dev_GetEyePosition(NULL, out, 0);
-    on_process_detach(0);
+    on_process_detach(0); // deletes both locks
     CHECK(g_log == NULL);
-    // on_process_detach deleted the locks: made again for the tests after this one.
     InitializeCriticalSection(&g_logLock);
     InitializeCriticalSection(&g_monLock);
-    g_module = saved;
-    g_hostAllowed = 0;
     char *t = tu_read_file(log, NULL);
     REQUIRE(t != NULL);
     CHECK(strstr(t, "==== 3D Braindance Edition, Odyssey3DSDK stand-in") != NULL);

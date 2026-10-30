@@ -568,6 +568,10 @@ TEST(decide_over_current_cases)
     wcscpy(st.current, foreign);
     CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_FOREIGN_SDK);
 
+    _snwprintf(st.current, MAX_PATH, L"\"%ls\"", gone); // can't be checked (quoted): may be Samsung's
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_FOREIGN_SDK);
+    CHECK(log_has(c, "can't be checked right now"));
+
     wcscpy(st.current, gone); // a folder that's gone: saved for the uninstaller
     CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_GO_ON);
     CHECK_EQ_WSTR(keep, gone);

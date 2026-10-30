@@ -408,7 +408,7 @@ static int wait_fence(UINT64 v, DWORD ms)
 static int idle_before_release(const char *what)
 {
     if (wait_fence(g.fenceValue, GPU_WAIT_MS)) return 1;
-    mlog("warning: GPU still busy after 1 s, can't replace the %s yet", what);
+    mlog("warning: GPU still busy after %d ms, can't replace the %s yet", GPU_WAIT_MS, what);
     return 0;
 }
 
@@ -642,7 +642,7 @@ static int begin_commands(void)
 {
     int slot = g.ring;
     if (!wait_fence(g.allocFence[slot], GPU_WAIT_MS)) {
-        mlog("warning: GPU still busy with an earlier squeeze after 1 s, skipping this frame");
+        mlog("warning: GPU still busy with an earlier squeeze after %d ms, skipping this frame", GPU_WAIT_MS);
         return -1;
     }
     g.ring = (g.ring + 1) % RING;
@@ -701,18 +701,24 @@ static void set_stereo(LONG v, const char *why)
         mlog("3D Mode now %s (%s, game frame %lld)", stereo_name(v), why, (long long)g.gameFrames);
 }
 
-// The saved 3D Mode in UserSettings.json's text: the "value" of the "Odyssey3D_StereoEnabled" option object.
-// STEREO_UNKNOWN when there's no such value, or it isn't true or false.
-static LONG parse_saved_stereo(const char *json)
+// Where the "value" of the "Odyssey3D_StereoEnabled" option object starts in UserSettings.json's text, or NULL if
+// that option has no value.
+static const char *saved_stereo_value(const char *json)
 {
     const char *opt = strstr(json, "\"Odyssey3D_StereoEnabled\"");
     const char *end = opt ? strchr(opt, '}') : NULL;
     const char *val = opt ? strstr(opt, "\"value\"") : NULL;
-    if (!opt || !end || !val || val > end) return STEREO_UNKNOWN;
+    if (!opt || !end || !val || val > end) return NULL;
     val += 7;
     while (*val == ' ' || *val == '\t' || *val == ':' || *val == '\r' || *val == '\n') val++;
-    if (strncmp(val, "true", 4) == 0) return STEREO_ON;
-    if (strncmp(val, "false", 5) == 0) return STEREO_OFF;
+    return val;
+}
+
+// STEREO_ON or STEREO_OFF for a saved value of true or false; STEREO_UNKNOWN for anything else (or none).
+static LONG parse_stereo_value(const char *val)
+{
+    if (val && strncmp(val, "true", 4) == 0) return STEREO_ON;
+    if (val && strncmp(val, "false", 5) == 0) return STEREO_OFF;
     return STEREO_UNKNOWN;
 }
 
@@ -738,9 +744,11 @@ static void read_saved_stereo_setting(void)
     path[MAX_PATH - 1] = 0;
     static char buf[1 << 20]; // the file is about 100 KB
     if (!read_text_file(path, buf, sizeof(buf))) { mlog("3D Mode setting: %ls not found, starting as unknown", path); return; }
-    LONG saved = parse_saved_stereo(buf);
+    const char *val = saved_stereo_value(buf);
+    LONG saved = parse_stereo_value(val);
     if (saved != STEREO_UNKNOWN) set_stereo(saved, "saved setting in UserSettings.json");
-    else mlog("3D Mode setting: no true or false Odyssey3D_StereoEnabled value in UserSettings.json, starting as unknown");
+    else if (!val) mlog("3D Mode setting: no Odyssey3D_StereoEnabled value in UserSettings.json, starting as unknown");
+    else mlog("3D Mode setting: Odyssey3D_StereoEnabled value not understood, starting as unknown");
 }
 
 // The stand-in is loaded by the game when it sets up 3D, after this plugin: looks up its call counters every 60
@@ -808,15 +816,15 @@ static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == 
 
 static int want_squeeze(void) { return g.mode == MODE_ON ? 1 : menu_open(); }
 
-// Whether a and b are the same COM object: the same pointer, or the same IUnknown identity.
-static int same_com_object(void *a, void *b)
+// Whether p (any pointer, checked first) is the same COM object as obj (a live one): the same pointer, or the
+// same IUnknown identity.
+static int same_com_object(void *p, IUnknown *obj)
 {
-    if (a == b) return 1;
+    if (p == (void *)obj) return 1;
     IUnknown *ua = NULL, *ub = NULL;
     int same = 0;
-    if (looks_like_com(a) && looks_like_com(b) &&
-        SUCCEEDED(IUnknown_QueryInterface((IUnknown *)a, &IID_IUnknown, (void **)&ua)) &&
-        SUCCEEDED(IUnknown_QueryInterface((IUnknown *)b, &IID_IUnknown, (void **)&ub)))
+    if (looks_like_com(p) && SUCCEEDED(IUnknown_QueryInterface((IUnknown *)p, &IID_IUnknown, (void **)&ua)) &&
+        SUCCEEDED(IUnknown_QueryInterface(obj, &IID_IUnknown, (void **)&ub)))
         same = ua == ub;
     if (ua) IUnknown_Release(ua);
     if (ub) IUnknown_Release(ub);
@@ -828,7 +836,7 @@ static int same_com_object(void *a, void *b)
 static int is_game_swap_chain(IDXGISwapChain *sc)
 {
     void *game = swap_chain_entry(g.scIndex);
-    return game && same_com_object(game, sc);
+    return game && same_com_object(game, (IUnknown *)sc);
 }
 
 // At log level 2, the frame counts once a second.
