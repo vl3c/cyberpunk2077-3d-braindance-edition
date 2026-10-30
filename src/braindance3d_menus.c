@@ -14,6 +14,8 @@
 //     finished and in the PRESENT state.
 //   - The squeeze is a copy of the back buffer and one full-screen draw, recorded on our own command
 //     list and executed on the game's direct queue, so it runs after the game's work for the frame.
+//     With DLSS frame generation loaded the game's queue is a Streamline proxy; the squeeze uses the
+//     native queue behind it, the one the back buffers belong to.
 //     It sits in front of OptiScaler, Streamline and ReShade's own Present wrappers when those wrap
 //     the swap chain the game holds, and after them otherwise.
 //   - The shaders are compiled when the plugin loads, with Windows' own d3dcompiler_47.dll.
@@ -68,7 +70,8 @@
 #define VT_PRESENT 8   // IDXGISwapChain::Present
 #define VT_PRESENT1 22 // IDXGISwapChain1::Present1
 
-#define RING 4 // command allocators in flight
+#define RING 4            // command allocators in flight
+#define GPU_WAIT_MS 1000  // longest wait for the GPU before a frame is skipped
 
 typedef void *(*GpuPresentFn)(int32_t *deviceIndex, uint8_t sync, UINT interval);
 typedef HRESULT(STDMETHODCALLTYPE *PresentFn)(IDXGISwapChain *sc, UINT interval, UINT flags);
@@ -76,6 +79,7 @@ typedef HRESULT(STDMETHODCALLTYPE *Present1Fn)(IDXGISwapChain1 *sc, UINT interva
                                                const DXGI_PRESENT_PARAMETERS *params);
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef LONG64 (*DeviceCallsFn)(int slot);
+typedef int (*SlGetNativeInterfaceFn)(void *proxy, void **base);
 typedef HRESULT(WINAPI *D3DCompileFn)(const void *src, SIZE_T len, const char *name, const D3D_SHADER_MACRO *defines,
                                       ID3DInclude *include, const char *entry, const char *target, UINT flags1,
                                       UINT flags2, ID3DBlob **code, ID3DBlob **errors);
@@ -176,6 +180,7 @@ static int fail(const char *what, HRESULT hr)
     return 0;
 }
 
+// Opens <dir>\Braindance3D-hooks.log, keeping the previous session as Braindance3D-hooks.old.log.
 static FILE *open_hooks_log_in(const wchar_t *dir)
 {
     wchar_t path[MAX_PATH], old[MAX_PATH];
@@ -186,20 +191,47 @@ static FILE *open_hooks_log_in(const wchar_t *dir)
     return _wfopen(path, L"w");
 }
 
+// %LOCALAPPDATA%\Braindance3D, created if needed. 0 if there is no usable LOCALAPPDATA.
+static int local_app_data_dir(wchar_t *out)
+{
+    wchar_t local[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (!n || n >= MAX_PATH || _snwprintf(out, MAX_PATH, L"%ls\\Braindance3D", local) < 0) return 0;
+    out[MAX_PATH - 1] = 0;
+    CreateDirectoryW(out, NULL);
+    return 1;
+}
+
 // Next to the settings file, or %LOCALAPPDATA%\Braindance3D if the game folder is read-only (like the stand-in's log).
 static void open_hooks_log(const wchar_t *dir)
 {
     g.log = open_hooks_log_in(dir);
-    if (g.log) return;
-    wchar_t local[MAX_PATH], fallback[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-    if (!n || n >= MAX_PATH || _snwprintf(fallback, MAX_PATH, L"%ls\\Braindance3D", local) < 0) return;
-    fallback[MAX_PATH - 1] = 0;
-    CreateDirectoryW(fallback, NULL);
-    g.log = open_hooks_log_in(fallback);
+    wchar_t fallback[MAX_PATH];
+    if (!g.log && local_app_data_dir(fallback)) g.log = open_hooks_log_in(fallback);
 }
 
 // ---------------------------------------------------------------- settings
+
+// Whether an ini value is word (any case), alone or followed by a space or a comment.
+static int value_is(const wchar_t *v, const wchar_t *word)
+{
+    size_t n = wcslen(word);
+    return _wcsnicmp(v, word, n) == 0 && (!v[n] || wcschr(L" \t;#", v[n]));
+}
+
+// [Log] Level, by the stand-in's rule (parse_level): no number is 1, 0 or less is 0, 2 or more is 2.
+static int parse_log_level(const wchar_t *v)
+{
+    while (*v == L' ' || *v == L'\t') v++;
+    long n = *v >= L'0' && *v <= L'9' ? wcstol(v, NULL, 10) : 1;
+    return n <= 0 ? 0 : n >= 2 ? 2 : 1;
+}
+
+// [Menus] Squeeze: off, on, or auto (anything else).
+static int parse_squeeze_mode(const wchar_t *v)
+{
+    return value_is(v, L"off") ? MODE_OFF : value_is(v, L"on") ? MODE_ON : MODE_AUTO;
+}
 
 static void read_menu_settings(const wchar_t *dir)
 {
@@ -209,15 +241,12 @@ static void read_menu_settings(const wchar_t *dir)
     if (_snwprintf(ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", dir) < 0) return;
     ini[MAX_PATH - 1] = 0;
     GetPrivateProfileStringW(L"Log", L"Level", L"1", v, 64, ini);
-    // Same rule as the stand-in's parse_level: no number is 1, 2 or more is 2.
-    const wchar_t *t = v;
-    while (*t == L' ' || *t == L'\t') t++;
-    long n = *t >= L'0' && *t <= L'9' ? wcstol(t, NULL, 10) : 1;
-    g.level = n <= 0 ? 0 : n >= 2 ? 2 : 1;
+    g.level = parse_log_level(v);
     GetPrivateProfileStringW(L"Menus", L"Squeeze", L"auto", v, 64, ini);
-    if (_wcsnicmp(v, L"off", 3) == 0 && (!v[3] || wcschr(L" \t;#", v[3]))) g.mode = MODE_OFF;
-    else if (_wcsnicmp(v, L"on", 2) == 0 && (!v[2] || wcschr(L" \t;#", v[2]))) g.mode = MODE_ON;
+    g.mode = parse_squeeze_mode(v);
 }
+
+static const char *mode_name(int mode) { return mode == MODE_OFF ? "off" : mode == MODE_ON ? "on (every frame)" : "auto"; }
 
 // ---------------------------------------------------------------- memory checks
 
@@ -230,32 +259,64 @@ static int readable(const void *p, size_t size)
     return (const char *)p + size <= (const char *)mbi.BaseAddress + mbi.RegionSize;
 }
 
+// The loaded module that holds addr (no reference added), or NULL.
+static HMODULE module_at(const void *addr)
+{
+    HMODULE m = NULL;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)addr, &m))
+        return NULL;
+    return m;
+}
+
 // Whether p looks like a COM object: readable, with a vtable whose first entries point into a loaded module.
 static int looks_like_com(void *p)
 {
     if (!readable(p, sizeof(void *))) return 0;
     void **vt = *(void ***)p;
     if (!readable(vt, 3 * sizeof(void *))) return 0;
-    HMODULE m;
     for (int i = 0; i < 3; i++)
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                (LPCWSTR)vt[i], &m))
-            return 0;
+        if (!module_at(vt[i])) return 0;
     return 1;
 }
 
+// The file name of the module that holds addr, as UTF-8 in buf, or "?". Returns buf.
 static const char *module_of(const void *addr, char *buf, int size)
 {
-    HMODULE m;
+    HMODULE m = module_at(addr);
     wchar_t w[MAX_PATH];
     buf[0] = 0;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)addr, &m) && GetModuleFileNameW(m, w, MAX_PATH)) {
+    if (m && GetModuleFileNameW(m, w, MAX_PATH)) {
         const wchar_t *base = wcsrchr(w, L'\\');
         WideCharToMultiByte(CP_UTF8, 0, base ? base + 1 : w, -1, buf, size, NULL, NULL);
     }
     if (!buf[0]) snprintf(buf, size, "?");
     return buf;
+}
+
+// ---------------------------------------------------------------- the game's device data
+
+// The game's SDeviceData, or 0 if it isn't set up (or readable).
+static uintptr_t device_data(void)
+{
+    return readable((void *)g.deviceData, sizeof(void *)) ? *(uintptr_t *)g.deviceData : 0;
+}
+
+// The swap chain pointer in device data entry index (device index - 1), or NULL.
+static void *swap_chain_entry(int index)
+{
+    uintptr_t dd = device_data();
+    if (!dd || index < 0 || index >= DD_SWAPCHAIN_COUNT) return NULL;
+    void **entry = (void **)(dd + DD_SWAPCHAINS + (uintptr_t)index * DD_SWAPCHAIN_STRIDE);
+    return readable(entry, sizeof(void *)) ? *entry : NULL;
+}
+
+// The game's direct command queue as it holds it (a Streamline proxy with DLSS-G loaded), or NULL.
+static void *direct_queue_entry(void)
+{
+    uintptr_t dd = device_data();
+    void **slot = dd ? (void **)(dd + DD_DIRECT_QUEUE) : NULL;
+    return readable(slot, sizeof(void *)) ? *slot : NULL;
 }
 
 // ---------------------------------------------------------------- the squeeze pass
@@ -275,28 +336,32 @@ static const char g_hlsl[] =
     "    return frame.Sample(linearClamp, float2(x, uv.y));\n"
     "}\n";
 
+// Compiles one entry point of g_hlsl; logs the compiler's message on failure.
+static HRESULT compile_entry(D3DCompileFn compile, const char *entry, const char *target, ID3DBlob **code)
+{
+    ID3DBlob *err = NULL;
+    HRESULT hr = compile(g_hlsl, sizeof(g_hlsl) - 1, "braindance3d_menus", NULL, NULL, entry, target,
+                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, code, &err);
+    if (FAILED(hr) && err)
+        mlog("shader compiler: %.*s", (int)ID3D10Blob_GetBufferSize(err), (const char *)ID3D10Blob_GetBufferPointer(err));
+    if (err) ID3D10Blob_Release(err);
+    return hr;
+}
+
 static int compile_shaders(void)
 {
     HMODULE dc = LoadLibraryExW(L"d3dcompiler_47.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     D3DCompileFn compile = dc ? (D3DCompileFn)(void *)GetProcAddress(dc, "D3DCompile") : NULL;
     if (!compile) return fail("d3dcompiler_47.dll (System32) or its D3DCompile export not found", HRESULT_FROM_WIN32(GetLastError()));
-    ID3DBlob *err = NULL;
-    HRESULT hr = compile(g_hlsl, sizeof(g_hlsl) - 1, "braindance3d_menus", NULL, NULL, "vs", "vs_5_0",
-                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &g.vs, &err);
-    if (SUCCEEDED(hr))
-        hr = compile(g_hlsl, sizeof(g_hlsl) - 1, "braindance3d_menus", NULL, NULL, "ps", "ps_5_0",
-                     D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &g.ps, &err);
-    if (FAILED(hr)) {
-        if (err) mlog("shader compiler: %.*s", (int)ID3D10Blob_GetBufferSize(err), (const char *)ID3D10Blob_GetBufferPointer(err));
-        if (err) ID3D10Blob_Release(err);
-        return fail("compiling the squeeze shaders", hr);
-    }
-    if (err) ID3D10Blob_Release(err);
+    HRESULT hr = compile_entry(compile, "vs", "vs_5_0", &g.vs);
+    if (SUCCEEDED(hr)) hr = compile_entry(compile, "ps", "ps_5_0", &g.ps);
+    if (FAILED(hr)) return fail("compiling the squeeze shaders", hr);
     mlog("squeeze shaders compiled (vs %u bytes, ps %u bytes)", (unsigned)ID3D10Blob_GetBufferSize(g.vs),
          (unsigned)ID3D10Blob_GetBufferSize(g.ps));
     return 1;
 }
 
+// One SRV table for the pixel shader (the copy of the back buffer) and a linear clamp sampler.
 static int create_root_signature(void)
 {
     HMODULE d12 = GetModuleHandleW(L"d3d12.dll");
@@ -342,11 +407,12 @@ static int wait_fence(UINT64 v, DWORD ms)
 // Before a resource that earlier squeezes used is released: the GPU must be done with all of them.
 static int idle_before_release(const char *what)
 {
-    if (wait_fence(g.fenceValue, 1000)) return 1;
+    if (wait_fence(g.fenceValue, GPU_WAIT_MS)) return 1;
     mlog("warning: GPU still busy after 1 s, can't replace the %s yet", what);
     return 0;
 }
 
+// The squeeze pipeline for back buffers of this format (made again when the format changes).
 static int create_pso(DXGI_FORMAT format)
 {
     if (g.pso && g.psoFormat == format) return 1;
@@ -376,6 +442,7 @@ static int create_pso(DXGI_FORMAT format)
     return 1;
 }
 
+// The texture the back buffer is copied into, with its SRV, matching the back buffer's size and format.
 static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
 {
     if (g.copy && g.copyW == bb->Width && g.copyH == bb->Height && g.copyFormat == bb->Format) return 1;
@@ -411,13 +478,10 @@ static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
 // With DLSS frame generation loaded, Streamline hands the game proxy D3D12 objects (vtables in sl.interposer.dll), while
 // the swap chain's back buffers belong to the native device. Returns the native object behind a Streamline proxy, with
 // a reference added (slGetNativeInterface adds one), or p itself.
-typedef int (*SlGetNativeInterfaceFn)(void *proxy, void **base);
 static void *native_interface(void *p, const char *what)
 {
-    HMODULE sl = GetModuleHandleW(L"sl.interposer.dll"), owner;
-    if (!sl || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                   (LPCWSTR)**(void ***)p, &owner) || owner != sl)
-        return p;
+    HMODULE sl = GetModuleHandleW(L"sl.interposer.dll");
+    if (!sl || module_at(**(void ***)p) != sl) return p;
     SlGetNativeInterfaceFn get = (SlGetNativeInterfaceFn)(void *)GetProcAddress(sl, "slGetNativeInterface");
     void *base = NULL;
     int r = get ? get(p, &base) : -1;
@@ -431,36 +495,48 @@ static void *native_interface(void *p, const char *what)
     return base;
 }
 
-static int init_d3d(void)
+// The game's direct queue as a native ID3D12CommandQueue, with a reference of ours. NULL (and the squeeze off) if not.
+static ID3D12CommandQueue *game_direct_queue(void)
 {
-    if (g.device) return 1;
     char mod[MAX_PATH];
-    uintptr_t dd = readable((void *)g.deviceData, sizeof(void *)) ? *(uintptr_t *)g.deviceData : 0;
-    void **slot = dd ? (void **)(dd + DD_DIRECT_QUEUE) : NULL;
-    void *queue = readable(slot, sizeof(void *)) ? *slot : NULL;
-    if (!looks_like_com(queue)) return fail("the game's direct command queue doesn't look valid (game version changed?)", E_POINTER);
-    mlog("direct queue %p (vtable in %s)", queue, module_of(**(void ***)queue, mod, sizeof(mod)));
-    void *game = queue;
-    queue = native_interface(queue, "direct queue");
+    void *game = direct_queue_entry();
+    if (!looks_like_com(game)) {
+        fail("the game's direct command queue doesn't look valid (game version changed?)", E_POINTER);
+        return NULL;
+    }
+    mlog("direct queue %p (vtable in %s)", game, module_of(**(void ***)game, mod, sizeof(mod)));
+    void *queue = native_interface(game, "direct queue");
     ID3D12CommandQueue *q = NULL;
     HRESULT hr = IUnknown_QueryInterface((IUnknown *)queue, &IID_ID3D12CommandQueue, (void **)&q);
     if (queue != game) IUnknown_Release((IUnknown *)queue); // q holds its own reference
-    if (FAILED(hr)) return fail("QueryInterface(ID3D12CommandQueue) on the game's direct queue", hr);
+    if (FAILED(hr)) {
+        fail("QueryInterface(ID3D12CommandQueue) on the game's direct queue", hr);
+        return NULL;
+    }
     D3D12_COMMAND_QUEUE_DESC qd = ID3D12CommandQueue_GetDesc(q);
     if (qd.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
         ID3D12CommandQueue_Release(q);
-        return fail("the game's queue at the direct-queue offset isn't a direct queue", E_UNEXPECTED);
+        fail("the game's queue at the direct-queue offset isn't a direct queue", E_UNEXPECTED);
+        return NULL;
     }
-    g.queue = q;
-    hr = ID3D12CommandQueue_GetDevice(q, &IID_ID3D12Device, (void **)&g.device);
-    if (FAILED(hr)) return fail("GetDevice on the direct queue", hr);
-    if (!g.vs || !g.ps) return fail("the squeeze shaders weren't compiled", E_FAIL);
-    if (!create_root_signature()) return 0;
+    return q;
+}
+
+// One RTV (the back buffer) and one shader-visible SRV (the copy).
+static int create_descriptor_heaps(void)
+{
     D3D12_DESCRIPTOR_HEAP_DESC rtv = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
     D3D12_DESCRIPTOR_HEAP_DESC srv = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
-    hr = ID3D12Device_CreateDescriptorHeap(g.device, &rtv, &IID_ID3D12DescriptorHeap, (void **)&g.rtvHeap);
+    HRESULT hr = ID3D12Device_CreateDescriptorHeap(g.device, &rtv, &IID_ID3D12DescriptorHeap, (void **)&g.rtvHeap);
     if (SUCCEEDED(hr)) hr = ID3D12Device_CreateDescriptorHeap(g.device, &srv, &IID_ID3D12DescriptorHeap, (void **)&g.srvHeap);
     if (FAILED(hr)) return fail("CreateDescriptorHeap", hr);
+    return 1;
+}
+
+// RING command allocators, one command list (closed), and the fence with its event.
+static int create_command_objects(void)
+{
+    HRESULT hr = S_OK;
     for (int i = 0; i < RING && SUCCEEDED(hr); i++)
         hr = ID3D12Device_CreateCommandAllocator(g.device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
                                                  (void **)&g.alloc[i]);
@@ -473,8 +549,27 @@ static int init_d3d(void)
     if (FAILED(hr)) return fail("CreateFence", hr);
     g.fenceEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (!g.fenceEvent) return fail("CreateEvent", HRESULT_FROM_WIN32(GetLastError()));
+    return 1;
+}
+
+// Sets up everything the squeeze records with, for queue q (whose reference g.queue takes).
+static int init_d3d_on(ID3D12CommandQueue *q)
+{
+    g.queue = q;
+    HRESULT hr = ID3D12CommandQueue_GetDevice(q, &IID_ID3D12Device, (void **)&g.device);
+    if (FAILED(hr)) return fail("GetDevice on the direct queue", hr);
+    if (!g.vs || !g.ps) return fail("the squeeze shaders weren't compiled", E_FAIL);
+    if (!create_root_signature() || !create_descriptor_heaps() || !create_command_objects()) return 0;
     mlog("D3D12 ready: device %p, queue %p", (void *)g.device, (void *)g.queue);
     return 1;
+}
+
+// On the first squeeze: the game's queue and everything the squeeze records with.
+static int init_d3d(void)
+{
+    if (g.device) return 1;
+    ID3D12CommandQueue *q = game_direct_queue();
+    return q && init_d3d_on(q);
 }
 
 static void barrier(D3D12_RESOURCE_BARRIER *b, ID3D12Resource *r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
@@ -487,18 +582,18 @@ static void barrier(D3D12_RESOURCE_BARRIER *b, ID3D12Resource *r, D3D12_RESOURCE
     b->Transition.StateAfter = to;
 }
 
-// Squeezes the current back buffer of sc. Called just before the swap chain presents it.
-static void squeeze(IDXGISwapChain *sc)
+// The swap chain's current back buffer (with a reference) and its index, if it belongs to our device. NULL (and the
+// squeeze off) if not.
+static ID3D12Resource *current_back_buffer(IDXGISwapChain *sc, UINT *index)
 {
-    if (g.failed || !init_d3d()) return;
     IDXGISwapChain3 *sc3 = NULL;
     HRESULT hr = IDXGISwapChain_QueryInterface(sc, &IID_IDXGISwapChain3, (void **)&sc3);
-    if (FAILED(hr)) { fail("QueryInterface(IDXGISwapChain3)", hr); return; }
-    UINT index = IDXGISwapChain3_GetCurrentBackBufferIndex(sc3);
+    if (FAILED(hr)) { fail("QueryInterface(IDXGISwapChain3)", hr); return NULL; }
+    *index = IDXGISwapChain3_GetCurrentBackBufferIndex(sc3);
     ID3D12Resource *bb = NULL;
-    hr = IDXGISwapChain3_GetBuffer(sc3, index, &IID_ID3D12Resource, (void **)&bb);
+    hr = IDXGISwapChain3_GetBuffer(sc3, *index, &IID_ID3D12Resource, (void **)&bb);
     IDXGISwapChain3_Release(sc3);
-    if (FAILED(hr)) { fail("GetBuffer on the swap chain", hr); return; }
+    if (FAILED(hr)) { fail("GetBuffer on the swap chain", hr); return NULL; }
     ID3D12Device *bbDevice = NULL;
     hr = ID3D12Resource_GetDevice(bb, &IID_ID3D12Device, (void **)&bbDevice);
     if (bbDevice) ID3D12Device_Release(bbDevice);
@@ -507,23 +602,15 @@ static void squeeze(IDXGISwapChain *sc)
         // native_interface); never record another device's resource on the game's queue.
         ID3D12Resource_Release(bb);
         fail("the back buffer belongs to another D3D12 device", FAILED(hr) ? hr : E_UNEXPECTED);
-        return;
+        return NULL;
     }
-    D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
-    if (!create_copy_texture(&desc) || !create_pso(desc.Format)) { ID3D12Resource_Release(bb); return; }
+    return bb;
+}
 
-    int slot = g.ring;
-    if (!wait_fence(g.allocFence[slot], 1000)) {
-        mlog("warning: GPU still busy with an earlier squeeze after 1 s, skipping this frame");
-        ID3D12Resource_Release(bb);
-        return;
-    }
-    g.ring = (g.ring + 1) % RING;
-    hr = ID3D12CommandAllocator_Reset(g.alloc[slot]);
-    if (SUCCEEDED(hr)) hr = ID3D12GraphicsCommandList_Reset(g.list, g.alloc[slot], g.pso);
-    if (FAILED(hr)) { ID3D12Resource_Release(bb); fail("resetting the command list", hr); return; }
-
-    ID3D12GraphicsCommandList *cl = g.list;
+// Records the squeeze of bb (in the PRESENT state before and after): copy it, then draw the copy squeezed into each
+// half.
+static void record_squeeze(ID3D12GraphicsCommandList *cl, ID3D12Resource *bb, const D3D12_RESOURCE_DESC *desc)
+{
     D3D12_RESOURCE_BARRIER b[2];
     barrier(&b[0], bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
     ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, b);
@@ -535,8 +622,8 @@ static void squeeze(IDXGISwapChain *sc)
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(g.rtvHeap);
     ID3D12Device_CreateRenderTargetView(g.device, bb, NULL, rtv);
     ID3D12GraphicsCommandList_OMSetRenderTargets(cl, 1, &rtv, FALSE, NULL);
-    D3D12_VIEWPORT vp = { 0, 0, (float)desc.Width, (float)desc.Height, 0, 1 };
-    D3D12_RECT scissor = { 0, 0, (LONG)desc.Width, (LONG)desc.Height };
+    D3D12_VIEWPORT vp = { 0, 0, (float)desc->Width, (float)desc->Height, 0, 1 };
+    D3D12_RECT scissor = { 0, 0, (LONG)desc->Width, (LONG)desc->Height };
     ID3D12GraphicsCommandList_RSSetViewports(cl, 1, &vp);
     ID3D12GraphicsCommandList_RSSetScissorRects(cl, 1, &scissor);
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(cl, g.rootSig);
@@ -548,15 +635,60 @@ static void squeeze(IDXGISwapChain *sc)
     barrier(&b[0], bb, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     barrier(&b[1], g.copy, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
     ID3D12GraphicsCommandList_ResourceBarrier(cl, 2, b);
-    hr = ID3D12GraphicsCommandList_Close(cl);
-    if (FAILED(hr)) { ID3D12Resource_Release(bb); fail("closing the command list", hr); return; }
-    ID3D12CommandList *lists[1] = { (ID3D12CommandList *)cl };
+}
+
+// Takes the next command allocator once the GPU is done with it and resets the list on it. Its ring slot, or -1.
+static int begin_commands(void)
+{
+    int slot = g.ring;
+    if (!wait_fence(g.allocFence[slot], GPU_WAIT_MS)) {
+        mlog("warning: GPU still busy with an earlier squeeze after 1 s, skipping this frame");
+        return -1;
+    }
+    g.ring = (g.ring + 1) % RING;
+    HRESULT hr = ID3D12CommandAllocator_Reset(g.alloc[slot]);
+    if (SUCCEEDED(hr)) hr = ID3D12GraphicsCommandList_Reset(g.list, g.alloc[slot], g.pso);
+    if (FAILED(hr)) { fail("resetting the command list", hr); return -1; }
+    return slot;
+}
+
+// Closes the list and runs it on the game's queue; the slot's allocator is free again once the fence passes.
+static int submit_commands(int slot)
+{
+    HRESULT hr = ID3D12GraphicsCommandList_Close(g.list);
+    if (FAILED(hr)) return fail("closing the command list", hr);
+    ID3D12CommandList *lists[1] = { (ID3D12CommandList *)g.list };
     ID3D12CommandQueue_ExecuteCommandLists(g.queue, 1, lists);
     g.allocFence[slot] = ++g.fenceValue;
     ID3D12CommandQueue_Signal(g.queue, g.fence, g.fenceValue);
-    ID3D12Resource_Release(bb);
+    return 1;
+}
+
+// Squeezes bb, a back buffer in the PRESENT state on our device. 1 when the work was submitted.
+static int squeeze_back_buffer(ID3D12Resource *bb)
+{
+    D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
+    if (!create_copy_texture(&desc) || !create_pso(desc.Format)) return 0;
+    int slot = begin_commands();
+    if (slot < 0) return 0;
+    record_squeeze(g.list, bb, &desc);
+    if (!submit_commands(slot)) return 0;
     g.squeezed++;
-    if (g.squeezed == 1) mlog("first squeeze: back buffer %u, %llux%u", index, (unsigned long long)desc.Width, desc.Height);
+    return 1;
+}
+
+// Squeezes the current back buffer of sc. Called just before the swap chain presents it.
+static void squeeze(IDXGISwapChain *sc)
+{
+    if (g.failed || !init_d3d()) return;
+    UINT index;
+    ID3D12Resource *bb = current_back_buffer(sc, &index);
+    if (!bb) return;
+    if (squeeze_back_buffer(bb) && g.squeezed == 1) {
+        D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
+        mlog("first squeeze: back buffer %u, %llux%u", index, (unsigned long long)desc.Width, desc.Height);
+    }
+    ID3D12Resource_Release(bb);
 }
 
 // ---------------------------------------------------------------- when to squeeze
@@ -569,8 +701,34 @@ static void set_stereo(LONG v, const char *why)
         mlog("3D Mode now %s (%s, game frame %lld)", stereo_name(v), why, (long long)g.gameFrames);
 }
 
+// The saved 3D Mode in UserSettings.json's text: the "value" of the "Odyssey3D_StereoEnabled" option object.
+// STEREO_UNKNOWN when there's no such value, or it isn't true or false.
+static LONG parse_saved_stereo(const char *json)
+{
+    const char *opt = strstr(json, "\"Odyssey3D_StereoEnabled\"");
+    const char *end = opt ? strchr(opt, '}') : NULL;
+    const char *val = opt ? strstr(opt, "\"value\"") : NULL;
+    if (!opt || !end || !val || val > end) return STEREO_UNKNOWN;
+    val += 7;
+    while (*val == ' ' || *val == '\t' || *val == ':' || *val == '\r' || *val == '\n') val++;
+    if (strncmp(val, "true", 4) == 0) return STEREO_ON;
+    if (strncmp(val, "false", 5) == 0) return STEREO_OFF;
+    return STEREO_UNKNOWN;
+}
+
+// Reads at most size - 1 bytes of a file into buf, NUL-terminated. 0 if it can't be opened.
+static int read_text_file(const wchar_t *path, char *buf, size_t size)
+{
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) return 0;
+    size_t len = fread(buf, 1, size - 1, f);
+    fclose(f);
+    buf[len] = 0;
+    return 1;
+}
+
 // First guess at whether 3D Mode is on: the game saves its settings to UserSettings.json when it quits, so the
-// file holds the setting this session started with. Only the "Odyssey3D_StereoEnabled" option object is read.
+// file holds the setting this session started with.
 static void read_saved_stereo_setting(void)
 {
     wchar_t dir[MAX_PATH], path[MAX_PATH];
@@ -578,57 +736,34 @@ static void read_saved_stereo_setting(void)
     if (!n || n >= MAX_PATH) { mlog("3D Mode setting: no LOCALAPPDATA, starting as unknown"); return; }
     if (_snwprintf(path, MAX_PATH, L"%ls\\CD Projekt Red\\Cyberpunk 2077\\UserSettings.json", dir) < 0) return;
     path[MAX_PATH - 1] = 0;
-    FILE *f = _wfopen(path, L"rb");
-    if (!f) { mlog("3D Mode setting: %ls not found, starting as unknown", path); return; }
     static char buf[1 << 20]; // the file is about 100 KB
-    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[len] = 0;
-    const char *opt = strstr(buf, "\"Odyssey3D_StereoEnabled\"");
-    const char *end = opt ? strchr(opt, '}') : NULL;
-    const char *val = opt ? strstr(opt, "\"value\"") : NULL;
-    if (!opt || !end || !val || val > end) {
-        mlog("3D Mode setting: no Odyssey3D_StereoEnabled value in UserSettings.json, starting as unknown");
-        return;
-    }
-    val += 7;
-    while (*val == ' ' || *val == '\t' || *val == ':' || *val == '\r' || *val == '\n') val++;
-    if (strncmp(val, "true", 4) == 0) set_stereo(STEREO_ON, "saved setting in UserSettings.json");
-    else if (strncmp(val, "false", 5) == 0) set_stereo(STEREO_OFF, "saved setting in UserSettings.json");
-    else mlog("3D Mode setting: Odyssey3D_StereoEnabled value not understood, starting as unknown");
+    if (!read_text_file(path, buf, sizeof(buf))) { mlog("3D Mode setting: %ls not found, starting as unknown", path); return; }
+    LONG saved = parse_saved_stereo(buf);
+    if (saved != STEREO_UNKNOWN) set_stereo(saved, "saved setting in UserSettings.json");
+    else mlog("3D Mode setting: no true or false Odyssey3D_StereoEnabled value in UserSettings.json, starting as unknown");
 }
 
-static void note_frame_calls(LONG64 dEye, LONG64 dAvail);
-
-// Called once per game frame, from GpuApi::Present: what the game asked the stand-in since the last one.
-static void note_game_frame(void)
+// The stand-in is loaded by the game when it sets up 3D, after this plugin: looks up its call counters every 60
+// game frames until they're there. 1 when they can be read for this frame.
+static int find_device_calls(void)
 {
-    if (!g.deviceCalls) {
-        // The stand-in is loaded by the game when it sets up 3D, after this plugin; look it up until it's there.
-        if (g.gameFrames % 60 != 1) return;
-        HMODULE sdk = GetModuleHandleW(L"Odyssey3DSDK.dll");
-        g.deviceCalls = sdk ? (DeviceCallsFn)(void *)GetProcAddress(sdk, "braindance3d_device_calls") : NULL;
-        if (!g.deviceCalls) return;
-        // Pinned: this pointer is read every frame, so the stand-in must never unload under it.
-        HMODULE pinned;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                           (LPCWSTR)(void *)g.deviceCalls, &pinned);
-        g.lastEye = g.deviceCalls(SLOT_EYE_POSITION);
-        g.lastAvailable = g.deviceCalls(SLOT_IS_AVAILABLE);
-        mlog("menu detection: the stand-in's call counters found (game frame %lld: %lld eye positions, %lld "
-             "IsAvailable so far)", (long long)g.gameFrames, (long long)g.lastEye, (long long)g.lastAvailable);
-        return;
-    }
-    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE);
-    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable;
-    g.lastEye = eye;
-    g.lastAvailable = avail;
-    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable -> %s", (long long)g.gameFrames, (long long)dEye,
-         (long long)dAvail, dEye ? "stereo" : "flat");
-    note_frame_calls(dEye, dAvail);
+    if (g.deviceCalls) return 1;
+    if (g.gameFrames % 60 != 1) return 0;
+    HMODULE sdk = GetModuleHandleW(L"Odyssey3DSDK.dll");
+    g.deviceCalls = sdk ? (DeviceCallsFn)(void *)GetProcAddress(sdk, "braindance3d_device_calls") : NULL;
+    if (!g.deviceCalls) return 0;
+    // Pinned: this pointer is read every frame, so the stand-in must never unload under it.
+    HMODULE pinned;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       (LPCWSTR)(void *)g.deviceCalls, &pinned);
+    g.lastEye = g.deviceCalls(SLOT_EYE_POSITION);
+    g.lastAvailable = g.deviceCalls(SLOT_IS_AVAILABLE);
+    mlog("menu detection: the stand-in's call counters found (game frame %lld: %lld eye positions, %lld "
+         "IsAvailable so far)", (long long)g.gameFrames, (long long)g.lastEye, (long long)g.lastAvailable);
+    return 0; // counted from the next frame on
 }
 
-// What one game frame's stand-in calls say (split out of note_game_frame for the tests).
+// What one game frame's stand-in calls say: dEye eye positions and dAvail IsAvailable calls since the last frame.
 static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
 {
     LONG flat = dEye == 0;
@@ -648,6 +783,19 @@ static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
     }
 }
 
+// Called once per game frame, from GpuApi::Present: what the game asked the stand-in since the last one.
+static void note_game_frame(void)
+{
+    if (!find_device_calls()) return;
+    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE);
+    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable;
+    g.lastEye = eye;
+    g.lastAvailable = avail;
+    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable -> %s", (long long)g.gameFrames, (long long)dEye,
+         (long long)dAvail, dEye ? "stereo" : "flat");
+    note_frame_calls(dEye, dAvail);
+}
+
 void menus_note_3d_mode(int on)
 {
     // The handler runs on the main thread while frames go on. The 2D-gameplay run starts over (a plain store: the
@@ -660,24 +808,36 @@ static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == 
 
 static int want_squeeze(void) { return g.mode == MODE_ON ? 1 : menu_open(); }
 
+// Whether a and b are the same COM object: the same pointer, or the same IUnknown identity.
+static int same_com_object(void *a, void *b)
+{
+    if (a == b) return 1;
+    IUnknown *ua = NULL, *ub = NULL;
+    int same = 0;
+    if (looks_like_com(a) && looks_like_com(b) &&
+        SUCCEEDED(IUnknown_QueryInterface((IUnknown *)a, &IID_IUnknown, (void **)&ua)) &&
+        SUCCEEDED(IUnknown_QueryInterface((IUnknown *)b, &IID_IUnknown, (void **)&ub)))
+        same = ua == ub;
+    if (ua) IUnknown_Release(ua);
+    if (ub) IUnknown_Release(ub);
+    return same;
+}
+
 // Whether sc is the game's swap chain. The patched vtable can be shared by other swap chains (every DXGI swap
 // chain, or every one Streamline wraps), and the game can recreate its own, so the entry is read every time.
 static int is_game_swap_chain(IDXGISwapChain *sc)
 {
-    uintptr_t dd = readable((void *)g.deviceData, sizeof(void *)) ? *(uintptr_t *)g.deviceData : 0;
-    void **entry = dd ? (void **)(dd + DD_SWAPCHAINS + (uintptr_t)g.scIndex * DD_SWAPCHAIN_STRIDE) : NULL;
-    void *game = entry && readable(entry, sizeof(void *)) ? *entry : NULL;
-    if (!game) return 0;
-    if (game == (void *)sc) return 1;
-    // Same object through another interface pointer: compare the IUnknown identities.
-    IUnknown *a = NULL, *b = NULL;
-    int same = 0;
-    if (looks_like_com(game) && SUCCEEDED(IUnknown_QueryInterface((IUnknown *)game, &IID_IUnknown, (void **)&a)) &&
-        SUCCEEDED(IDXGISwapChain_QueryInterface(sc, &IID_IUnknown, (void **)&b)))
-        same = a == b;
-    if (a) IUnknown_Release(a);
-    if (b) IUnknown_Release(b);
-    return same;
+    void *game = swap_chain_entry(g.scIndex);
+    return game && same_com_object(game, sc);
+}
+
+// At log level 2, the frame counts once a second.
+static void log_summary(void)
+{
+    DWORD now = GetTickCount();
+    if (g.level < 2 || now - g.lastSummary < 1000) return;
+    mlog("summary: %lld frames presented, %lld squeezed", (long long)g.frames, (long long)g.squeezed);
+    g.lastSummary = now;
 }
 
 static void before_present(IDXGISwapChain *sc, const char *which)
@@ -697,11 +857,7 @@ static void before_present(IDXGISwapChain *sc, const char *which)
         g.lastSqueezeFrame = g.gameFrames;
         squeeze(sc);
     }
-    DWORD now = GetTickCount();
-    if (g.level >= 2 && now - g.lastSummary >= 1000) {
-        mlog("summary: %lld frames presented, %lld squeezed", (long long)g.frames, (long long)g.squeezed);
-        g.lastSummary = now;
-    }
+    log_summary();
     InterlockedExchange(&g.busy, 0);
 }
 
@@ -720,6 +876,7 @@ static HRESULT STDMETHODCALLTYPE hook_present1(IDXGISwapChain1 *sc, UINT interva
     return g.present1Orig(sc, interval, flags, params);
 }
 
+// Puts hook in a vtable slot, keeping the old entry in *orig. 0 if the page can't be made writable.
 static int patch_slot(void **slot, void *hook, void **orig)
 {
     DWORD old;
@@ -736,41 +893,55 @@ static int patch_slot(void **slot, void *hook, void **orig)
     return 1;
 }
 
-// Finds the game's swap chain and patches its Present slots. Runs on the render thread, once.
-static void patch_swap_chain(int32_t *deviceIndex)
+// The game's swap chain for GpuApi::Present's device index, as IDXGISwapChain with a reference; g.scIndex follows
+// it. NULL (and the squeeze off) if it isn't there.
+static IDXGISwapChain *game_swap_chain(const int32_t *deviceIndex)
 {
-    char mod[MAX_PATH];
-    if (!readable(deviceIndex, sizeof(int32_t))) { fail("GpuApi::Present got an unreadable device index", E_POINTER); return; }
+    if (!readable(deviceIndex, sizeof(int32_t))) { fail("GpuApi::Present got an unreadable device index", E_POINTER); return NULL; }
     int idx = *deviceIndex;
-    uintptr_t dd = readable((void *)g.deviceData, sizeof(void *)) ? *(uintptr_t *)g.deviceData : 0;
-    if (!dd) { fail("the game's device data isn't set up", E_POINTER); return; }
-    if (idx < 1 || idx > DD_SWAPCHAIN_COUNT) { fail("GpuApi::Present got an unexpected device index", E_INVALIDARG); return; }
-    void **entry = (void **)(dd + DD_SWAPCHAINS + (uintptr_t)(idx - 1) * DD_SWAPCHAIN_STRIDE);
-    if (!readable(entry, sizeof(void *)) || !looks_like_com(*entry)) {
+    if (!device_data()) { fail("the game's device data isn't set up", E_POINTER); return NULL; }
+    if (idx < 1 || idx > DD_SWAPCHAIN_COUNT) { fail("GpuApi::Present got an unexpected device index", E_INVALIDARG); return NULL; }
+    void *entry = swap_chain_entry(idx - 1);
+    if (!looks_like_com(entry)) {
         fail("the swap chain in the game's device data doesn't look valid (game version changed?)", E_POINTER);
-        return;
+        return NULL;
     }
     IDXGISwapChain *sc = NULL;
-    HRESULT hr = IUnknown_QueryInterface((IUnknown *)*entry, &IID_IDXGISwapChain, (void **)&sc);
-    if (FAILED(hr)) { fail("QueryInterface(IDXGISwapChain) on the game's swap chain", hr); return; }
-    g.vtbl = *(void ***)sc;
+    HRESULT hr = IUnknown_QueryInterface((IUnknown *)entry, &IID_IDXGISwapChain, (void **)&sc);
+    if (FAILED(hr)) { fail("QueryInterface(IDXGISwapChain) on the game's swap chain", hr); return NULL; }
     g.scIndex = idx - 1;
-    mlog("game swap chain %p (device index %d), Present in %s", (void *)sc, idx, module_of(g.vtbl[VT_PRESENT], mod, sizeof(mod)));
-    if (!patch_slot(&g.vtbl[VT_PRESENT], (void *)hook_present, (void **)&g.presentOrig)) {
-        IDXGISwapChain_Release(sc);
-        fail("patching the swap chain's Present", HRESULT_FROM_WIN32(GetLastError()));
-        return;
-    }
+    return sc;
+}
+
+// Patches Present, and Present1 when IDXGISwapChain1 shares the vtable. 0 (and the squeeze off) if Present can't be.
+static int patch_present_slots(IDXGISwapChain *sc)
+{
+    char mod[MAX_PATH];
+    g.vtbl = *(void ***)sc;
+    if (!patch_slot(&g.vtbl[VT_PRESENT], (void *)hook_present, (void **)&g.presentOrig))
+        return fail("patching the swap chain's Present", HRESULT_FROM_WIN32(GetLastError()));
     IDXGISwapChain1 *sc1 = NULL;
     if (SUCCEEDED(IDXGISwapChain_QueryInterface(sc, &IID_IDXGISwapChain1, (void **)&sc1))) {
-        void **vt1 = *(void ***)sc1;
-        if (vt1 == g.vtbl && patch_slot(&g.vtbl[VT_PRESENT1], (void *)hook_present1, (void **)&g.present1Orig))
+        if (*(void ***)sc1 == g.vtbl && patch_slot(&g.vtbl[VT_PRESENT1], (void *)hook_present1, (void **)&g.present1Orig))
             mlog("Present1 patched too (in %s)", module_of(g.present1Orig, mod, sizeof(mod)));
         IDXGISwapChain1_Release(sc1);
     }
+    return 1;
+}
+
+// Finds the game's swap chain and patches its Present slots. Runs on the render thread, once.
+static void patch_swap_chain(const int32_t *deviceIndex)
+{
+    char mod[MAX_PATH];
+    IDXGISwapChain *sc = game_swap_chain(deviceIndex);
+    if (!sc) return;
+    mlog("game swap chain %p (device index %d), Present in %s", (void *)sc, g.scIndex + 1,
+         module_of((*(void ***)sc)[VT_PRESENT], mod, sizeof(mod)));
+    int patched = patch_present_slots(sc);
     // No reference is kept: a later swap chain for the same window (after a display change) needs this one gone,
     // and it shares the patched vtable anyway.
     IDXGISwapChain_Release(sc);
+    if (!patched) return;
     // Pinned: the patched slots point into this DLL for the rest of the process, so it must never unload.
     HMODULE pinned;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
@@ -779,36 +950,39 @@ static void patch_swap_chain(int32_t *deviceIndex)
          g.mode == MODE_ON ? "on every frame" : "while a menu is open in 3D Mode");
 }
 
+// The game can recreate its swap chain at another device index (display or fullscreen change): follow it.
+static void follow_swap_chain(const int32_t *deviceIndex)
+{
+    if (!readable(deviceIndex, sizeof(int32_t))) return;
+    int idx = *deviceIndex;
+    if (idx < 1 || idx > DD_SWAPCHAIN_COUNT || idx - 1 == g.scIndex) return;
+    if (g.patched) mlog("game swap chain now at device index %d (was %d)", idx, g.scIndex + 1);
+    g.scIndex = idx - 1;
+}
+
 static void *hook_gpu_present(int32_t *deviceIndex, uint8_t sync, UINT interval)
 {
     if (!g.patched && !g.failed && InterlockedExchange(&g.patched, 1) == 0) patch_swap_chain(deviceIndex);
     g.gameFrames++;
-    // The game can recreate its swap chain at another device index (display or fullscreen change): follow it.
-    if (readable(deviceIndex, sizeof(int32_t)) && *deviceIndex >= 1 && *deviceIndex <= DD_SWAPCHAIN_COUNT &&
-        *deviceIndex - 1 != g.scIndex) {
-        if (g.patched) mlog("game swap chain now at device index %d (was %d)", *deviceIndex, g.scIndex + 1);
-        g.scIndex = *deviceIndex - 1;
-    }
+    follow_swap_chain(deviceIndex);
     if (g.mode == MODE_AUTO) note_game_frame();
     return g.gpuPresentOrig(deviceIndex, sync, interval);
 }
 
 // ---------------------------------------------------------------- entry point
 
-int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
+// RED4ext's address lookup, or NULL (and the squeeze off) if this RED4ext has none.
+static ResolveFn red4ext_resolver(void)
 {
-    InitializeCriticalSection(&g.logLock);
-    read_menu_settings(installDir);
-    if (g.level > 0) open_hooks_log(installDir);
-    mlog("==== 3D Braindance Edition menu squeeze, mode %s, log level %d",
-         g.mode == MODE_OFF ? "off" : g.mode == MODE_ON ? "on (every frame)" : "auto", g.level);
-    if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no squeeze hooks installed"); return 1; }
-    g.stereo = STEREO_UNKNOWN;
-    if (g.mode == MODE_AUTO) read_saved_stereo_setting();
-    if (!sdk || !sdk->hooking || !sdk->hooking->Attach) return fail("RED4ext didn't pass a hooking interface", E_POINTER);
     HMODULE r4e = GetModuleHandleW(L"RED4ext.dll");
     ResolveFn resolve = r4e ? (ResolveFn)(void *)GetProcAddress(r4e, "RED4ext_ResolveAddress") : NULL;
-    if (!resolve) return fail("RED4ext.dll has no RED4ext_ResolveAddress (RED4ext too old?)", E_NOINTERFACE);
+    if (!resolve) fail("RED4ext.dll has no RED4ext_ResolveAddress (RED4ext too old?)", E_NOINTERFACE);
+    return resolve;
+}
+
+// Resolves the game's addresses and hooks GpuApi::Present.
+static int hook_game_present(void *pluginHandle, const R4eSdk *sdk, ResolveFn resolve)
+{
     uintptr_t present = resolve(HASH_GPUAPI_PRESENT);
     g.deviceData = resolve(HASH_DEVICE_DATA);
     mlog("RED4ext resolved GpuApi::Present = %p, device data = %p", (void *)present, (void *)g.deviceData);
@@ -816,7 +990,21 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
     if (!sdk->hooking->Attach(pluginHandle, (void *)present, (void *)hook_gpu_present, (void **)&g.gpuPresentOrig))
         return fail("RED4ext couldn't hook GpuApi::Present", E_FAIL);
     mlog("GpuApi::Present hooked; waiting for the first frame");
-    // Compiled now, not on the first menu, so opening a menu doesn't stall on the compiler.
-    if (!compile_shaders()) return 0;
     return 1;
+}
+
+int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
+{
+    InitializeCriticalSection(&g.logLock);
+    read_menu_settings(installDir);
+    if (g.level > 0) open_hooks_log(installDir);
+    mlog("==== 3D Braindance Edition menu squeeze, mode %s, log level %d", mode_name(g.mode), g.level);
+    if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no squeeze hooks installed"); return 1; }
+    g.stereo = STEREO_UNKNOWN;
+    if (g.mode == MODE_AUTO) read_saved_stereo_setting();
+    if (!sdk || !sdk->hooking || !sdk->hooking->Attach) return fail("RED4ext didn't pass a hooking interface", E_POINTER);
+    ResolveFn resolve = red4ext_resolver();
+    if (!resolve || !hook_game_present(pluginHandle, sdk, resolve)) return 0;
+    // Compiled now, not on the first menu, so opening a menu doesn't stall on the compiler.
+    return compile_shaders();
 }
