@@ -30,7 +30,7 @@ generation hook a few game functions through RED4ext.
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
-  ([No RED4ext](#no-red4ext)), which leaves menus split.
+  ([No RED4ext](#no-red4ext)), which leaves menus split and frame generation off in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
