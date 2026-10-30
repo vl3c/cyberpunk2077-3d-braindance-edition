@@ -126,7 +126,8 @@ different half, so the RED4ext plugin (`src/braindance3d_menus.c`) squeezes thos
 - **Safety:** only the game's own swap chain is squeezed (the patched vtable can be shared by other swap chains),
   at most once per game frame and never re-entered. GPU resources are only replaced once the GPU is done with
   them, and both DLLs are pinned so the patched pointers never dangle.
-- **Overlays:** CET draws inside the game's own present, before the squeeze, so its window is squeezed with menus.
+- **Overlays:** CET draws inside the game's own present, before the squeeze, so its window is squeezed with menus
+  (but split over 3D gameplay, which isn't squeezed).
   OptiScaler draws its menu and FPS counter in its own swap chain below Streamline, after the squeeze, so those
   still cover both halves.
 
