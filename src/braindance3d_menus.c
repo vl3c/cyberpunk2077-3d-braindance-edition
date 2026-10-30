@@ -30,13 +30,13 @@
 //                     Mode is on;
 //                   - one IsAvailable and no eye positions for STEREO_OFF_FRAMES frames in a row: 2D
 //                     gameplay, so 3D Mode is off;
-//                   - GetMonitorRect twice or more in one burst (gaps under RECT_BURST_GAP_MS): 3D Mode
-//                     was switched (the game re-checks the 3D display then; opening Settings alone asks
-//                     once), so it flips, and the next gameplay frame confirms it.
+//                   - the game's 3D Mode handler (hooked in braindance3d_framegen.c) says which way 3D Mode
+//                     was switched in Settings, or set at start-up or on a display change.
 //                   At start-up 3D Mode's last saved setting (UserSettings.json) is the first guess.
 //   on:             every frame (for testing)
-//   off:            never; no hooks are installed
-// Log: Braindance3D-menus.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose).
+//   off:            never; the squeeze hooks aren't installed (the frame generation hooks still are)
+// Log: Braindance3D-hooks.log next to the settings file ([Log] Level 0 off, 1 normal, 2 verbose), shared with the
+// frame generation hooks (braindance3d_framegen.c).
 //
 // License: MIT (see LICENSE).
 
@@ -87,10 +87,8 @@ enum { STEREO_UNKNOWN = -1, STEREO_OFF, STEREO_ON }; // whether the game's 3D Mo
 
 // Stand-in device slots read once per game frame (see braindance3d_device_calls in braindance3d_sdk.c).
 #define SLOT_EYE_POSITION 1
-#define SLOT_MONITOR_RECT 6
 #define SLOT_IS_AVAILABLE 10
 #define STEREO_OFF_FRAMES 30 // 2D gameplay frames in a row before 3D Mode counts as off
-#define RECT_BURST_GAP_MS 1500 // GetMonitorRect calls this close together are one display re-check
 
 static struct {
     int mode, level;
@@ -103,14 +101,10 @@ static struct {
     PresentFn presentOrig;
     Present1Fn present1Orig;
     DeviceCallsFn deviceCalls;
-    LONG64 lastEye, lastAvailable, lastRect;
+    LONG64 lastEye, lastAvailable;
     volatile LONG flatFrame; // the game's last frame asked for no eye positions
     volatile LONG stereo;    // STEREO_*: whether 3D Mode is on, as far as the frames tell
-    int stereoSeen;          // a frame has shown it (until then GetMonitorRect is the start-up check)
     int flatStreak;          // 2D gameplay frames in a row
-    DWORD rectLast;          // when the last GetMonitorRect call of the current burst came
-    LONG64 rectRun;          // GetMonitorRect calls in that burst
-    int rectHandled;         // that burst already flipped 3D Mode
     int scIndex;             // the game's swap chain: entry in the device data (device index - 1)
     volatile LONG busy;      // a squeeze is being recorded (guards against re-entry from wrappers)
     LONG64 lastSqueezeFrame; // game frame of the last squeeze (one per frame at most)
@@ -141,7 +135,7 @@ static struct {
 
 // ---------------------------------------------------------------- logging
 
-static void mlog(const char *fmt, ...)
+static void vmlog(const char *fmt, va_list ap)
 {
     if (!g.log) return;
     EnterCriticalSection(&g.logLock);
@@ -149,13 +143,27 @@ static void mlog(const char *fmt, ...)
     GetLocalTime(&st);
     fprintf(g.log, "%04d-%02d-%02d %02d:%02d:%02d.%03d [%lu] ", st.wYear, st.wMonth, st.wDay, st.wHour,
             st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap;
-    va_start(ap, fmt);
     vfprintf(g.log, fmt, ap);
-    va_end(ap);
     fputc('\n', g.log);
     fflush(g.log);
     LeaveCriticalSection(&g.logLock);
+}
+
+static void mlog(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vmlog(fmt, ap);
+    va_end(ap);
+}
+
+void plugin_log(int level, const char *fmt, ...)
+{
+    if (g.level < level) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vmlog(fmt, ap);
+    va_end(ap);
 }
 
 #define VLOG(...) do { if (g.level >= 2) mlog(__VA_ARGS__); } while (0)
@@ -168,27 +176,27 @@ static int fail(const char *what, HRESULT hr)
     return 0;
 }
 
-static FILE *open_menu_log_in(const wchar_t *dir)
+static FILE *open_hooks_log_in(const wchar_t *dir)
 {
     wchar_t path[MAX_PATH], old[MAX_PATH];
-    if (_snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-menus.log", dir) < 0) return NULL;
-    if (_snwprintf(old, MAX_PATH, L"%ls\\Braindance3D-menus.old.log", dir) < 0) return NULL;
+    if (_snwprintf(path, MAX_PATH, L"%ls\\Braindance3D-hooks.log", dir) < 0) return NULL;
+    if (_snwprintf(old, MAX_PATH, L"%ls\\Braindance3D-hooks.old.log", dir) < 0) return NULL;
     path[MAX_PATH - 1] = old[MAX_PATH - 1] = 0;
     MoveFileExW(path, old, MOVEFILE_REPLACE_EXISTING);
     return _wfopen(path, L"w");
 }
 
 // Next to the settings file, or %LOCALAPPDATA%\Braindance3D if the game folder is read-only (like the stand-in's log).
-static void open_menu_log(const wchar_t *dir)
+static void open_hooks_log(const wchar_t *dir)
 {
-    g.log = open_menu_log_in(dir);
+    g.log = open_hooks_log_in(dir);
     if (g.log) return;
     wchar_t local[MAX_PATH], fallback[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
     if (!n || n >= MAX_PATH || _snwprintf(fallback, MAX_PATH, L"%ls\\Braindance3D", local) < 0) return;
     fallback[MAX_PATH - 1] = 0;
     CreateDirectoryW(fallback, NULL);
-    g.log = open_menu_log_in(fallback);
+    g.log = open_hooks_log_in(fallback);
 }
 
 // ---------------------------------------------------------------- settings
@@ -400,6 +408,29 @@ static int create_copy_texture(const D3D12_RESOURCE_DESC *bb)
     return 1;
 }
 
+// With DLSS frame generation loaded, Streamline hands the game proxy D3D12 objects (vtables in sl.interposer.dll), while
+// the swap chain's back buffers belong to the native device. Returns the native object behind a Streamline proxy, with
+// a reference added (slGetNativeInterface adds one), or p itself.
+typedef int (*SlGetNativeInterfaceFn)(void *proxy, void **base);
+static void *native_interface(void *p, const char *what)
+{
+    HMODULE sl = GetModuleHandleW(L"sl.interposer.dll"), owner;
+    if (!sl || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCWSTR)**(void ***)p, &owner) || owner != sl)
+        return p;
+    SlGetNativeInterfaceFn get = (SlGetNativeInterfaceFn)(void *)GetProcAddress(sl, "slGetNativeInterface");
+    void *base = NULL;
+    int r = get ? get(p, &base) : -1;
+    if (r != 0 || !looks_like_com(base)) {
+        mlog("warning: the %s is Streamline's proxy, and slGetNativeInterface gave no native one (result %d)", what, r);
+        return p;
+    }
+    char mod[MAX_PATH];
+    mlog("the %s is Streamline's proxy; using the native one %p (vtable in %s)", what, base,
+         module_of(**(void ***)base, mod, sizeof(mod)));
+    return base;
+}
+
 static int init_d3d(void)
 {
     if (g.device) return 1;
@@ -409,8 +440,11 @@ static int init_d3d(void)
     void *queue = readable(slot, sizeof(void *)) ? *slot : NULL;
     if (!looks_like_com(queue)) return fail("the game's direct command queue doesn't look valid (game version changed?)", E_POINTER);
     mlog("direct queue %p (vtable in %s)", queue, module_of(**(void ***)queue, mod, sizeof(mod)));
+    void *game = queue;
+    queue = native_interface(queue, "direct queue");
     ID3D12CommandQueue *q = NULL;
     HRESULT hr = IUnknown_QueryInterface((IUnknown *)queue, &IID_ID3D12CommandQueue, (void **)&q);
+    if (queue != game) IUnknown_Release((IUnknown *)queue); // q holds its own reference
     if (FAILED(hr)) return fail("QueryInterface(ID3D12CommandQueue) on the game's direct queue", hr);
     D3D12_COMMAND_QUEUE_DESC qd = ID3D12CommandQueue_GetDesc(q);
     if (qd.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
@@ -469,7 +503,8 @@ static void squeeze(IDXGISwapChain *sc)
     hr = ID3D12Resource_GetDevice(bb, &IID_ID3D12Device, (void **)&bbDevice);
     if (bbDevice) ID3D12Device_Release(bbDevice);
     if (FAILED(hr) || bbDevice != g.device) {
-        // Shouldn't happen for the game's swap chain; never record another device's resource on the game's queue.
+        // Shouldn't happen for the game's swap chain (with Streamline the native queue and device are used, see
+        // native_interface); never record another device's resource on the game's queue.
         ID3D12Resource_Release(bb);
         fail("the back buffer belongs to another D3D12 device", FAILED(hr) ? hr : E_UNEXPECTED);
         return;
@@ -563,7 +598,7 @@ static void read_saved_stereo_setting(void)
     else mlog("3D Mode setting: Odyssey3D_StereoEnabled value not understood, starting as unknown");
 }
 
-static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now);
+static void note_frame_calls(LONG64 dEye, LONG64 dAvail);
 
 // Called once per game frame, from GpuApi::Present: what the game asked the stand-in since the last one.
 static void note_game_frame(void)
@@ -580,64 +615,45 @@ static void note_game_frame(void)
                            (LPCWSTR)(void *)g.deviceCalls, &pinned);
         g.lastEye = g.deviceCalls(SLOT_EYE_POSITION);
         g.lastAvailable = g.deviceCalls(SLOT_IS_AVAILABLE);
-        g.lastRect = g.deviceCalls(SLOT_MONITOR_RECT);
         mlog("menu detection: the stand-in's call counters found (game frame %lld: %lld eye positions, %lld "
-             "IsAvailable, %lld GetMonitorRect so far)", (long long)g.gameFrames, (long long)g.lastEye,
-             (long long)g.lastAvailable, (long long)g.lastRect);
+             "IsAvailable so far)", (long long)g.gameFrames, (long long)g.lastEye, (long long)g.lastAvailable);
         return;
     }
-    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE),
-           rect = g.deviceCalls(SLOT_MONITOR_RECT);
-    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable, dRect = rect - g.lastRect;
+    LONG64 eye = g.deviceCalls(SLOT_EYE_POSITION), avail = g.deviceCalls(SLOT_IS_AVAILABLE);
+    LONG64 dEye = eye - g.lastEye, dAvail = avail - g.lastAvailable;
     g.lastEye = eye;
     g.lastAvailable = avail;
-    g.lastRect = rect;
-    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable, %lld GetMonitorRect -> %s", (long long)g.gameFrames,
-         (long long)dEye, (long long)dAvail, (long long)dRect, dEye ? "stereo" : "flat");
-    note_frame_calls(dEye, dAvail, dRect, GetTickCount());
+    VLOG("game frame %lld: %lld eye positions, %lld IsAvailable -> %s", (long long)g.gameFrames, (long long)dEye,
+         (long long)dAvail, dEye ? "stereo" : "flat");
+    note_frame_calls(dEye, dAvail);
 }
 
 // What one game frame's stand-in calls say (split out of note_game_frame for the tests).
-static void note_frame_calls(LONG64 dEye, LONG64 dAvail, LONG64 dRect, DWORD now)
+static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
 {
     LONG flat = dEye == 0;
     InterlockedExchange(&g.flatFrame, flat);
     if (!flat) {
         // Only a frame rendered in stereo asks for eye positions.
         g.flatStreak = 0;
-        g.stereoSeen = 1;
         set_stereo(STEREO_ON, "a frame rendered in stereo");
         return;
     }
     if (dAvail == 1) {
         // 2D gameplay asks IsAvailable once per frame (stereo asks twice); a few such frames also turn up while
         // the settings menu re-checks the display, so it takes a run of them.
-        if (++g.flatStreak == STEREO_OFF_FRAMES) {
-            g.stereoSeen = 1;
-            set_stereo(STEREO_OFF, "2D gameplay frames");
-        }
+        if (++g.flatStreak == STEREO_OFF_FRAMES) set_stereo(STEREO_OFF, "2D gameplay frames");
     } else {
         g.flatStreak = 0;
     }
-    // The game re-checks the 3D display at start-up (before any frame tells), once when Settings opens, and two or
-    // three times within a second or so when 3D Mode is switched there. Flip on a switch, so the settings menu is
-    // squeezed or not to match; the next gameplay frame confirms it either way.
-    if (dRect > 0 && g.stereoSeen) {
-        if (g.rectRun && now - g.rectLast <= RECT_BURST_GAP_MS) {
-            g.rectRun += dRect;
-        } else {
-            g.rectRun = dRect;
-            g.rectHandled = 0;
-        }
-        g.rectLast = now;
-        VLOG("GetMonitorRect: %lld call(s) in this burst", (long long)g.rectRun);
-        if (g.rectRun >= 2 && !g.rectHandled) {
-            g.rectHandled = 1;
-            LONG cur = g.stereo;
-            if (cur == STEREO_ON) set_stereo(STEREO_OFF, "3D Mode switched in Settings (display re-checked)");
-            else if (cur == STEREO_OFF) set_stereo(STEREO_ON, "3D Mode switched in Settings (display re-checked)");
-        }
-    }
+}
+
+void menus_note_3d_mode(int on)
+{
+    // The handler runs on the main thread while frames go on. The 2D-gameplay run starts over (a plain store: the
+    // render thread's next frame counts from there either way).
+    g.flatStreak = 0;
+    set_stereo(on ? STEREO_ON : STEREO_OFF, "the game's 3D Mode handler");
 }
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
@@ -783,10 +799,10 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
 {
     InitializeCriticalSection(&g.logLock);
     read_menu_settings(installDir);
-    if (g.level > 0) open_menu_log(installDir);
+    if (g.level > 0) open_hooks_log(installDir);
     mlog("==== 3D Braindance Edition menu squeeze, mode %s, log level %d",
          g.mode == MODE_OFF ? "off" : g.mode == MODE_ON ? "on (every frame)" : "auto", g.level);
-    if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no hooks installed"); return 1; }
+    if (g.mode == MODE_OFF) { mlog("[Menus] Squeeze = off: no squeeze hooks installed"); return 1; }
     g.stereo = STEREO_UNKNOWN;
     if (g.mode == MODE_AUTO) read_saved_stereo_setting();
     if (!sdk || !sdk->hooking || !sdk->hooking->Attach) return fail("RED4ext didn't pass a hooking interface", E_POINTER);

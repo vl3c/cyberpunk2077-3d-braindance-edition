@@ -15,7 +15,7 @@ Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the
 [list=1]
 [*]Install [url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url].[/*]
 [*]Install this mod with Vortex (or extract it into the game folder with [i]bin[/i], [i]engine[/i] and [i]red4ext[/i]).[/*]
-[*]In the game's video settings, turn on [b]3D Mode[/b] (this turns the game's Frame Generation off). You now see two images side by side.[/*]
+[*]In the game's video settings, turn on [b]3D Mode[/b]. You now see two images side by side.[/*]
 [*]In your headset, show the PC screen in [b]half side-by-side[/b] 3D (in Virtual Desktop: the desktop screen's 3D mode). The game must run on the monitor the headset shows.[/*]
 [/list]
 To play in 2D, turn 3D Mode off in the game Video settings.
@@ -24,12 +24,12 @@ To play in 2D, turn 3D Mode off in the game Video settings.
 [size=4][b]Main features[/b][/size]
 [list]
 [*]Depth tuned with the game's own settings: [b]Preset[/b], [b]Depth[/b], [b]Weapon Depth[/b] and [b]Motion Comfort[/b]. Depth 0.5 to 1.0 works well in a headset.[/*]
-[*][b]No game files modified.[/b] The game loads the stand-in DLL through its own 3D support; only the menu fix uses a small RED4ext hook.[/*]
+[*][b]No game files modified.[/b] The game loads the stand-in DLL through its own 3D support; the menu fix and frame generation hook a few game functions through RED4ext.[/*]
 [*]Sets itself up at every game start.[/*]
 [/list]
 [b]Good to know:[/b]
 [list]
-[*]Each eye gets half the horizontal resolution, so [b]higher resolution looks sharper[/b]. Every frame renders twice, so expect a lower frame rate than in 2D. I recommend a [b]4K (virtual) monitor in Virtual Desktop[/b] and OptiScaler frame generation: see the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#recommended-setup-quest-3--virtual-desktop]recommended setup[/url].[/*]
+[*]Each eye gets half the horizontal resolution, so [b]higher resolution looks sharper[/b]. Every frame renders twice, so expect a lower frame rate than in 2D. I recommend a [b]4K (virtual) monitor in Virtual Desktop[/b] and the game's DLSS Frame Generation, which this mod keeps working in 3D Mode (pick it, then restart the game): see the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#recommended-setup-quest-3--virtual-desktop]recommended setup[/url].[/*]
 [*]Stereo 3D can strain your eyes: take breaks and lower Depth if needed.[/*]
 [/list]
 [size=4][b]Requirements[/b][/size]
@@ -50,7 +50,7 @@ Settings and logs are in [i]bin\x64\Braindance3D[/i] (logs go to [i]%LOCALAPPDAT
 [list]
 [*][b]Crash or no start after installing or a game update:[/b] disable the mod and report your game version.[/*]
 [*][b]3D Mode greyed out:[/b] check RED4ext and read [i]Braindance3D-autosetup.log[/i]. With several monitors, set [i]Monitor = primary[/i] in [i]Braindance3D-Settings.ini[/i] and play on it.[/*]
-[*][b]Menus look wrong:[/b] set [i]Squeeze = off[/i] under [i][Menus][/i] and report with [i]Braindance3D-menus.log[/i].[/*]
+[*][b]Menus look wrong:[/b] set [i]Squeeze = off[/i] under [i][Menus][/i] and report with [i]Braindance3D-hooks.log[/i].[/*]
 [*][b]Depth inside out:[/b] use your viewer's swap-eyes option.[/*]
 [/list]
 [size=4][b]Known limitations[/b][/size]
@@ -60,7 +60,7 @@ Settings and logs are in [i]bin\x64\Braindance3D[/i] (logs go to [i]%LOCALAPPDAT
 [*]Untested: multi-monitor setups, viewers other than Virtual Desktop.[/*]
 [/list]
 [size=4][b]Bugs[/b][/size]
-Use the Bugs tab or [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues]GitHub issues[/url]. Include game version and store, GPU, how you view the 3D, and the logs ([i]braindance3d.log[/i], [i]Braindance3D-autosetup.log[/i], [i]Braindance3D-menus.log[/i]) with [i]Level = 2[/i] in the settings file. Logs contain folder paths, which can include your Windows user name.
+Use the Bugs tab or [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues]GitHub issues[/url]. Include game version and store, GPU, how you view the 3D, and the logs ([i]braindance3d.log[/i], [i]Braindance3D-autosetup.log[/i], [i]Braindance3D-hooks.log[/i]) with [i]Level = 2[/i] in the settings file. Logs contain folder paths, which can include your Windows user name.
 
 [size=4][b]Source[/b][/size]
 Open source (MIT): [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition]github.com/vl3c/cyberpunk2077-3d-braindance-edition[/url]

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- The game's own DLSS frame generation now works in 3D Mode: 3D Mode no longer turns Frame Generation off or greys
+  it out, and the renderer keeps DLSS-G on side-by-side frames. Needs RED4ext; choose DLSS frame generation and
+  restart the game once (RTX 40 or 50). FSR and XeSS frame generation still turn off in 3D Mode, as does Frame
+  Generation on PCs without DLSS frame generation. Done with four small hooks that
+  check the game's code first and do nothing if it changed; a real 3D monitor keeps the game's rule.
+- The menu squeeze works with the game's DLSS frame generation on (Streamline then wraps the game's D3D12 queue; the
+  squeeze uses the native one).
+- The menu squeeze now follows the game's own 3D Mode switch. Before, it guessed from display re-checks, and a
+  resolution change could flip it, so menus were squeezed in 2D and not in 3D.
+- The RED4ext plugin's log is now `Braindance3D-hooks.log` (was `Braindance3D-menus.log`).
+
 ## 0.2.0 (2026-10-29)
 
 - Menus, the map and loading screens are readable in 3D: the flat picture is squeezed into each half of the

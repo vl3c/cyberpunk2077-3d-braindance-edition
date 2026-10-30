@@ -7,7 +7,8 @@
 //   - nothing changes when the SDK stand-in isn't there,
 //   - another copy of this mod, or an InstallPath with no SDK in it, is replaced (and remembered),
 //   - Samsung's Odyssey 3D Hub (or any other working SDK) is never replaced.
-// It also installs the menu squeeze (braindance3d_menus.c), which hooks the game's present.
+// It also installs the menu squeeze (braindance3d_menus.c), which hooks the game's present, and the hooks that keep
+// DLSS frame generation available in 3D Mode (braindance3d_framegen.c).
 //
 // License: MIT (see LICENSE).
 
@@ -388,5 +389,6 @@ EXPORT int Main(HMODULE handle, uint8_t reason, const void *sdk)
     alog("Result: %d", (int)r);
     if (g_log) { fclose(g_log); g_log = NULL; }
     menus_load(handle, sdk, target);
+    framegen_load(handle, sdk);
     return 1; // never stop the game from loading
 }

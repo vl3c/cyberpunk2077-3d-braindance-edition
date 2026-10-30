@@ -20,9 +20,11 @@ that monitor's software. This mod:
    monitor's lenticular panel.
 3. Makes **menus readable**. The game draws menus, the map and loading screens as one flat picture split across
    the eyes; the mod squeezes it into each half.
+4. Lets the game's own **DLSS Frame Generation** run in 3D Mode (the game turns it off there, because Samsung's
+   monitor can't use it).
 
-No game files are modified: the game loads the stand-in DLL through its own 3D support. Only the menu fix hooks
-the game's present (the same address Cyber Engine Tweaks uses).
+No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix and frame
+generation hook a few game functions through RED4ext.
 
 ## Requirements
 
@@ -37,8 +39,7 @@ the game's present (the same address Cyber Engine Tweaks uses).
 ## Install
 
 1. Install RED4ext, then this mod (Vortex, or extract into the game folder with `bin`, `engine` and `red4ext`).
-2. Turn on **3D Mode** in the video settings (this disables the game's Frame Generation). The screen shows two
-   images side by side.
+2. Turn on **3D Mode** in the video settings. The screen shows two images side by side.
 3. In your headset, view the PC screen as **half side-by-side** 3D (Virtual Desktop: the desktop screen's 3D
    mode, Half SBS). The game must run on the monitor the headset shows.
 
@@ -64,34 +65,29 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
    the virtual monitor's rate (both 72 or both 90 Hz). Faster frames are dropped; a mismatch judders.
 3. **Path tracing with DLSS Performance** (Balanced with headroom). DLSS renders the whole SBS frame at 1920x1080
    internally, so each eye starts from 960x1080.
-4. **Frame generation with [OptiScaler](https://github.com/optiscaler/OptiScaler)**, since the game's own can't
-   run in 3D Mode. The `dlssg` output needs a development (nightly) build, not 0.9.x.
-   - Install it as `winhttp.dll` in `bin\x64`, not `winmm.dll` or `version.dll` (used by RED4ext and Cyber Engine
-     Tweaks; replacing `winmm.dll` stops RED4ext and this mod's setup loading).
-   - Pick DLSS in game, so `FGInput = upscaler` takes it over.
-   - `OptiScaler.ini`: `[FrameGen]` `Enabled = true`, `FGInput = upscaler`, `FGOutput = dlssg`; `[OptiFG]`
-     `HUDFix = true`.
-   - DLSS-G needs Streamline: copy the game's `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`,
-     `sl.reflex.dll`, `sl.pcl.dll` and `nvngx_dlssg.dll` from `bin\x64` into `bin\x64\OptiScaler\streamline`.
-   - End toggles frame generation; Insert opens OptiScaler's menu.
-
-   Tested with 10.0.0-dev, stable up to 6x. Setting names vary between builds.
+4. **Frame generation:** pick **DLSS** Frame Generation in the game's graphics settings and restart the game (DLSS-G
+   loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50). The game's FSR and XeSS
+   frame generation still turn off in 3D Mode.
+   - On other GPUs, [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work
+     on the side-by-side frame, but we haven't tested it (we tested OptiScaler only with its DLSS-G output, on an
+     RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and Cyber Engine Tweaks
+     use. Use one frame generation, not both: with OptiScaler's on, keep the game's off.
 5. **Multiplier:** refresh rate / multiplier = the base frame rate needed; input lag follows it. We find 24+ playable
    for a screen you look at; many want 40+. RTX 40 stops at 2x; 3x+ needs RTX 50.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
    - RTX 40: 72 Hz 2x needs 36; 90 Hz 2x needs 45.
-6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses
-   (`OptiScaler.log` shows `eWarnOutOfVRAM`), lower texture quality or the multiplier.
+6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses, lower texture
+   quality or the multiplier.
 
 ## Troubleshooting
 
-Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-menus.log` in `bin\x64\Braindance3D`
+Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.log` in `bin\x64\Braindance3D`
 (`%LOCALAPPDATA%\Braindance3D` if the game folder is read-only).
 
 - **Crash or no start after install or a game update:** disable the mod and report your game version.
 - **3D Mode greyed out:** check RED4ext and the autosetup log. With several monitors, use `Monitor = primary` and
   the primary monitor.
-- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the menus log. OptiScaler's menu and FPS counter
+- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log. OptiScaler's menu and FPS counter
   draw after the fix and stay split; `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter
   readable in the left eye.
 - **Depth inside out:** use your viewer's swap-eyes option.

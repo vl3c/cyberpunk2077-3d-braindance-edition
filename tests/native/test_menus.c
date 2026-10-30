@@ -29,21 +29,15 @@ static void mt_begin(void)
     g.deviceCalls = fake_device_calls;
     g.flatFrame = 0;
     g.stereo = STEREO_UNKNOWN;
-    g.stereoSeen = 0;
     g.flatStreak = 0;
-    g.rectLast = 0;
-    g.rectRun = 0;
-    g.rectHandled = 0;
     g.gameFrames = 0;
 }
 
 // Frame patterns measured on the PC (2.5, 2026-10-29): what the game asks the stand-in per frame.
-static DWORD mt_now = 100000;
-static void stereo_frame(void) { note_frame_calls(2, 2, 0, mt_now += 16); }    // 3D gameplay or title
-static void menu_frame(void) { note_frame_calls(0, 0, 0, mt_now += 16); }      // inventory, ESC, loading
-static void map_frame(void) { note_frame_calls(0, 2, 0, mt_now += 16); }       // the map in 3D
-static void flat_2d_frame(void) { note_frame_calls(0, 1, 0, mt_now += 16); }   // 2D gameplay
-static void rect_calls(int n, DWORD after) { note_frame_calls(0, 0, n, mt_now += after); }
+static void stereo_frame(void) { note_frame_calls(2, 2); }    // 3D gameplay or title
+static void menu_frame(void) { note_frame_calls(0, 0); }      // inventory, ESC, loading
+static void map_frame(void) { note_frame_calls(0, 2); }       // the map in 3D
+static void flat_2d_frame(void) { note_frame_calls(0, 1); }   // 2D gameplay
 static void frames(void (*f)(void), int n) { for (int i = 0; i < n; i++) f(); }
 
 // ===================================================================================== 3D Mode detection
@@ -106,55 +100,44 @@ TEST(stereo_frames_switch_3d_back_on)
 {
     mt_begin();
     g.stereo = STEREO_OFF;
-    g.stereoSeen = 1;
     stereo_frame();
     CHECK_EQ_INT(g.stereo, STEREO_ON);
 }
 
-TEST(opening_settings_alone_does_not_change_3d_mode)
+TEST(the_3d_mode_handler_switches_the_settings_menu_at_once)
 {
     mt_begin();
     stereo_frame();
-    menu_frame();
-    rect_calls(1, 16); // one GetMonitorRect when Settings opens (run 2's weak spot)
-    CHECK_EQ_INT(g.stereo, STEREO_ON);
+    menu_frame(); // Settings
     CHECK_EQ_INT(want_squeeze(), 1);
-    rect_calls(1, 5000); // backing out and opening it again later is another single call
+    menus_note_3d_mode(0); // switched off there
+    CHECK_EQ_INT(g.stereo, STEREO_OFF);
+    CHECK_EQ_INT(want_squeeze(), 0);
+    menu_frame();
+    CHECK_EQ_INT(want_squeeze(), 0);
+    menus_note_3d_mode(1); // and on again
+    CHECK_EQ_INT(want_squeeze(), 1);
+    menus_note_3d_mode(1); // it runs two or three times per switch
     CHECK_EQ_INT(g.stereo, STEREO_ON);
 }
 
-TEST(switching_3d_mode_in_settings_flips_it_at_once)
+TEST(the_3d_mode_handler_sets_3d_mode_before_any_frame_tells)
 {
     mt_begin();
-    stereo_frame();
-    menu_frame();
-    rect_calls(1, 16);
-    rect_calls(2, 34); // run 3: 1 then 2 calls 34 ms apart when 3D Mode was switched
-    CHECK_EQ_INT(g.stereo, STEREO_OFF);
-    CHECK_EQ_INT(want_squeeze(), 0); // the settings menu is no longer squeezed
-    rect_calls(1, 800); // a late call in the same burst doesn't flip it back
-    CHECK_EQ_INT(g.stereo, STEREO_OFF);
-    rect_calls(1, 3000); // switched back on after a pause: a new burst
-    rect_calls(2, 30);
+    menus_note_3d_mode(1); // start-up, with 3D Mode saved as on
     CHECK_EQ_INT(g.stereo, STEREO_ON);
+    menu_frame();
     CHECK_EQ_INT(want_squeeze(), 1);
 }
 
-TEST(a_display_check_before_any_frame_tells_is_ignored)
+TEST(objects_that_arent_streamline_proxies_are_used_as_they_are)
 {
     mt_begin();
-    g.stereo = STEREO_ON; // the saved setting
-    rect_calls(1, 16);    // start-up: GetMonitorRect before the first eye call
-    rect_calls(2, 16);
-    CHECK_EQ_INT(g.stereo, STEREO_ON);
-}
-
-TEST(a_switch_while_3d_mode_is_unknown_stays_unknown)
-{
-    mt_begin();
-    g.stereoSeen = 1;
-    rect_calls(3, 16);
-    CHECK_EQ_INT(g.stereo, STEREO_UNKNOWN);
+    // No sl.interposer.dll in this process: a COM object is returned unchanged.
+    IUnknown *obj = NULL;
+    REQUIRE(SUCCEEDED(CoCreateFreeThreadedMarshaler(NULL, &obj)));
+    CHECK(native_interface(obj, "test object") == (void *)obj);
+    IUnknown_Release(obj);
 }
 
 TEST(squeeze_on_mode_squeezes_every_frame)
