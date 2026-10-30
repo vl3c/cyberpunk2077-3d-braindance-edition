@@ -91,9 +91,11 @@ Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.l
 - **Crash or no start after install or a game update:** disable the mod and report your game version.
 - **3D Mode greyed out:** check RED4ext and the autosetup log. With several monitors, use `Monitor = primary` and
   the primary monitor.
-- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log. Overlays that draw after the fix
-  stay split in 3D (fine in 2D): Cyber Engine Tweaks' overlay, and OptiScaler's menu and FPS counter
-  (`FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter readable in the left eye).
+- **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log.
+- **Overlays look split in 3D:** overlays drawn over the game don't get the menu fix during 3D gameplay. Cyber Engine
+  Tweaks' overlay looks right over a game menu (the squeeze covers it), but not over 3D gameplay. OptiScaler's menu
+  and FPS counter are always split in 3D. Use them with 3D Mode off; settings changed there stay when you turn it
+  back on. `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter readable in the left eye.
 - **No DLSS in the game's Frame Generation list with OptiScaler:** set `FGInput = nofg` and `FGOutput = nofg` in
   `OptiScaler.ini` (see the recommended setup).
 - **Depth inside out:** use your viewer's swap-eyes option.
