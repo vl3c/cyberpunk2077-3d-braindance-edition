@@ -400,6 +400,198 @@ static void check_installed(const wchar_t *sub, const wchar_t *target, const wch
     check_marker(sub);
 }
 
+// ===================================================================================== white box: one function at a time
+
+static int log_has(Ctx *c, const char *what)
+{
+    fflush(g_log);
+    char *text = tu_read_file(c->log, NULL);
+    int has = text && strstr(text, what) != NULL;
+    free(text);
+    return has;
+}
+
+TEST(utf8_handles_null_and_small_buffers)
+{
+    char buf[16];
+    CHECK_EQ_STR(utf8(L"C:\\Games", buf, sizeof(buf)), "C:\\Games");
+    CHECK_EQ_STR(utf8(NULL, buf, sizeof(buf)), "");
+    CHECK_EQ_STR(utf8(L"a path longer than sixteen", buf, sizeof(buf)), "");
+}
+
+TEST(open_append_log_appends_and_starts_over_past_256_kb)
+{
+    wchar_t *dir = tu_tempdir(L"append");
+    wchar_t path[TU_PATH];
+    tu_join(path, TU_PATH, dir, L"a.log");
+    REQUIRE(tu_write_text(path, "kept\n"));
+    FILE *f = open_append_log(path);
+    REQUIRE(f != NULL);
+    fputs("added\n", f);
+    fclose(f);
+    char *text = tu_read_file(path, NULL);
+    REQUIRE(text != NULL);
+    CHECK(strncmp(text, "kept\n", 5) == 0);
+    CHECK(strstr(text, "added") != NULL);
+    free(text);
+    char *big = malloc(300 * 1024);
+    memset(big, 'x', 300 * 1024);
+    REQUIRE(tu_write_file(path, big, 300 * 1024));
+    free(big);
+    f = open_append_log(path);
+    REQUIRE(f != NULL);
+    fputs("fresh\n", f);
+    fclose(f);
+    CHECK(tu_file_size(path) < 16);
+    wchar_t missing[TU_PATH];
+    tu_join(missing, TU_PATH, dir, L"no such folder\\a.log");
+    CHECK(open_append_log(missing) == NULL);
+}
+
+TEST(file_exists_is_only_for_files)
+{
+    wchar_t *dir = tu_tempdir(L"exists");
+    wchar_t file[TU_PATH], missing[TU_PATH];
+    tu_join(file, TU_PATH, dir, L"f.txt");
+    tu_join(missing, TU_PATH, dir, L"none.txt");
+    REQUIRE(tu_write_text(file, "x"));
+    CHECK_EQ_INT(file_exists(file), 1);
+    CHECK_EQ_INT(file_exists(dir), 0);
+    CHECK_EQ_INT(file_exists(missing), 0);
+}
+
+TEST(definitely_missing_only_for_a_local_path_that_isnt_there)
+{
+    wchar_t *dir = tu_tempdir(L"missing");
+    wchar_t gone[TU_PATH], goneDeep[TU_PATH], quoted[TU_PATH];
+    tu_join(gone, TU_PATH, dir, L"nothing here");
+    tu_join(goneDeep, TU_PATH, dir, L"no folder\\nor file.dll");
+    _snwprintf(quoted, TU_PATH, L"\"%ls\"", gone);
+    CHECK_EQ_INT(definitely_missing(gone), 1);
+    CHECK_EQ_INT(definitely_missing(goneDeep), 1);
+    CHECK_EQ_INT(definitely_missing(dir), 0); // there
+    CHECK_EQ_INT(definitely_missing(quoted), 0);
+    CHECK_EQ_INT(definitely_missing(L"\\\\server\\share\\x.dll"), 0); // a network path: unknown
+    CHECK_EQ_INT(definitely_missing(L""), 0);
+    CHECK_EQ_INT(definitely_missing(NULL), 0);
+}
+
+TEST(sdk_path_is_under_game_launcher_data_core)
+{
+    wchar_t out[MAX_PATH];
+    CHECK_EQ_INT(sdk_path(L"C:\\Games\\X", out), 1);
+    CHECK_EQ_WSTR(out, L"C:\\Games\\X\\GameLauncherData\\core\\Odyssey3DSDK.dll");
+    wchar_t longDir[MAX_PATH];
+    for (int i = 0; i < MAX_PATH - 10; i++) longDir[i] = L'd';
+    longDir[MAX_PATH - 10] = 0;
+    CHECK_EQ_INT(sdk_path(longDir, out), 0);
+}
+
+TEST(reg_set_writes_a_terminated_string)
+{
+    Scratch *s = scratch_new(L"set");
+    HKEY k;
+    REQUIRE(RegCreateKeyExW(HKEY_CURRENT_USER, s->hub, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL) == ERROR_SUCCESS);
+    CHECK_EQ_INT(reg_set(k, L"v", L"C:\\Games"), ERROR_SUCCESS);
+    RegCloseKey(k);
+    wchar_t got[64];
+    CHECK_EQ_INT(kget(s->hub, L"v", got, 64), REG_SZ);
+    CHECK_EQ_WSTR(got, L"C:\\Games");
+}
+
+TEST(read_reg_state_reads_the_four_values)
+{
+    Ctx *c = ctx_new(L"state", 0);
+    RegState st;
+    memset(&st, 'x', sizeof(st));
+    REQUIRE(!kexists(c->hub));
+    CHECK_EQ_INT(read_reg_state(c->hub, &st), AUTO_GO_ON); // no key yet: all empty
+    CHECK_EQ_WSTR(st.current, L"");
+    CHECK_EQ_WSTR(st.marker, L"");
+    kset_sz(c->hub, VALUE_INSTALL_PATH, L"C:\\A");
+    kset_sz(c->hub, VALUE_OWN_PATH, L"C:\\B");
+    kset_sz(c->hub, VALUE_PREVIOUS, L"C:\\C");
+    kset_sz(c->hub, VALUE_MARKER, L"0.2.0");
+    CHECK_EQ_INT(read_reg_state(c->hub, &st), AUTO_GO_ON);
+    CHECK_EQ_WSTR(st.current, L"C:\\A");
+    CHECK_EQ_WSTR(st.own, L"C:\\B");
+    CHECK_EQ_WSTR(st.previous, L"C:\\C");
+    CHECK_EQ_WSTR(st.marker, L"0.2.0");
+    log_reg_state(&st);
+    CHECK(log_has(c, "Registry before: InstallPath='C:\\A' ownPath='C:\\B' previous='C:\\C' installedBy='0.2.0'"));
+}
+
+TEST(read_reg_state_stops_on_values_it_cant_read)
+{
+    Ctx *c = ctx_new(L"state-bad", 0);
+    RegState st;
+    DWORD dw = 1;
+    kset(c->hub, VALUE_PREVIOUS, REG_DWORD, &dw, sizeof(dw));
+    CHECK_EQ_INT(read_reg_state(c->hub, &st), AUTO_ERROR);
+    CHECK(log_has(c, "The saved previous InstallPath can't be read"));
+    kset(c->hub, VALUE_INSTALL_PATH, REG_DWORD, &dw, sizeof(dw));
+    CHECK_EQ_INT(read_reg_state(c->hub, &st), AUTO_FOREIGN_SDK);
+    CHECK(log_has(c, "InstallPath is set but isn't a readable path"));
+}
+
+TEST(samsung_hub_in_wants_an_sdk_that_isnt_this_mods)
+{
+    Ctx *c = ctx_new(L"hub", 1);
+    CHECK_EQ_INT(samsung_hub_in(NULL), 0);
+    CHECK_EQ_INT(samsung_hub_in(L""), 0);
+    CHECK_EQ_INT(samsung_hub_in(c->samsung), 0); // not there
+    CHECK_EQ_INT(samsung_hub_in(c->target), 0);  // this mod's
+    put_sdk(c->samsung, SDK_FOREIGN_PRODUCT);
+    CHECK_EQ_INT(samsung_hub_in(c->samsung), 1);
+}
+
+TEST(decide_over_current_cases)
+{
+    Ctx *c = ctx_new(L"decide", 1);
+    wchar_t foreign[TU_PATH], gone[TU_PATH];
+    sub_dir(foreign, c->tmp, L"foreign", 1);
+    put_sdk(foreign, SDK_FOREIGN_PRODUCT);
+    sub_dir(gone, c->tmp, L"gone", 0);
+    RegState st;
+    const wchar_t *keep = NULL;
+
+    memset(&st, 0, sizeof(st)); // nothing registered, no Samsung Hub
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_GO_ON);
+    CHECK_EQ_WSTR(keep, NO_PREVIOUS);
+
+    wcscpy(st.current, c->target); // another copy of this mod, with what it saved
+    wcscpy(st.previous, L"C:\\Before");
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_GO_ON);
+    CHECK_EQ_WSTR(keep, L"C:\\Before");
+
+    memset(&st, 0, sizeof(st)); // someone else's SDK
+    wcscpy(st.current, foreign);
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_FOREIGN_SDK);
+
+    wcscpy(st.current, gone); // a folder that's gone: saved for the uninstaller
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_GO_ON);
+    CHECK_EQ_WSTR(keep, gone);
+
+    put_sdk(c->samsung, SDK_FOREIGN_PRODUCT); // ... unless Samsung's Hub is in its default folder
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_SAMSUNG_DEFAULT);
+    st.current[0] = 0;
+    CHECK_EQ_INT(decide_over_current(&st, c->samsung, &keep), AUTO_SAMSUNG_DEFAULT);
+}
+
+TEST(write_registration_writes_the_bookkeeping_then_install_path)
+{
+    Ctx *c = ctx_new(L"write", 1);
+    CHECK_EQ_INT(write_registration(c->hub, c->target, L"C:\\Before"), AUTO_INSTALLED);
+    check_installed(c->hub, c->target, L"C:\\Before");
+    CHECK_EQ_WSTR(fi_names[0], VALUE_PREVIOUS);
+    CHECK_EQ_WSTR(fi_names[3], VALUE_INSTALL_PATH);
+    CHECK(log_has(c, "Registered: InstallPath='"));
+    fi_reset();
+    fi_fail_create = 1;
+    CHECK_EQ_INT(write_registration(c->hub, c->target, NO_PREVIOUS), AUTO_ERROR);
+    CHECK(log_has(c, "Couldn't open or create HKCU\\"));
+}
+
 // ===================================================================================== white box: ABI
 
 TEST(plugin_info_struct_matches_the_red4ext_v0_layout)
