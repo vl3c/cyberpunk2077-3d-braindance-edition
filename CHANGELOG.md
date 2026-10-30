@@ -14,6 +14,8 @@
 - The RED4ext plugin's log is now `Braindance3D-hooks.log` (was `Braindance3D-menus.log`).
 - The auto-setup log in `%LOCALAPPDATA%\Braindance3D` (used when the game folder is read-only) now starts over past
   256 KB, like the one in the game folder.
+- With OptiScaler's `FGOutput = DLSSG`, the game drops DLSS from its Frame Generation list. Setting `FGInput` and
+  `FGOutput` to `nofg` brings it back (README).
 - Known limitation: overlays drawn on top of the game look split in 3D (fine in 2D): Cyber Engine Tweaks' overlay,
   and OptiScaler's menu and FPS counter.
 

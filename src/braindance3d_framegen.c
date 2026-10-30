@@ -386,8 +386,10 @@ static int keep_frame_generation(void)
     char value[32];
     int known = fg_value(var, value, sizeof(value));
     if (!keep_in_3d(var, value, known)) {
-        plugin_log(1, "framegen: 3D Mode is on and Frame Generation is %s%s, which can't run in 3D, so the game turns "
-                      "it off", known ? value : "?", offers_dlss(var) ? "" : " (no DLSS frame generation on this PC)");
+        plugin_log(1, "framegen: 3D Mode is on and Frame Generation is %s, which can't run in 3D, so the game turns it "
+                      "off%s", known ? value : "?",
+                   offers_dlss(var) ? "" : " (the game offers no DLSS frame generation: not an RTX 40 or 50, or "
+                                           "another mod such as OptiScaler holds DLSS-G)");
         return 0;
     }
     fg.keptFlags = (uint32_t *)(var + SETTING_FLAGS); // the grey comes later in the handler: undone after it

@@ -467,7 +467,8 @@ TEST(handler_does_what_the_game_does_on_a_pc_without_dlss_frame_generation)
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
-    CHECK(strstr(ft_log, "Frame Generation is Off (no DLSS frame generation on this PC)") != NULL);
+    CHECK(strstr(ft_log, "Frame Generation is Off, which can't run in 3D, so the game turns it off (the game "
+                         "offers no DLSS") != NULL);
 }
 
 TEST(handler_keeps_the_value_from_the_file_before_the_list_is_built)
