@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-30)
 
 - The game's own DLSS frame generation now works in 3D Mode: 3D Mode no longer turns Frame Generation off or greys
   it out, and the renderer keeps DLSS-G on side-by-side frames. Needs RED4ext; choose DLSS frame generation and
