@@ -33,7 +33,7 @@ generation hook a few game functions through RED4ext.
   ([No RED4ext](#no-red4ext)), which leaves menus split and frame generation off in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
-- For frame generation: an RTX 40 or 50. Tested on RTX 50; RTX 40 should work at up to 2x.
+- For frame generation: an RTX 40 (up to 2x) or RTX 50 (up to 6x). Tested on RTX 50; RTX 40 should work.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
   side-by-side output.
 
