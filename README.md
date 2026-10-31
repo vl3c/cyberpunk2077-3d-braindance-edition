@@ -20,7 +20,7 @@ that monitor's software. This mod:
    monitor's lenticular panel.
 3. Makes **menus readable**. The game draws menus, the map and loading screens as one flat picture split across
    the eyes; the mod squeezes it into each half.
-4. Lets the game's own **DLSS and FSR Frame Generation** run in 3D Mode (the game turns it off there, because
+4. Lets the game's own **DLSS, FSR and XeSS Frame Generation** run in 3D Mode (the game turns it off there, because
    Samsung's monitor can't use it).
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix and frame
@@ -34,7 +34,7 @@ generation hook a few game functions through RED4ext.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
-  or FSR3 on any GPU (2x), tested on an NVIDIA card. FSR4 (RX 9000) is untested; XeSS stays off in 3D.
+  or FSR3 on any GPU (2x), tested on an NVIDIA card. FSR4 (RX 9000) and XeSS (Intel Arc) are untested.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
   side-by-side output.
 
@@ -72,7 +72,7 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    - Without DLSS frame generation, pick **FSR3** and restart the game: the game's FSR 3.1 frame generation (2x)
      stays on with 3D Mode too (needs RED4ext). We tested it on an NVIDIA card, not yet on AMD.
    - On an RX 9000, the game's **FSR4** frame generation stays on too, but it's untested: if the picture looks wrong,
-     use FSR3 and please report it. The game's XeSS frame generation still turns off in 3D Mode.
+     use FSR3 and please report it. The same goes for **XESS** frame generation on an Intel Arc.
    - [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work on the
      side-by-side frame, but we haven't tested it (we tested OptiScaler's frame generation only with its DLSS-G
      output, on an RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and
