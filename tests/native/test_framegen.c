@@ -34,7 +34,6 @@ void plugin_log(int level, const char *fmt, ...)
 // A fake copy of the game's code and data, inside this exe's image (like the real targets are inside the game's).
 static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
-static uint8_t f_modeGetter[8];              // the start-mode getter's bytes: movzx eax, byte [rcx+0x4D64]; ret
 static uint64_t f_cnames[2];
 static const char *f_sbsVar[8];
 static int f_attachFails; // which Attach call fails (1-based), 0 = none
@@ -77,7 +76,6 @@ static void fake_game(void)
     put(f_flag + 0x6F0, AOB_FLAG_CLEAR);
     put(f_flag + 0x707, AOB_FLAG_CLEAR_FSR);
     put(f_fsrCode, AOB_FSR_ENABLED);
-    put(f_modeGetter, AOB_FG_START_MODE);
 
     f_sbsVar[VAR_NAME / 8] = "SBSDebug";
     f_sbsVar[VAR_GROUP / 8] = "Odyssey3D";
@@ -92,7 +90,6 @@ static uintptr_t fake_resolve(uint32_t hash)
     case HASH_FLAG_COMPUTE: return (uintptr_t)f_flag;
     case HASH_DLSSG_ENABLED: return (uintptr_t)f_dlssg;
     case HASH_VAR_SBSDEBUG: return (uintptr_t)f_sbsVar;
-    case HASH_FG_START_MODE: return (uintptr_t)f_modeGetter;
     }
     return 0;
 }
@@ -185,7 +182,7 @@ static void *fake_find(void *parent, uint64_t cname) { return cname == f_cnames[
 static void *fake_find_nothing(void *parent, uint64_t cname) { return NULL; }
 
 // Like the game's IsFsrFgEnabled: fsr[0x59] && !fsr[0x5A]. f_renderer's FSR object is f_fsr.
-static uint8_t f_fsr[0x100], f_renderer[RENDERER_START_MODE + 8];
+static uint8_t f_fsr[0x100], f_renderer[RENDERER_FSR + 8];
 static uint8_t fake_fsr_enabled(const uint8_t *fsr) { return fsr[0x59] && !fsr[0x5A]; }
 
 static uint8_t fake_dlssg(uint8_t *sl)
@@ -237,7 +234,6 @@ static void ft_begin(void)
     memset(f_fsr, 0, sizeof(f_fsr));
     f_fsr[0x59] = 1; // FSR frame generation on
     *(uint8_t **)(f_renderer + RENDERER_FSR) = f_fsr;
-    f_renderer[RENDERER_START_MODE] = FG_MODE_FSR3; // started with FSR3
     fg.root = fake_root;
     fg.group = fake_find;
     fg.var = fake_find;
@@ -301,7 +297,7 @@ TEST(all_four_hooks_attach_when_every_check_passes)
     CHECK(fg.fgName == &f_cnames[1]);
     CHECK(fg.dlssgOrig == (DlssgEnabledFn)(void *)f_dlssg);
     CHECK(fg.fsrEnabled == (FsrFgEnabledFn)(void *)f_fsrCode);
-    CHECK(strstr(ft_log, "hooks attached; DLSS and FSR 3 frame generation stays available") != NULL);
+    CHECK(strstr(ft_log, "hooks attached; DLSS and FSR frame generation stays available") != NULL);
     CHECK_EQ_INT(f_setFg[0], 0xE9); // checked before the handler group's hook patched it
 }
 
@@ -530,7 +526,7 @@ TEST(handler_does_what_the_game_does_with_a_value_it_doesnt_know)
     CHECK(strstr(ft_log, "Frame Generation is XeSS2, which can't run in 3D") != NULL);
 }
 
-TEST(keep_in_3d_allows_only_off_dlss_and_fsr3)
+TEST(keep_in_3d_allows_only_off_dlss_and_fsr)
 {
     ft_begin();
     set_fg_value("DLSS", 1);
@@ -538,17 +534,20 @@ TEST(keep_in_3d_allows_only_off_dlss_and_fsr3)
     CHECK(keep_in_3d(f_var, "FSR3", 1));
     CHECK(keep_in_3d(f_var, "Off", 1));
     CHECK(keep_in_3d(f_var, "", 0)); // unreadable counts as Off
-    CHECK(!keep_in_3d(f_var, "FSR4", 1));
+    CHECK(!keep_in_3d(f_var, "FSR4", 1)); // not on this PC's list (no RX 9000)
     CHECK(!keep_in_3d(f_var, "XESS", 1));
     CHECK(!keep_in_3d(f_var, "DLSS2", 1));
     fg.fsrEnabled = NULL; // the FSR checks failed
     CHECK(!keep_in_3d(f_var, "FSR3", 1));
     CHECK(keep_in_3d(f_var, "Off", 1)); // DLSS can still be chosen
-    put_cstring(f_values[1], "FSR4");   // no DLSS either
+    put_cstring(f_values[1], "FSR4");   // no DLSS either: an RX 9000
     CHECK(!keep_in_3d(f_var, "Off", 1));
     CHECK(!keep_in_3d(f_var, "DLSS", 1));
+    CHECK(!keep_in_3d(f_var, "FSR4", 1));
     fg.fsrEnabled = fake_fsr_enabled;
     CHECK(keep_in_3d(f_var, "Off", 1));
+    CHECK(keep_in_3d(f_var, "FSR4", 1));
+    CHECK(!keep_in_3d(f_var, "DLSS", 1));
     put_cstring(f_values[2], "FSR2"); // a list without FSR3
     CHECK(!keep_in_3d(f_var, "FSR3", 1));
     CHECK(!keep_in_3d(f_var, "Off", 1));
@@ -577,13 +576,21 @@ TEST(handler_without_sbs_debug_does_what_the_game_does)
     CHECK_EQ_INT(f_noted3d, 1); // the squeeze still follows the handler
 }
 
-TEST(handler_keeps_fsr3_frame_generation)
+TEST(handler_keeps_fsr_frame_generation)
 {
     ft_begin();
     set_fg_value("FSR3", 1);
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 0);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, 0);
+    CHECK(strstr(ft_log, "Frame Generation kept and choosable") != NULL);
+    ft_begin();
+    set_fg_value("Off", 1);
+    put_cstring(f_values[1], "FSR4"); // an RX 9000's list: Off, FSR4, FSR3, XESS
+    *(int32_t *)(f_var + SETTING_PENDING) = 1;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    CHECK(strstr(ft_log, "value 'FSR4'") != NULL);
     CHECK(strstr(ft_log, "Frame Generation kept and choosable") != NULL);
 }
 
@@ -601,6 +608,14 @@ TEST(handler_still_turns_off_xess_frame_generation_and_fsr3_without_its_checks)
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK(strstr(ft_log, "Frame Generation is FSR3, which can't run in 3D, so the game turns it off (the FSR checks") != NULL);
+    ft_begin();
+    fg.fsrEnabled = NULL;
+    set_fg_value("Off", 1);
+    put_cstring(f_values[1], "FSR4"); // an RX 9000's list: Off, FSR4, FSR3, XESS
+    *(int32_t *)(f_var + SETTING_PENDING) = 1;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK(strstr(ft_log, "Frame Generation is FSR4, which can't run in 3D, so the game turns it off (the FSR checks") != NULL);
 }
 
 TEST(handler_keeps_frame_generation_off_choosable)
@@ -799,10 +814,6 @@ TEST(flag_compute_leaves_feature_89_alone_otherwise)
     ft_begin();
     f_dlssgOn = 0;
     *(uint8_t **)(f_renderer + RENDERER_FSR) = NULL; // no FSR object
-    CHECK(run_flags_with_renderer() == stereo);
-    ft_begin();
-    f_dlssgOn = 0;
-    f_renderer[RENDERER_START_MODE] = 3; // started with FSR4: IsFsrFgEnabled says yes, but FSR4 stays blocked in stereo
     CHECK(run_flags_with_renderer() == stereo);
 }
 
@@ -1201,7 +1212,7 @@ TEST(check_flag_compute_wants_one_dlssg_call_before_the_stereo_clear)
 TEST(check_fsr_finds_is_fsr_fg_enabled_between_the_dlssg_check_and_the_clears)
 {
     ft_begin();
-    CHECK_EQ_PTR((void *)check_fsr(f_flag, f_modeGetter), f_fsrCode);
+    CHECK_EQ_PTR((void *)check_fsr(f_flag), f_fsrCode);
     struct { int at; uint8_t byte; const char *log; } cases[] = {
         { 0x660 + 9, 0x60, "the FSR frame generation check isn't there" },                 // another renderer offset
         { -1, 0, "the FSR frame generation check isn't between" },                          // moved before the DLSS-G check
@@ -1209,12 +1220,8 @@ TEST(check_fsr_finds_is_fsr_fg_enabled_between_the_dlssg_check_and_the_clears)
         { -3, 0, "IsFsrFgEnabled is called somewhere else in it too" },
         { 0x707 + 19, 0x58, "the stereo clear of feature 89 isn't there" },
         { -4, 0, "the stereo clear of feature 89 isn't after the one of 88" },
-        { -5, 0, "the Frame Generation start-mode getter doesn't match" },     // another instruction
-        { -6, 0, "the Frame Generation start-mode getter doesn't match" },     // the mode moved in the renderer
-        { -7, 0, "the Frame Generation start-mode getter doesn't match" },     // not resolved
     };
-    for (int k = 0; k < 9; k++) {
-        const uint8_t *getter = f_modeGetter;
+    for (int k = 0; k < 6; k++) {
         ft_begin();
         if (cases[k].at >= 0) f_flag[cases[k].at] = cases[k].byte;
         if (cases[k].at == -1) {
@@ -1231,10 +1238,7 @@ TEST(check_fsr_finds_is_fsr_fg_enabled_between_the_dlssg_check_and_the_clears)
             memset(f_flag + 0x707, 0xCC, (size_t)aob_len(AOB_FLAG_CLEAR_FSR));
             put(f_flag + 0x100, AOB_FLAG_CLEAR_FSR);
         }
-        if (cases[k].at == -5) f_modeGetter[1] = 0xB7; // movzx eax, word
-        if (cases[k].at == -6) put(f_modeGetter, "0F B6 81 68 4D 00 00 C3");
-        if (cases[k].at == -7) getter = NULL;
-        CHECK_MSG(check_fsr(f_flag, getter) == NULL, "case %d passed", k);
+        CHECK_MSG(check_fsr(f_flag) == NULL, "case %d passed", k);
         CHECK_MSG(strstr(ft_log, cases[k].log) != NULL, "case %d: no \"%s\" in:\n%s", k, cases[k].log, ft_log);
         CHECK(strstr(ft_log, "FSR frame generation stays off in 3D Mode (DLSS isn't affected)") != NULL);
     }
