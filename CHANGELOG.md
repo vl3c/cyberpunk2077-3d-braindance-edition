@@ -3,6 +3,8 @@
 ## Unreleased
 
 - README and Nexus page: lower the game's Field of View (e.g. 90 to 80) for life-sized, deeper 3D.
+- Technical notes and source comments now say what the reported panel size and eye positions really feed (one
+  parallax limit, and nothing), and how Depth maps to eye separation.
 
 ## 0.3.0 (2026-10-30)
 
