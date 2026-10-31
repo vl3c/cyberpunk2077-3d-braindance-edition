@@ -79,9 +79,9 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    for a screen you look at; many want 40+. RTX 40 stops at 2x; 3x+ needs RTX 50.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
    - RTX 40: 72 Hz 2x needs 36; 90 Hz 2x needs 45.
-6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses, lower texture
-   quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave the frame rate
-   low afterwards; restart the game if it doesn't recover.
+6. **Video memory:** 4K, path tracing and a high multiplier can fill even a 16 GB card. If the base rate collapses,
+   lower texture quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave
+   the frame rate low afterwards; restart the game if it doesn't recover.
 
 ## Troubleshooting
 
