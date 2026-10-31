@@ -49,6 +49,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 ## Settings
 
 - In game: **Depth** (0.5 to 1.0 suits a headset), **Weapon Depth**, **Motion Comfort** and **Preset**.
+- **More 3D depth:** lower the game's **Field of View** (Gameplay settings), e.g. 90 to 80. The world looks
+  life-sized, edges stretch less, and depth feels much stronger.
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
   multi-monitor PCs) and menu fix (`[Menus] Squeeze = auto` or `off`).
 - Each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice lowers
@@ -82,6 +84,9 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 6. **Video memory:** 4K, path tracing and a high multiplier can fill even a 16 GB card. If the base rate collapses,
    lower texture quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave
    the frame rate low afterwards; restart the game if it doesn't recover.
+7. **Field of View:** a flat image looks natural only when the game's FOV matches how much of your view the screen
+   fills. Too wide, and everything looks small and far away and swells at the edges. With a large Virtual Desktop
+   cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
 
 ## Troubleshooting
 
