@@ -150,7 +150,8 @@ generated frame would blend two interlaced pictures) but not for side by side:
   88 (DLSS-G) from the game's DLSS-G checks, then clears it while stereo is on (likewise 89, FSR FG, and 75, XeSS
   FG). The frame graph and the Streamline resource tagging read feature 88, so without it DLSS-G gets no input.
   FSR FG sits behind the same view checks, right after the DLSS-G check: `IsFsrFgEnabled` (`RVA 0x2288250`, a read
-  of two flags on the renderer's FSR object at `+0x4668`) decides feature 89.
+  of two flags on the renderer's FSR object at `+0x4668`) decides feature 89. XeSS FG too: a read of `+0xDD` on the
+  renderer's XeSS object at `+0x4678` decides feature 75.
 
 The RED4ext plugin (`src/braindance3d_framegen.c`) attaches four detours, resolved by hash from CDPR's address
 library like `GpuApi::Present`:
@@ -158,8 +159,8 @@ library like `GpuApi::Present`:
 | Detour | What it changes |
 | --- | --- |
 | 3D Mode handler | Marks that it's running; afterwards clears Frame Generation's greyed flag when it was kept, and tells the menu squeeze which way 3D Mode was set |
-| `SetFrameGeneration` | Skips the handler's Off when Frame Generation is DLSS (and the setting's list offers it: an RTX 40 or 50), FSR3 (FSR 3.1, every GPU), FSR4 (AMD's AI frame generation on RX 9000, untested), or Off while one of those can be picked. Before the list is built, the saved value decides alone. XeSS and values it doesn't know keep the game's rule (Off, greyed out), as do FSR3 and FSR4 if the FSR checks at start-up failed, and Off when nothing in the list runs in 3D (for example no DLSS, because OptiScaler holds DLSS-G, and the FSR checks failed) |
-| `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its frame generation checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it. For a view that was asked, feature 89 is set again when the game's `IsFsrFgEnabled` says yes (called by the plugin, not hooked). It covers FSR3 and FSR4 alike: both run through the same FidelityFX frame generation DLL |
+| `SetFrameGeneration` | Skips the handler's Off when Frame Generation is DLSS (and the setting's list offers it: an RTX 40 or 50), FSR3 (FSR 3.1, every GPU), FSR4 (AMD's AI frame generation on RX 9000, untested), XESS (Intel Arc, untested), or Off while one of those can be picked. Before the list is built, the saved value decides alone. Values it doesn't know keep the game's rule (Off, greyed out), as do FSR3 and FSR4 if the FSR checks at start-up failed, XESS if the XeSS checks failed, and Off when nothing in the list runs in 3D (for example no DLSS, because OptiScaler holds DLSS-G, and the FSR checks failed) |
+| `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its frame generation checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it. For a view that was asked, feature 89 is set again when the game's `IsFsrFgEnabled` says yes (called by the plugin, not hooked). It covers FSR3 and FSR4 alike: both run through the same FidelityFX frame generation DLL. Likewise feature 75 is set again when the renderer's XeSS object (`+0x4678`) has its frame generation flag (`+0xDD`) set, the field FlagCompute itself reads there |
 
 They change nothing unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor keeps the
 game's rule. Each is entered through a small assembly thunk that keeps `rcx`, `rdx`, `r8`-`r11` and `xmm0`-`xmm5`:
@@ -177,20 +178,21 @@ bytes with a jump, and the second group reads `SetFrameGeneration`'s). Each grou
 - **Frame generation:** the grey, `SetFrameGeneration`'s start and settings lookup, FlagCompute's start, its DLSS-G
   check calling `IsDlssgEnabled` (its only call there) and the stereo clear, and the SBSDebug var's name. Then the
   FSR part, which only decides FSR3 and FSR4: the `IsFsrFgEnabled` call between the DLSS-G check and the clear (its
-  only call there, and its target's bytes), and the clear of 89 after the one of 88. If it fails, DLSS still works.
+  only call there, and its target's bytes), and the clear of 89 after the one of 88. Then the XeSS part: the read of
+  the XeSS flag between the DLSS-G check and the clear, and the clear of 75 after the one of 88. If one of those two
+  parts fails, the others still work.
 
 If the second group fails, the game keeps its frame generation rule but the squeeze still follows 3D Mode; if the first
 fails, nothing is attached. The hooks log says which check failed. DLSS-G loads only when Frame Generation is DLSS at
 game start (Streamline is set up once), so choosing it needs a restart, as in 2D. FSR frame generation is the same:
-the FSR object turns it on only while the chosen mode equals the one at start. With FSR at start the game presents
-through FidelityFX's frame generation swap chain (`amd_fidelityfx_framegeneration_dx12.dll`); the menu squeeze patches
-that swap chain's Present like any other.
+the FSR object turns it on only while the chosen mode equals the one at start. So is XeSS: its object sets its flag
+only when XESS was chosen at start. With FSR at start the game presents through FidelityFX's frame generation swap
+chain (`amd_fidelityfx_framegeneration_dx12.dll`), with XeSS through Intel's (`libxess_fg.dll`); the menu squeeze
+patches the Present of whichever swap chain the game uses (tested with Streamline's and FidelityFX's). The game offers
+XESS only when `xefgSwapChainD3D12CreateContext` succeeded at start (in practice an Intel Arc GPU).
 
 ## Building and testing
 
 `./build.sh` builds the DLL with MinGW-w64 (no PE timestamp, so builds of the same source with the same
 toolchain are identical). `./build.sh dist` also writes the release zip and its SHA-256. Tests are in `tests/`.
 
-## Ideas for later
-
-- XeSS frame generation in 3D Mode. Its decision (feature 75) is a field read in FlagCompute, not a call.
