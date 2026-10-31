@@ -492,9 +492,10 @@ static float *dev_GetResolution(Device *self, float *out)
 }
 
 // vtbl+0x18: float2, the 3D panel's physical size in cm as the CyberpunkVR port reads it. Answers a real 27" 16:9
-// Odyssey 3D, the hardware the game's 3D Mode was tuned on. The game reads it every stereo frame, but only keeps
-// x * 0.01 (metres) once, when it sets the device up, as one input to a parallax limit; world depth showed no visible
-// change between 10000 and 120 x 67.5, so it isn't a setting.
+// Odyssey 3D, the hardware the game's 3D Mode was tuned on. The game reads it every stereo frame but only copies
+// those values; what counts is x * 0.01 (metres), kept once when it sets the device up, as the panel width in one
+// parallax limit (the game's own default is 0.6141 m). That limit can only lower the eye separation and stops
+// mattering above about 1.18 m, so this isn't a depth setting: for more depth, lower the game's Field of View.
 #define PANEL_WIDTH_CM 59.77f
 #define PANEL_HEIGHT_CM 33.62f
 static float *dev_GetFloat2_18(Device *self, float *out)

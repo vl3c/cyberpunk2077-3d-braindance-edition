@@ -3,6 +3,10 @@
 ## Unreleased
 
 - README and Nexus page: lower the game's Field of View (e.g. 90 to 80) for life-sized, deeper 3D.
+- Technical notes and source comments now say what the reported panel size really feeds (one parallax limit), that
+  the reported eye positions don't set the eye separation, and how Depth maps to it.
+- Technical notes: "Ideas for later" now lists FSR frame generation in 3D Mode, and drops full SBS and head tracking,
+  which are out of scope.
 
 ## 0.3.0 (2026-10-30)
 

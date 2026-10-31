@@ -24,8 +24,15 @@ stereo stayed on whatever the toggle said.
 
 Other options in the group (not changed): `WeaponConvergenceDistance` (0.5), `AO/StereoMod` (true),
 `AO/NoDownsampleThreshold` (1440), `Dynamic3DSettings/EnableWidgetDepth` (true), `WidgetDepthValue` (0.008),
-`AimIpdCooldownMS` (150, the fade time of both eye separations). The user settings live in `/video/display`: `Odyssey3D_StereoEnabled`,
-`Odyssey3D_Preset`, `Odyssey3D_Strength` (Depth), `Odyssey3D_WeaponStrength`, `Odyssey3D_MotionComfort`.
+`AimIpdCooldownMS` (150, the fade time of both eye separations). The user settings live in `/video/display`:
+`Odyssey3D_StereoEnabled`, `Odyssey3D_Preset`, `Odyssey3D_Strength` (Depth), `Odyssey3D_WeaponStrength`,
+`Odyssey3D_MotionComfort`.
+
+**Depth.** The game turns Depth into a strength `s` with a hard ceiling: `s = Depth / 0.7` up to Depth 0.7 (so
+`s` is 1.0 there), then it climbs to 2.0 at Depth 1.0, and values past 1.0 do nothing. The eye separation (in
+metres) starts at `near × s / 19.75`, is capped at `min(0.1 × s, 0.3)` and is then lowered by comfort limits; the
+eye positions the SDK reports don't enter it. For a stronger 3D effect than Depth 1.0, lower the game's **Field of
+View**: in Virtual Desktop, 90 to 80 made the world look life-sized and the depth much stronger.
 
 ## The SDK interface
 
@@ -40,9 +47,9 @@ Exports: `create_odyssey3d_factory_instance()` (returns the factory, or NULL in 
 | --- | --- | --- |
 | factory | 0 (+0x00) `CreateDevice(Device** out)` | heap device, returns `out` |
 | factory | 2 (+0x10) `CreateWeaver(shared_ptr* ret, device, ID3D12Device*, allocator, ?, 0, 0, HWND)` | logging weaver in an MSVC `std::shared_ptr` |
-| device | 1 (+0x08) `GetEyePosition(float3* out, int eye)` | ±32 mm, 0, 600 mm |
+| device | 1 (+0x08) `GetEyePosition(float3* out, int eye)` | ±32 mm, 0, 600 mm. Called for both eyes every stereo frame and copied into the eye cameras, but the eye separation isn't computed from it (it comes from Depth) |
 | device | 2 (+0x10) `GetResolution(float2* out)` | size of the 3D monitor (cached up to 0.5 s) |
-| device | 3 (+0x18) `GetFloat2_18(float2* out)` | 59.77 × 33.62, a real 27" panel in cm (the game stores x × 0.01). Read every stereo frame; 10000 and 120 × 67.5 looked the same |
+| device | 3 (+0x18) `GetFloat2_18(float2* out)` | 59.77 × 33.62, a real 27" panel in cm. The game keeps x × 0.01 once, at device set-up, as the panel width for one parallax limit (its own default is 0.6141 m). That limit can only lower the separation and stops mattering above about 1.18 m, which is why 10000 and 120 × 67.5 looked the same. The per-frame reads are only copied |
 | device | 6 (+0x30) `GetMonitorRect(int64[4] out)` | `{top, left, right, bottom}` of the 3D monitor (always current) |
 | device | 9 (+0x48) `Hint48(bool)` | no-op returning 0; called 400 to 900 times a second, result ignored |
 | device | 10 (+0x50) `IsAvailable()` | true |
@@ -179,5 +186,4 @@ toolchain are identical). `./build.sh dist` also writes the release zip and its 
 
 ## Ideas for later
 
-- Full SBS (full resolution per eye) through a real weaver that copies the eyes into a wider back buffer.
-- Head tracking through OpenXR, using the eye-position callback.
+- FSR (and maybe XeSS) frame generation in 3D Mode. Today only DLSS is kept; FSR FG also runs on NVIDIA cards.
