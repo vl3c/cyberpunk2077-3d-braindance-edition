@@ -474,13 +474,26 @@ TEST(handler_does_what_the_game_does_when_the_setting_isnt_found)
 
 TEST(handler_keeps_off_choosable_on_a_pc_without_dlss_frame_generation)
 {
-    // An AMD, Intel or RTX 20/30 PC: the list has no DLSS, but FSR3 runs in stereo.
+    // An RX 9000 (Off, FSR4, FSR3, XESS): the list has no DLSS, but FSR runs in stereo. Same on any PC without DLSS.
     ft_begin();
     set_fg_value("Off", 1);
     put_cstring(f_values[1], "FSR4");
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 0);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, 0);
+}
+
+TEST(handler_says_why_off_is_turned_off_when_the_list_has_neither_dlss_nor_fsr3)
+{
+    // A list (made up) of Off and XESS only: nothing in it runs in 3D, though the FSR checks passed.
+    ft_begin();
+    set_fg_value("Off", 1);
+    put_cstring(f_values[1], "XESS");
+    put_cstring(f_values[2], "XESS");
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK(strstr(ft_log, "Frame Generation is Off, which can't run in 3D, so the game turns it off (the game offers "
+                         "neither DLSS frame generation nor FSR3)") != NULL);
 }
 
 TEST(handler_does_what_the_game_does_when_nothing_offered_runs_in_3d)
@@ -506,6 +519,10 @@ TEST(handler_keeps_the_value_from_the_file_before_the_list_is_built)
     CHECK_EQ_INT(f_setFgCalls, 0);
     ft_begin();
     set_fg_value("FSR3", -1);
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    ft_begin();
+    set_fg_value("FSR4", -1);
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 0);
     ft_begin();
@@ -594,7 +611,7 @@ TEST(handler_keeps_fsr_frame_generation)
     CHECK(strstr(ft_log, "Frame Generation kept and choosable") != NULL);
 }
 
-TEST(handler_still_turns_off_xess_frame_generation_and_fsr3_without_its_checks)
+TEST(handler_still_turns_off_xess_frame_generation_and_fsr_without_its_checks)
 {
     ft_begin();
     set_fg_value("XESS", 1);
@@ -1086,7 +1103,7 @@ TEST(only_the_handlers_own_off_call_counts)
     CHECK(!is_handlers_off(0, 1));
 }
 
-TEST(keep_frame_generation_keeps_off_dlss_or_fsr3_while_sbsdebug_is_on)
+TEST(keep_frame_generation_keeps_off_dlss_or_fsr_while_sbsdebug_is_on)
 {
     ft_begin();
     CHECK_EQ_INT(keep_frame_generation(), 1);

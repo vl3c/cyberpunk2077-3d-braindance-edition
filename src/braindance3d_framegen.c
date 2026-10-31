@@ -7,15 +7,16 @@
 //     (FSR frame generation) while stereo is on, so the frame graph never feeds them.
 // On Samsung's monitor that is right: its weaver interlaces the eyes for the tracked eye position, and a generated
 // frame would blend two woven pictures. In side by side ([Odyssey3D] SBSDebug = true) there is no weaver, and DLSS-G
-// on the whole side-by-side frame works (tested through OptiScaler up to 6x).
+// on the whole side-by-side frame works (tested through OptiScaler up to 6x), and so does the game's FSR 3.1 frame
+// generation (tested in game; FSR4 untested).
 //
 // Four detours through RED4ext's hooking, the addresses resolved by hash from CDPR's address library (like
 // GpuApi::Present in braindance3d_menus.c):
 //   - the 3D Mode handler: marks that it is running, and clears Frame Generation's greyed flag afterwards. It
 //     also tells the menu squeeze which way 3D Mode was set (whether the handler asked for Off);
-//   - SetFrameGeneration: skips the handler's "Off" (and so the grey) when Frame Generation is Off, DLSS (on a PC
-//     that offers DLSS frame generation), FSR3 or FSR4 (the AI frame generation of AMD's RX 9000, untested), so it
-//     keeps its setting and can be chosen in 3D Mode. XeSS stays blocked (its feature 75 isn't put back), so with it
+//   - SetFrameGeneration: skips the handler's "Off" (and so the grey) when Frame Generation is DLSS (on a PC that
+//     offers DLSS frame generation), FSR3, FSR4 (the AI frame generation of AMD's RX 9000, untested), or Off while one
+//     of those can be picked, so it keeps its setting and can be chosen in 3D Mode. XeSS stays blocked (its feature 75 isn't put back), so with it
 //     or a value this doesn't know selected, the game still turns it off and greys it out;
 //   - FlagCompute and IsDlssgEnabled: FlagCompute calls IsDlssgEnabled only for a view that passed its other DLSS-G
 //     checks, so its answer, noted per thread (FlagCompute runs for several views at once on worker threads), is
@@ -475,7 +476,9 @@ static int fsr_fg_enabled(const uint8_t *renderer)
 }
 
 // Feature 89: the view passed the frame generation checks (the original asked about DLSS-G, so it also asked
-// IsFsrFgEnabled), and IsFsrFgEnabled says yes. Asked last: it's a call.
+// IsFsrFgEnabled), and IsFsrFgEnabled says yes. Asked last: it's a call. The checks before IsDlssgEnabled don't depend
+// on DLSS-G being there, and the Streamline object always exists (FlagCompute writes to it either way), so a PC without
+// DLSS-G (AMD, Intel) is asked too.
 static int should_restore_fsr(uintptr_t state, uint64_t features, const uint8_t *renderer)
 {
     return fg.fsrEnabled && (state == TS_DLSSG_OFF || state == TS_DLSSG_ON) &&
