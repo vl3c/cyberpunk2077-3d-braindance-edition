@@ -3,9 +3,9 @@
 ## Unreleased
 
 - The game's FSR 3.1 frame generation now works in 3D Mode too (any GPU; pick FSR, then restart the game: the game
-  fixes its frame generation at start, as with DLSS). FSR 4 frame generation (RX 9000) and XeSS frame generation still turn off in 3D Mode, until someone can
-  test them. Same hooks as DLSS: the FSR part checks the game's code first, and if it changed, only FSR keeps the
-  game's rule.
+  fixes its frame generation at start, as with DLSS). FSR 4 frame generation (RX 9000) and XeSS frame generation
+  still turn off in 3D Mode, until someone can test them. Same hooks as DLSS: the FSR part checks the game's code
+  first, and if it changed, only FSR keeps the game's rule.
 - README and Nexus page: lower the game's Field of View (e.g. 90 to 80) for life-sized, deeper 3D.
 - Technical notes and source comments now say what the reported panel size really feeds (one parallax limit), that
   the reported eye positions don't set the eye separation, and how Depth maps to it.

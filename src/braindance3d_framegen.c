@@ -74,8 +74,8 @@
 #define FEATURE_FSR_FG 89
 #define RENDERER_FSR 0x4668      // the renderer's FSR object, what FlagCompute passes IsFsrFgEnabled
 #define FSR_ENABLED_SIZE 18      // IsFsrFgEnabled's code
-#define FG_MODE_FSR3 2           // the start mode: Off 0, DLSS 1, FSR3 2, FSR4 3, XESS 4 (the game's own table)
-#define MAX_RENDERER_OFFSET 0x10000
+#define RENDERER_START_MODE 0x4D64 // the renderer's Frame Generation mode at start (uint8_t)
+#define FG_MODE_FSR3 2           //   Off 0, DLSS 1, FSR3 2, FSR4 3, XESS 4 (the game's own table)
 #define FEATURE_STEREO 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
 
@@ -113,9 +113,9 @@ static const char AOB_FLAG_FSR[] = "48 8B 94 24 90 00 00 00 48 8B 8A 68 46 00 00
 #define FLAG_FSR_CALL 15
 // IsFsrFgEnabled: bool (FSR object): fsr[0x59] && !fsr[0x5A]. Only reads, so it's safe to call on any thread.
 static const char AOB_FSR_ENABLED[] = "80 79 59 00 74 09 80 79 5A 00 75 03 B0 01 C3 32 C0 C3";
-// The start-mode getter: movzx eax, byte [rcx + offset]; ret. The renderer stores the mode once at start, and the FSR
+// The start-mode getter: movzx eax, byte [rcx + 4D64h]; ret. The renderer stores the mode once at start, and the FSR
 // object's frame generation flag (+0x59) is set only while the mode chosen equals it, for FSR3 and for FSR4 alike.
-static const char AOB_FG_START_MODE[] = "0F B6 81 ?? ?? ?? ?? C3";
+static const char AOB_FG_START_MODE[] = "0F B6 81 64 4D 00 00 C3";
 // In FlagCompute, after the clear of 88, the one of feature 89: fsr && !stereo.
 static const char AOB_FLAG_CLEAR_FSR[] = "45 84 DB 74 0A 45 84 E4 75 05 41 B0 01 EB 03 45 33 C0 BA 59 00 00 00 E8";
 
@@ -141,7 +141,6 @@ static struct {
     FlagComputeFn flagOrig;
     DlssgEnabledFn dlssgOrig;
     FsrFgEnabledFn fsrEnabled;    // the game's IsFsrFgEnabled; NULL if its checks failed (FSR3 keeps the game's rule)
-    uint32_t startMode;           // where the renderer keeps the Frame Generation mode it started with
     RootFn root;
     FindFn group, var;
     const uint64_t *presetsName, *fgName; // the CNames SetFrameGeneration passes
@@ -474,7 +473,7 @@ static int should_restore_dlssg(uintptr_t state, uint64_t features)
 // which stays blocked in stereo), and the game's IsFsrFgEnabled says yes for its FSR object.
 static int fsr_fg_enabled(const uint8_t *renderer)
 {
-    if (!renderer || renderer[fg.startMode] != FG_MODE_FSR3) return 0;
+    if (!renderer || renderer[RENDERER_START_MODE] != FG_MODE_FSR3) return 0;
     const uint8_t *fsr = *(const uint8_t *const *)(renderer + RENDERER_FSR);
     return fsr && fg.fsrEnabled(fsr);
 }
@@ -598,19 +597,11 @@ static int check_flag_compute(const uint8_t *flagCompute, const uint8_t *dlssg)
     return 1;
 }
 
-// Where the renderer keeps its start mode, read from the getter's one instruction; 0 if it doesn't look like that.
-static uint32_t start_mode_offset(const uint8_t *getter)
-{
-    if (!in_exe((uintptr_t)getter, 8) || aob_find_unique(getter, 8, AOB_FG_START_MODE) != 0) return 0;
-    uint32_t off = *(const uint32_t *)(getter + 3);
-    return off && off < MAX_RENDERER_OFFSET ? off : 0;
-}
-
 // The FSR part of FlagCompute (already checked by check_flag_compute): the IsFsrFgEnabled call between the DLSS-G check
-// and the clear of 88, the only call to it there, and the clear of 89 after the one of 88; and the start-mode getter
-// (its offset into *startMode). Returns IsFsrFgEnabled, or NULL (logged) if something doesn't match: then only FSR3
-// keeps the game's rule.
-static FsrFgEnabledFn check_fsr(const uint8_t *flagCompute, const uint8_t *modeGetter, uint32_t *startMode)
+// and the clear of 88, the only call to it there, and the clear of 89 after the one of 88; and the start-mode getter,
+// which confirms where the renderer keeps that mode. Returns IsFsrFgEnabled, or NULL (logged) if something doesn't
+// match: then only FSR3 keeps the game's rule.
+static FsrFgEnabledFn check_fsr(const uint8_t *flagCompute, const uint8_t *modeGetter)
 {
     long dlssg = aob_find_unique(flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_DLSSG);
     long clear = aob_find_unique(flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_CLEAR);
@@ -626,14 +617,15 @@ static FsrFgEnabledFn check_fsr(const uint8_t *flagCompute, const uint8_t *modeG
     else if (count_calls(flagCompute, FLAG_COMPUTE_SIZE, fsr) != 1) why = "IsFsrFgEnabled is called somewhere else in it too";
     else if (clearFsr < 0) why = "the stereo clear of feature 89 isn't there";
     else if (clearFsr < clear) why = "the stereo clear of feature 89 isn't after the one of 88";
-    else if (!(*startMode = start_mode_offset(modeGetter))) why = "the Frame Generation start-mode getter doesn't match";
+    else if (!in_exe((uintptr_t)modeGetter, 8) || aob_find_unique(modeGetter, 8, AOB_FG_START_MODE) != 0)
+        why = "the Frame Generation start-mode getter doesn't match";
     if (why) {
         fail(why);
         plugin_log(1, "framegen: FSR frame generation stays off in 3D Mode (DLSS isn't affected)");
         return NULL;
     }
-    plugin_log(2, "framegen: FSR checked (IsFsrFgEnabled %p, its call at +0x%lX, stereo clear at +0x%lX, start mode at "
-                  "renderer +0x%X)", (void *)fsr, off + FLAG_FSR_CALL, clearFsr, (unsigned)*startMode);
+    plugin_log(2, "framegen: FSR checked (IsFsrFgEnabled %p, its call at +0x%lX, stereo clear at +0x%lX, start-mode "
+                  "getter %p)", (void *)fsr, off + FLAG_FSR_CALL, clearFsr, (const void *)modeGetter);
     return (FsrFgEnabledFn)fsr;
 }
 
@@ -669,7 +661,7 @@ static int check_framegen(ResolveFn resolve, uint8_t **t)
     fg.presetsName = (const uint64_t *)l.presets;
     fg.fgName = (const uint64_t *)l.name;
     fg.sbsVar = sbs;
-    fg.fsrEnabled = check_fsr(flagCompute, (const uint8_t *)resolve(HASH_FG_START_MODE), &fg.startMode);
+    fg.fsrEnabled = check_fsr(flagCompute, (const uint8_t *)resolve(HASH_FG_START_MODE));
     return 1;
 }
 
