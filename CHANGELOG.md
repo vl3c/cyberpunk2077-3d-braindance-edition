@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.
+- Nexus page: says in red that FSR4 and XeSS frame generation are untested (DLSS and FSR 3.1 are tested), lists Field of View among the depth settings, and drops two lines.
 - README and Nexus page: the Field of View slider is in the Graphics settings, not Gameplay.
 - Technical notes: the RED4ext plugin keeps DLSS, FSR or XeSS frame generation in 3D Mode, not only DLSS.
 
