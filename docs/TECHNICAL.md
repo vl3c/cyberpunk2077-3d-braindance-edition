@@ -150,7 +150,8 @@ generated frame would blend two interlaced pictures) but not for side by side:
   88 (DLSS-G) from the game's DLSS-G checks, then clears it while stereo is on (likewise 89, FSR FG, and 75, XeSS
   FG). The frame graph and the Streamline resource tagging read feature 88, so without it DLSS-G gets no input.
   FSR FG sits behind the same view checks, right after the DLSS-G check: `IsFsrFgEnabled` (`RVA 0x2288250`, a read
-  of two flags on the renderer's FSR object at `+0x4668`) decides feature 89.
+  of two flags on the renderer's FSR object at `+0x4668`) decides feature 89. XeSS FG too: a read of `+0xDD` on the
+  renderer's XeSS object at `+0x4678` decides feature 75.
 
 The RED4ext plugin (`src/braindance3d_framegen.c`) attaches four detours, resolved by hash from CDPR's address
 library like `GpuApi::Present`:

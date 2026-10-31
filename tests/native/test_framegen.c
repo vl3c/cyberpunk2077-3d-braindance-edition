@@ -1,6 +1,6 @@
 // White-box tests for the frame generation hooks: this file #includes src/braindance3d_framegen.c so it can run
 // the byte-pattern checks against a fake copy of the game's code and drive the hooks with fake originals.
-// Whether DLSS and FSR frame generation really run in 3D is only tested in game.
+// Whether frame generation really runs in 3D is only tested in game: DLSS and FSR3 are; FSR4 and XeSS are untested.
 //
 // Run: test_framegen.exe [--list] [name filters...]
 
@@ -503,7 +503,29 @@ TEST(handler_says_why_off_is_turned_off_when_the_list_has_neither_dlss_nor_fsr3)
     hook_o3d_changed(NULL);
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK(strstr(ft_log, "Frame Generation is Off, which can't run in 3D, so the game turns it off (the game offers "
-                         "neither DLSS frame generation nor FSR3)") != NULL);
+                         "neither DLSS frame generation nor FSR3, and the XeSS checks at start-up failed)") != NULL);
+    ft_begin(); // the same list with an Intel Arc's XESS left out
+    set_fg_value("Off", 1);
+    put_cstring(f_values[1], "XeSS2");
+    put_cstring(f_values[2], "XeSS2");
+    put_cstring(f_values[3], "XeSS2");
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 1);
+    CHECK(strstr(ft_log, "(the game offers neither DLSS frame generation, FSR3 nor XESS)") != NULL);
+}
+
+TEST(handler_keeps_off_choosable_when_only_xess_runs_in_3d)
+{
+    // An Intel Arc whose FSR checks failed (made up: a list of Off and XESS), so only XeSS can be picked in 3D Mode.
+    ft_begin();
+    fg.fsrEnabled = NULL;
+    set_fg_value("Off", 1);
+    put_cstring(f_values[1], "XESS");
+    put_cstring(f_values[2], "XESS");
+    CHECK(keep_in_3d(f_var, "Off", 1));
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(f_setFgCalls, 0);
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, 0);
 }
 
 TEST(handler_does_what_the_game_does_when_nothing_offered_runs_in_3d)

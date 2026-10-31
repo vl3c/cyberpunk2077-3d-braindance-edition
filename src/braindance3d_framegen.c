@@ -269,7 +269,9 @@ static int text_is(const char *p, const char *want) { return readable(p, strlen(
 
 // ---------------------------------------------------------------- run-time checks
 
-static int sbs_debug(void) { return fg.sbsVar[VAR_VALUE] != 0; }
+// The engine sets the var after the plugin loads and may change it at any time, so it's read anew on every call: a
+// volatile read, which the compiler can't merge with an earlier one or move across a write it can't see.
+static int sbs_debug(void) { return *(const volatile uint8_t *)(fg.sbsVar + VAR_VALUE) != 0; }
 
 // Frame Generation's settings var, found the way SetFrameGeneration finds it. NULL if it isn't readable as expected.
 static uint8_t *fg_var(void)
@@ -310,7 +312,8 @@ static int fg_value(const uint8_t *var, char *out, size_t size)
     return ok;
 }
 
-// Whether the setting's list offers this value (DLSS: an RTX 40 or 50; FSR3: every PC). Before the list is built
+// Whether the setting's list offers this value (DLSS: an RTX 40 or 50; FSR3: every PC; XESS: an Intel Arc in
+// practice). Before the list is built
 // (at start-up) it can't tell, and the value from the file decides alone.
 static int offers(const uint8_t *var, const char *name)
 {
@@ -437,7 +440,9 @@ static int keep_frame_generation(void)
         const char *why = "";
         if (!known || strcmp(value, "Off") == 0 || strcmp(value, "DLSS") == 0) {
             if (!offers(var, "DLSS"))
-                why = fg.fsrEnabled ? " (the game offers neither DLSS frame generation nor FSR3)"
+                why = fg.fsrEnabled ? (fg.xess ? " (the game offers neither DLSS frame generation, FSR3 nor XESS)"
+                                               : " (the game offers neither DLSS frame generation nor FSR3, and the "
+                                                 "XeSS checks at start-up failed)")
                                     : " (the game offers no DLSS frame generation: not an RTX 40 or 50, or another mod "
                                       "such as OptiScaler holds DLSS-G; and the FSR checks at start-up failed)";
         } else if (is_fsr(value) && !fg.fsrEnabled)

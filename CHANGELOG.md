@@ -5,10 +5,11 @@
 - The game's XeSS frame generation (Intel Arc) is allowed in 3D Mode too, untested (pick XESS, then restart the
   game). Same hooks again: the XeSS part checks the game's code first, and if it changed, only XeSS keeps the game's
   rule.
+- The SBSDebug setting is read with a volatile read, so the compiler can never reuse an earlier read of it.
 - The game's FSR 3.1 frame generation now works in 3D Mode too (any GPU; pick FSR3, then restart the game: the game
   fixes its frame generation at start, as with DLSS). FSR 4 frame generation (RX 9000) is allowed too, through the
-  same code, but untested. Same hooks as DLSS: the FSR part checks
-  the game's code first, and if it changed, only FSR keeps the game's rule.
+  same code, but untested. Same hooks as DLSS: the FSR part checks the game's code first, and if it changed, only FSR
+  keeps the game's rule.
 - README and Nexus page: lower the game's Field of View (e.g. 90 to 80) for life-sized, deeper 3D.
 - Technical notes and source comments now say what the reported panel size really feeds (one parallax limit), that
   the reported eye positions don't set the eye separation, and how Depth maps to it.

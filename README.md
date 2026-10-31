@@ -21,7 +21,7 @@ that monitor's software. This mod:
 3. Makes **menus readable**. The game draws menus, the map and loading screens as one flat picture split across
    the eyes; the mod squeezes it into each half.
 4. Lets the game's own **DLSS, FSR and XeSS Frame Generation** run in 3D Mode (the game turns it off there, because
-   Samsung's monitor can't use it).
+   Samsung's monitor can't use it). FSR4 and XeSS are untested.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix and frame
 generation hook a few game functions through RED4ext.
@@ -72,7 +72,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    - Without DLSS frame generation, pick **FSR3** and restart the game: the game's FSR 3.1 frame generation (2x)
      stays on with 3D Mode too (needs RED4ext). We tested it on an NVIDIA card, not yet on AMD.
    - On an RX 9000, the game's **FSR4** frame generation stays on too, but it's untested: if the picture looks wrong,
-     use FSR3 and please report it. The same goes for **XESS** frame generation on an Intel Arc.
+     use FSR3 and please report it. On an Intel Arc, pick **XESS** and restart the game; it's untested too, so the
+     same goes for it.
    - [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work on the
      side-by-side frame, but we haven't tested it (we tested OptiScaler's frame generation only with its DLSS-G
      output, on an RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and
