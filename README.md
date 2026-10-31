@@ -85,8 +85,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    lower texture quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave
    the frame rate low afterwards; restart the game if it doesn't recover.
 7. **Field of View:** a flat image looks natural only when the game's FOV matches how much of your view the screen
-   fills. Too wide, and everything looks small and far away and swells at the edges. With a cinema screen that fills
-   the view, 80 looks much better than 90; go lower on a smaller or more distant screen.
+   fills. Too wide, and everything looks small and far away and swells at the edges. With a large Virtual Desktop
+   cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
 
 ## Troubleshooting
 
