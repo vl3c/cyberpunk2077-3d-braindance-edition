@@ -1,10 +1,10 @@
-// 3D Braindance Edition: lets the game's own DLSS frame generation run in 3D Mode.
+// 3D Braindance Edition: lets the game's own DLSS and FSR 3 frame generation run in 3D Mode.
 //
 // The game keeps frame generation off in 3D Mode in two places (static analysis of 2.5, research/native-fg):
 //   - the 3D Mode settings handler sets Frame Generation to Off and greys it out whenever 3D Mode is on (it also
 //     runs at start-up and on display changes, so a saved "on" doesn't survive);
-//   - FlagCompute, which builds each view's render-feature bits every frame, clears feature 88 (DLSS-G) while
-//     stereo is on, so the frame graph never feeds DLSS-G.
+//   - FlagCompute, which builds each view's render-feature bits every frame, clears feature 88 (DLSS-G) and 89
+//     (FSR frame generation) while stereo is on, so the frame graph never feeds them.
 // On Samsung's monitor that is right: its weaver interlaces the eyes for the tracked eye position, and a generated
 // frame would blend two woven pictures. In side by side ([Odyssey3D] SBSDebug = true) there is no weaver, and DLSS-G
 // on the whole side-by-side frame works (tested through OptiScaler up to 6x).
@@ -13,21 +13,25 @@
 // GpuApi::Present in braindance3d_menus.c):
 //   - the 3D Mode handler: marks that it is running, and clears Frame Generation's greyed flag afterwards. It
 //     also tells the menu squeeze which way 3D Mode was set (whether the handler asked for Off);
-//   - SetFrameGeneration: skips the handler's "Off" (and so the grey) when Frame Generation is Off or DLSS on a PC
-//     that offers DLSS frame generation, so it keeps its setting and can be chosen in 3D Mode. Only DLSS frame
-//     generation is let through in stereo (FSR and XeSS stay blocked by features 89 and 75), so with FSR, XeSS or a
-//     value this doesn't know selected, or on a PC without DLSS frame generation, the game still turns it off and
-//     greys it out as before;
+//   - SetFrameGeneration: skips the handler's "Off" (and so the grey) when Frame Generation is Off, DLSS (on a PC
+//     that offers DLSS frame generation) or FSR3, so it keeps its setting and can be chosen in 3D Mode. FSR4 (the
+//     AI frame generation of AMD's RX 9000) and XeSS stay blocked (FSR4 is untested, XeSS's feature 75 isn't put
+//     back), so with those or a value this doesn't know selected, the game still turns it off and greys it out;
 //   - FlagCompute and IsDlssgEnabled: FlagCompute calls IsDlssgEnabled only for a view that passed its other DLSS-G
 //     checks, so its answer, noted per thread (FlagCompute runs for several views at once on worker threads), is
-//     the game's own DLSS-G decision for that view; on stereo frames feature 88 is set again from it.
+//     the game's own DLSS-G decision for that view; on stereo frames feature 88 is set again from it. FSR frame
+//     generation has the same view checks, in the same place, so a view that was asked about DLSS-G is one the
+//     game also asked IsFsrFgEnabled about: for it, feature 89 is set again from that function's answer (a read of
+//     two flags, called by us rather than hooked).
 // Apart from telling the menu squeeze about 3D Mode, they change nothing unless SBSDebug is on (read on every call:
 // the engine ini isn't applied yet when the plugin loads), so a real 3D monitor keeps the game's rule. Each is entered through a thunk that keeps the
 // caller's registers (see REGISTER_KEEPING_THUNK). Before anything is attached, the addresses and byte patterns are
 // checked (check_handler, check_framegen); if one doesn't match (a game update), that group isn't attached and the log
 // says which: without the frame generation group the game keeps its rule, and without the handler group the menu squeeze
-// also loses the 3D Mode switches.
-// DLSS-G loads only when Frame Generation is DLSS at game start, so choosing it needs a restart, as in 2D.
+// also loses the 3D Mode switches. If only the FSR part doesn't match (check_fsr), DLSS still works and FSR3 keeps the
+// game's rule.
+// DLSS-G loads only when Frame Generation is DLSS at game start, so choosing it needs a restart, as in 2D. With FSR3 at
+// start the game presents through FidelityFX's frame generation swap chain.
 //
 // License: MIT (see LICENSE).
 
@@ -66,6 +70,9 @@
 #define CSTRING_LEN_FLAGS 0x14   //   the length in the low 30 bits of the uint32 at +0x14
 #define CSTRING_HEAP 0x40000000u
 #define FEATURE_DLSSG 88
+#define FEATURE_FSR_FG 89
+#define RENDERER_FSR 0x4668      // the renderer's FSR object, what FlagCompute passes IsFsrFgEnabled
+#define FSR_ENABLED_SIZE 18      // IsFsrFgEnabled's code
 #define FEATURE_STEREO 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
 
@@ -97,20 +104,37 @@ static const char AOB_FLAG_DLSSG[] = "49 8B 89 58 46 00 00 E8 ?? ?? ?? ?? 0F B6 
 #define FLAG_DLSSG_CALL 7
 // In it, the stereo clear: feature 88 = dlssg && !stereo.
 static const char AOB_FLAG_CLEAR[] = "40 84 ED 74 08 45 84 E4 75 03 41 B0 01 BA 58 00 00 00 E8";
+// In it, after the DLSS-G check and behind the same view checks, the FSR frame generation check:
+// rdx = renderer (FlagCompute's first argument, saved at [rsp+90h]); r11b = IsFsrFgEnabled(rdx->fsr).
+static const char AOB_FLAG_FSR[] = "48 8B 94 24 90 00 00 00 48 8B 8A 68 46 00 00 E8 ?? ?? ?? ?? 44 0F B6 D8";
+#define FLAG_FSR_CALL 15
+// IsFsrFgEnabled: bool (FSR object): fsr[0x59] && !fsr[0x5A]. Only reads, so it's safe to call on any thread.
+static const char AOB_FSR_ENABLED[] = "80 79 59 00 74 09 80 79 5A 00 75 03 B0 01 C3 32 C0 C3";
+// In FlagCompute, after the clear of 88, the one of feature 89: fsr && !stereo.
+static const char AOB_FLAG_CLEAR_FSR[] = "45 84 DB 74 0A 45 84 E4 75 05 41 B0 01 EB 03 45 33 C0 BA 59 00 00 00 E8";
 
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
 typedef uint8_t (*SetFgFn)(int32_t index, uint8_t mode);
 typedef uint64_t *(*FlagComputeFn)(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
 typedef uint8_t (*DlssgEnabledFn)(uint8_t *sl);
+typedef uint8_t (*FsrFgEnabledFn)(const uint8_t *fsr);
 typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
+
+// Frames whose frame generation feature was put back, for the log.
+typedef struct {
+    volatile LONG64 restored;
+    LONG64 lastRestored;
+    DWORD lastSummary;
+} RestoreCount;
 
 static struct {
     O3dChangedFn o3dOrig;
     SetFgFn setFgOrig;
     FlagComputeFn flagOrig;
     DlssgEnabledFn dlssgOrig;
+    FsrFgEnabledFn fsrEnabled;    // the game's IsFsrFgEnabled; NULL if its checks failed (FSR3 keeps the game's rule)
     RootFn root;
     FindFn group, var;
     const uint64_t *presetsName, *fgName; // the CNames SetFrameGeneration passes
@@ -120,13 +144,13 @@ static struct {
     volatile DWORD handlerThread; // the thread running the 3D Mode handler, 0 when it isn't running
     int offAsked;                 // that handler call asked for Frame Generation Off (its 3D-on branch)
     uint32_t *keptFlags;          // and it was kept: Frame Generation's flags, NULL if not kept
-    volatile LONG64 restored;     // frames whose feature 88 was put back
-    LONG64 lastRestored;
-    DWORD lastSummary;
+    RestoreCount dlssgCount, fsrCount;
 } fg;
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
-enum { TS_OUTSIDE, TS_NOT_ASKED, TS_DLSSG_OFF, TS_DLSSG_ON }; // TS_OUTSIDE: not inside FlagCompute
+// TS_OUTSIDE: not inside FlagCompute; TS_NOT_ASKED: inside, and the view didn't pass the frame generation checks (so
+// far); TS_DLSSG_OFF / ON: it did, and IsDlssgEnabled answered no / yes.
+enum { TS_OUTSIDE, TS_NOT_ASKED, TS_DLSSG_OFF, TS_DLSSG_ON };
 // Both keep the thread's last-error value (TlsGetValue clears it), which the game's code around the hooks may use.
 static uintptr_t thread_state(void)
 {
@@ -274,28 +298,35 @@ static int fg_value(const uint8_t *var, char *out, size_t size)
     return ok;
 }
 
-// Whether the setting's list offers DLSS frame generation (an RTX 40 or 50). Before the list is built (at start-up)
-// it can't tell, and the value from the file decides alone.
-static int offers_dlss(const uint8_t *var)
+// Whether the setting's list offers this value (DLSS: an RTX 40 or 50; FSR3: every PC). Before the list is built
+// (at start-up) it can't tell, and the value from the file decides alone.
+static int offers(const uint8_t *var, const char *name)
 {
     if (!(*(const uint32_t *)(var + SETTING_FLAGS) & FLAG_LIST_BUILT)) return 1;
     const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
     uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
     char value[32];
     for (uint32_t i = 0; i < count && count <= 16; i++)
-        if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, "DLSS") == 0)
+        if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, name) == 0)
             return 1;
     return 0;
 }
 
-// Whether 3D Mode may keep this Frame Generation setting: Off or DLSS, on a PC that offers DLSS frame generation.
-// FSR and XeSS frame generation can't run in stereo (features 89 and 75), and neither can a value this doesn't know
-// (a game update's new one), so the game's rule applies to those: Off, greyed out. A value that can't be read
-// counts as Off.
+// The values whose frame generation runs in 3D Mode with these hooks: DLSS, and FSR3 if its checks passed.
+static int runs_in_3d(const uint8_t *var, const char *value)
+{
+    if (strcmp(value, "DLSS") == 0) return offers(var, "DLSS");
+    if (strcmp(value, "FSR3") == 0) return fg.fsrEnabled && offers(var, "FSR3");
+    return 0;
+}
+
+// Whether 3D Mode may keep this Frame Generation setting: one that runs in 3D, or Off while one of those can be
+// chosen. FSR4 and XeSS frame generation stay blocked in stereo, and so does a value this doesn't know (a game
+// update's new one), so the game's rule applies to those: Off, greyed out. A value that can't be read counts as Off.
 static int keep_in_3d(const uint8_t *var, const char *value, int known)
 {
-    if (!offers_dlss(var)) return 0;
-    return !known || strcmp(value, "Off") == 0 || strcmp(value, "DLSS") == 0;
+    if (!known || strcmp(value, "Off") == 0) return runs_in_3d(var, "DLSS") || runs_in_3d(var, "FSR3");
+    return runs_in_3d(var, value);
 }
 
 // ---------------------------------------------------------------- hooks
@@ -321,8 +352,8 @@ static int keep_in_3d(const uint8_t *var, const char *value, int known)
 
 #define HOOK __attribute__((used, noinline, noclone)) static // called by name from its thunk
 
-// Clears Frame Generation's greyed flag. In the game's code only the 3D Mode handler greys it, so with Off or DLSS
-// kept it's choosable again (also after an earlier run greyed it for FSR or XeSS).
+// Clears Frame Generation's greyed flag. In the game's code only the 3D Mode handler greys it, so with a setting kept
+// it's choosable again (also after an earlier run greyed it for FSR4 or XeSS).
 static void ungrey(uint32_t *flags)
 {
     uint32_t before = *flags;
@@ -386,10 +417,15 @@ static int keep_frame_generation(void)
     char value[32];
     int known = fg_value(var, value, sizeof(value));
     if (!keep_in_3d(var, value, known)) {
+        const char *why = "";
+        if (!known || strcmp(value, "Off") == 0 || strcmp(value, "DLSS") == 0) {
+            if (!offers(var, "DLSS"))
+                why = " (the game offers no DLSS frame generation: not an RTX 40 or 50, or another mod such as OptiScaler "
+                      "holds DLSS-G)";
+        } else if (strcmp(value, "FSR3") == 0 && !fg.fsrEnabled)
+            why = " (the FSR checks at start-up failed, see above)";
         plugin_log(1, "framegen: 3D Mode is on and Frame Generation is %s, which can't run in 3D, so the game turns it "
-                      "off%s", known ? value : "?",
-                   offers_dlss(var) ? "" : " (the game offers no DLSS frame generation: not an RTX 40 or 50, or "
-                                           "another mod such as OptiScaler holds DLSS-G)");
+                      "off%s", known ? value : "?", why);
         return 0;
     }
     fg.keptFlags = (uint32_t *)(var + SETTING_FLAGS); // the grey comes later in the handler: undone after it
@@ -413,27 +449,47 @@ HOOK uint8_t hook_dlssg_enabled(uint8_t *sl)
     return on;
 }
 
-// Whether a view's feature 88 goes back on: the original's own DLSS-G decision for it (dlssg, a TS_* state) said yes,
-// and only its "and not stereo" took it away.
-static int should_restore_dlssg(uintptr_t dlssg, uint64_t features)
+// Whether a stereo view's feature goes back on: it isn't set, so only the original's "and not stereo" can have taken
+// it away, and the game's own decision for the view said yes.
+static int stereo_view_without(uint64_t features, int feature)
 {
-    return dlssg == TS_DLSSG_ON && (features & FEATURE_BIT(FEATURE_STEREO)) && !(features & FEATURE_BIT(FEATURE_DLSSG)) &&
-           sbs_debug();
+    return (features & FEATURE_BIT(FEATURE_STEREO)) && !(features & FEATURE_BIT(feature)) && sbs_debug();
+}
+
+// Feature 88: the original's DLSS-G decision for the view (state, a TS_* value) said yes.
+static int should_restore_dlssg(uintptr_t state, uint64_t features)
+{
+    return state == TS_DLSSG_ON && stereo_view_without(features, FEATURE_DLSSG);
+}
+
+// Whether the game's IsFsrFgEnabled says yes for this renderer's FSR object.
+static int fsr_fg_enabled(const uint8_t *renderer)
+{
+    const uint8_t *fsr = renderer ? *(const uint8_t *const *)(renderer + RENDERER_FSR) : NULL;
+    return fsr && fg.fsrEnabled(fsr);
+}
+
+// Feature 89: the view passed the frame generation checks (the original asked about DLSS-G, so it also asked
+// IsFsrFgEnabled), and IsFsrFgEnabled says yes. Asked last: it's a call.
+static int should_restore_fsr(uintptr_t state, uint64_t features, const uint8_t *renderer)
+{
+    return fg.fsrEnabled && (state == TS_DLSSG_OFF || state == TS_DLSSG_ON) &&
+           stereo_view_without(features, FEATURE_FSR_FG) && fsr_fg_enabled(renderer);
 }
 
 // Counts a restored frame; logs the first one and then a count once a minute.
-static void count_restored(void)
+static void count_restored(RestoreCount *c, const char *name)
 {
-    LONG64 n = InterlockedIncrement64(&fg.restored);
+    LONG64 n = InterlockedIncrement64(&c->restored);
     DWORD now = GetTickCount();
     if (n == 1) {
-        plugin_log(1, "framegen: DLSS frame generation running on a 3D frame (first one)");
-        fg.lastSummary = now;
-    } else if (now - fg.lastSummary >= 60000) { // from several threads: a count can be off by a few, harmless
-        plugin_log(1, "framegen: %lld frames with DLSS frame generation in 3D (%lld in the last minute)", (long long)n,
-                   (long long)(n - fg.lastRestored));
-        fg.lastSummary = now;
-        fg.lastRestored = n;
+        plugin_log(1, "framegen: %s frame generation running on a 3D frame (first one)", name);
+        c->lastSummary = now;
+    } else if (now - c->lastSummary >= 60000) { // from several threads: a count can be off by a few, harmless
+        plugin_log(1, "framegen: %lld frames with %s frame generation in 3D (%lld in the last minute)", (long long)n,
+                   name, (long long)(n - c->lastRestored));
+        c->lastSummary = now;
+        c->lastRestored = n;
     }
 }
 
@@ -443,12 +499,16 @@ HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame
     uintptr_t outer = thread_state(); // TS_OUTSIDE, unless FlagCompute ever runs inside itself
     set_thread_state(TS_NOT_ASKED);
     uint64_t *ret = fg.flagOrig(renderer, flags, frame, settings);
-    uintptr_t dlssg = thread_state();
+    uintptr_t state = thread_state();
     set_thread_state(outer);
     uint64_t *bits = ret ? ret : flags;
-    if (should_restore_dlssg(dlssg, bits[1])) {
+    if (should_restore_dlssg(state, bits[1])) {
         bits[1] |= FEATURE_BIT(FEATURE_DLSSG);
-        count_restored();
+        count_restored(&fg.dlssgCount, "DLSS");
+    }
+    if (should_restore_fsr(state, bits[1], renderer)) {
+        bits[1] |= FEATURE_BIT(FEATURE_FSR_FG);
+        count_restored(&fg.fsrCount, "FSR");
     }
     return ret;
 }
@@ -528,6 +588,34 @@ static int check_flag_compute(const uint8_t *flagCompute, const uint8_t *dlssg)
     return 1;
 }
 
+// The FSR part of FlagCompute (already checked by check_flag_compute): the IsFsrFgEnabled call between the DLSS-G check
+// and the clear of 88, the only call to it there, and the clear of 89 after the one of 88. Returns IsFsrFgEnabled, or
+// NULL (logged) if something doesn't match: then only FSR3 keeps the game's rule.
+static FsrFgEnabledFn check_fsr(const uint8_t *flagCompute)
+{
+    long dlssg = aob_find_unique(flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_DLSSG);
+    long clear = aob_find_unique(flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_CLEAR);
+    long off = aob_find_unique(flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_FSR);
+    long clearFsr = aob_find_unique(flagCompute, FLAG_COMPUTE_SIZE, AOB_FLAG_CLEAR_FSR);
+    const char *why = NULL;
+    uintptr_t fsr = 0;
+    if (off < 0) why = "the FSR frame generation check isn't there";
+    else if (off < dlssg || off > clear) why = "the FSR frame generation check isn't between the DLSS-G check and the clear";
+    else if (!in_exe(fsr = call_target(flagCompute + off + FLAG_FSR_CALL), FSR_ENABLED_SIZE) ||
+             aob_find_unique((const uint8_t *)fsr, FSR_ENABLED_SIZE, AOB_FSR_ENABLED) != 0)
+        why = "the FSR frame generation check doesn't call IsFsrFgEnabled";
+    else if (count_calls(flagCompute, FLAG_COMPUTE_SIZE, fsr) != 1) why = "IsFsrFgEnabled is called somewhere else in it too";
+    else if (clearFsr < clear) why = "the stereo clear of feature 89 isn't after the one of 88";
+    if (why) {
+        fail(why);
+        plugin_log(1, "framegen: FSR frame generation stays off in 3D Mode (DLSS isn't affected)");
+        return NULL;
+    }
+    plugin_log(2, "framegen: FSR checked (IsFsrFgEnabled %p, its call at +0x%lX, stereo clear at +0x%lX)", (void *)fsr,
+               off + FLAG_FSR_CALL, clearFsr);
+    return (FsrFgEnabledFn)fsr;
+}
+
 // The config var is [Odyssey3D] SBSDebug.
 static int check_sbs_var(const uint8_t *sbs)
 {
@@ -560,6 +648,7 @@ static int check_framegen(ResolveFn resolve, uint8_t **t)
     fg.presetsName = (const uint64_t *)l.presets;
     fg.fgName = (const uint64_t *)l.name;
     fg.sbsVar = sbs;
+    fg.fsrEnabled = check_fsr(flagCompute);
     return 1;
 }
 
@@ -600,8 +689,9 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
         return 0;
     }
     fg.framegen = 1;
-    plugin_log(1, "framegen: hooks attached; DLSS frame generation stays available in 3D Mode while [Odyssey3D] "
-                  "SBSDebug is on (checked on every call: the engine ini sets it after this)");
+    plugin_log(1, "framegen: hooks attached; %s frame generation stays available in 3D Mode while [Odyssey3D] "
+                  "SBSDebug is on (checked on every call: the engine ini sets it after this)",
+               fg.fsrEnabled ? "DLSS and FSR 3" : "DLSS");
     return 1;
 }
 
