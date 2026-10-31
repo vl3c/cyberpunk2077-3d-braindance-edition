@@ -33,6 +33,7 @@ generation hook a few game functions through RED4ext.
   ([No RED4ext](#no-red4ext)), which leaves menus split and frame generation off in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
+- For frame generation: an RTX 40 or 50. Tested on RTX 50; RTX 40 should work at up to 2x.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
   side-by-side output.
 
@@ -55,8 +56,6 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 - Stereo 3D can strain your eyes: take breaks or lower Depth.
 
 ## Recommended setup (Quest 3 + Virtual Desktop)
-
-Played on an RTX 5080 (16 GB) with a Quest 3.
 
 1. **4K screen.** Run the game borderless at 3840x2160 on a primary 3840x2160 virtual monitor (virtual display
    driver): 1920x2160 per eye. Virtual Desktop streams at most 3840x2160 per screen, so higher doesn't help. Or
