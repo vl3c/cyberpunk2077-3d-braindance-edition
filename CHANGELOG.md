@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- README and Nexus page: lower the game's Field of View (e.g. 90 to 80) for life-sized, deeper 3D.
+
 ## 0.3.0 (2026-10-30)
 
 - The game's own DLSS frame generation now works in 3D Mode: 3D Mode no longer turns Frame Generation off or greys
