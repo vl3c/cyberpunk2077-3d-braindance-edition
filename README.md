@@ -33,6 +33,7 @@ generation hook a few game functions through RED4ext.
   ([No RED4ext](#no-red4ext)), which leaves menus split and frame generation off in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
+- For frame generation: an RTX 40 (up to 2x) or RTX 50 (up to 6x). Tested on RTX 50; RTX 40 should work.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
   side-by-side output.
 
@@ -56,8 +57,6 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 
 ## Recommended setup (Quest 3 + Virtual Desktop)
 
-Played on an RTX 5080 (16 GB) with a Quest 3.
-
 1. **4K screen.** Run the game borderless at 3840x2160 on a primary 3840x2160 virtual monitor (virtual display
    driver): 1920x2160 per eye. Virtual Desktop streams at most 3840x2160 per screen, so higher doesn't help. Or
    use NVIDIA DLDSR 2.25x on a 1440p monitor.
@@ -80,9 +79,9 @@ Played on an RTX 5080 (16 GB) with a Quest 3.
    for a screen you look at; many want 40+. RTX 40 stops at 2x; 3x+ needs RTX 50.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
    - RTX 40: 72 Hz 2x needs 36; 90 Hz 2x needs 45.
-6. **Video memory:** 4K, path tracing and a high multiplier can fill 16 GB. If the base rate collapses, lower texture
-   quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave the frame rate
-   low afterwards; restart the game if it doesn't recover.
+6. **Video memory:** 4K, path tracing and a high multiplier can fill even a 16 GB card. If the base rate collapses,
+   lower texture quality or the multiplier. Photo mode (which turns frame generation off) can push it over and leave
+   the frame rate low afterwards; restart the game if it doesn't recover.
 
 ## Troubleshooting
 
