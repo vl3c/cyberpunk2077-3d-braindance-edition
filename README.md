@@ -50,7 +50,7 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 ## Settings
 
 - In game: **Depth** (0.5 to 1.0 suits a headset), **Weapon Depth**, **Motion Comfort** and **Preset**.
-- **More 3D depth:** lower the game's **Field of View** (Gameplay settings), e.g. 90 to 80. The world looks
+- **More 3D depth:** lower the game's **Field of View** (Graphics settings), e.g. 90 to 80. The world looks
   life-sized, edges stretch less, and depth feels much stronger.
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
   multi-monitor PCs) and menu fix (`[Menus] Squeeze = auto` or `off`).
