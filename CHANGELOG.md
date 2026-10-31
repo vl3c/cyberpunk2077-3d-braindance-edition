@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.
+- README and Nexus page: the Field of View slider is in the Graphics settings, not Gameplay.
+- Technical notes: the RED4ext plugin keeps DLSS, FSR or XeSS frame generation in 3D Mode, not only DLSS.
+
 ## 0.3.1 (2026-10-31)
 
 - The game's FSR 3.1 frame generation now works in 3D Mode too (any GPU; pick FSR3, then restart the game: the game
