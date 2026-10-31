@@ -149,6 +149,8 @@ generated frame would blend two interlaced pictures) but not for side by side:
 - **Render:** `FlagCompute` (`RVA 0x227E5D0`) builds each view's render-feature bits every frame. It sets feature
   88 (DLSS-G) from the game's DLSS-G checks, then clears it while stereo is on (likewise 89, FSR FG, and 75, XeSS
   FG). The frame graph and the Streamline resource tagging read feature 88, so without it DLSS-G gets no input.
+  FSR FG sits behind the same view checks, right after the DLSS-G check: `IsFsrFgEnabled` (`RVA 0x2288250`, a read
+  of two flags on the renderer's FSR object at `+0x4668`) decides feature 89.
 
 The RED4ext plugin (`src/braindance3d_framegen.c`) attaches four detours, resolved by hash from CDPR's address
 library like `GpuApi::Present`:
@@ -156,8 +158,8 @@ library like `GpuApi::Present`:
 | Detour | What it changes |
 | --- | --- |
 | 3D Mode handler | Marks that it's running; afterwards clears Frame Generation's greyed flag when it was kept, and tells the menu squeeze which way 3D Mode was set |
-| `SetFrameGeneration` | Skips the handler's Off when Frame Generation is Off or DLSS and the setting's list offers DLSS (an RTX 40 or 50; before the list is built, the saved value decides alone). FSR, XeSS, a value it doesn't know, or a list without DLSS (a PC without DLSS frame generation, or another mod such as OptiScaler holding DLSS-G) keep the game's rule (Off, greyed out), since those stay blocked in stereo. Off stays choosable, so DLSS can be picked in 3D Mode |
-| `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its other DLSS-G checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it |
+| `SetFrameGeneration` | Skips the handler's Off when Frame Generation is DLSS (and the setting's list offers it: an RTX 40 or 50), FSR3 (FSR 3.1, every GPU), FSR4 (AMD's AI frame generation on RX 9000, untested), or Off while one of those can be picked. Before the list is built, the saved value decides alone. XeSS and values it doesn't know keep the game's rule (Off, greyed out), as do FSR3 and FSR4 if the FSR checks at start-up failed, and Off when nothing in the list runs in 3D (for example no DLSS, because OptiScaler holds DLSS-G, and the FSR checks failed) |
+| `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its frame generation checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it. For a view that was asked, feature 89 is set again when the game's `IsFsrFgEnabled` says yes (called by the plugin, not hooked). It covers FSR3 and FSR4 alike: both run through the same FidelityFX frame generation DLL |
 
 They change nothing unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor keeps the
 game's rule. Each is entered through a small assembly thunk that keeps `rcx`, `rdx`, `r8`-`r11` and `xmm0`-`xmm5`:
@@ -173,11 +175,16 @@ bytes with a jump, and the second group reads `SetFrameGeneration`'s). Each grou
   handler has no exit other than its 3D-on branch (which starts with that call) and its 3D-off branch, so the call
   tells the menu squeeze which way 3D Mode was set.
 - **Frame generation:** the grey, `SetFrameGeneration`'s start and settings lookup, FlagCompute's start, its DLSS-G
-  check calling `IsDlssgEnabled` (its only call there) and the stereo clear, and the SBSDebug var's name.
+  check calling `IsDlssgEnabled` (its only call there) and the stereo clear, and the SBSDebug var's name. Then the
+  FSR part, which only decides FSR3 and FSR4: the `IsFsrFgEnabled` call between the DLSS-G check and the clear (its
+  only call there, and its target's bytes), and the clear of 89 after the one of 88. If it fails, DLSS still works.
 
 If the second group fails, the game keeps its frame generation rule but the squeeze still follows 3D Mode; if the first
 fails, nothing is attached. The hooks log says which check failed. DLSS-G loads only when Frame Generation is DLSS at
-game start (Streamline is set up once), so choosing it needs a restart, as in 2D.
+game start (Streamline is set up once), so choosing it needs a restart, as in 2D. FSR frame generation is the same:
+the FSR object turns it on only while the chosen mode equals the one at start. With FSR at start the game presents
+through FidelityFX's frame generation swap chain (`amd_fidelityfx_framegeneration_dx12.dll`); the menu squeeze patches
+that swap chain's Present like any other.
 
 ## Building and testing
 
@@ -186,4 +193,4 @@ toolchain are identical). `./build.sh dist` also writes the release zip and its 
 
 ## Ideas for later
 
-- FSR (and maybe XeSS) frame generation in 3D Mode. Today only DLSS is kept; FSR FG also runs on NVIDIA cards.
+- XeSS frame generation in 3D Mode. Its decision (feature 75) is a field read in FlagCompute, not a call.
