@@ -236,6 +236,29 @@ path tracing and Ray Reconstruction, DLSS frame generation 2x) trees, foliage an
 tester saw it most at lower render resolutions; with the game's own jitter the picture is stable. So the half-pixel offset isn't worth correcting, at
 least for the game's DLSS on the side-by-side frame.
 
+## Screen effects off in 3D Mode
+
+On a switch to 3D Mode in the menu (the handler's event: byte `[0]` = 0, `[1]` = 1; start-up and display changes
+pass `[1]` = 0), the 3D Mode handler's 3D-on branch turns two bool settings off itself: it looks them up with
+`RVA 0x2072570` (`(group CName, name CName)`, a wrapper on the settings root, `group` and the bool lookup
+`RVA 0x953630`) and calls the bool setter `RVA 0x959D0C` with `(var, false, 1)`. CDPR's support page says 3D Mode
+turns off Chromatic Aberration and Film Grain; the names are CNames in `.data`, filled at run time, so the plugin logs
+which two they are.
+
+Right after the handler, under the same condition (and only in the branch that asked for Frame Generation Off, while
+SBSDebug is on), the plugin turns off the rest of the effects that differ between the eyes, all in
+the group of the game's own two (its CName slot, logged if it isn't `/graphics/basic`): `ChromaticAberration`, `FilmGrain`, `DepthOfField`, `LensFlares` and `Vignette` through the same
+lookup and setter (the first two again, to the value the game just set), and `MotionBlur` (a list: Off, Low, High)
+to the index of `Off` through `SetFrameGeneration`'s list setter `RVA 0x9597A0` (`(var, index, 1)`), the var found
+with the lookup `SetFrameGeneration` uses. CNames are the engine's 64-bit FNV-1a hash of the name. Nothing is greyed
+out, so a player can turn any of them back on; the game's own two go off again whenever the handler sees this event
+(the logs show it twice in a row with 3D Mode already on), and the plugin's four with them. The log lists which of
+the six were turned off, and a list setting's flags and size if its `Off` isn't found.
+
+Before using them, the plugin checks the handler's lookup of its two settings (both through the same function) and
+its effects off (both through the same setter, after the lookup), and `SetFrameGeneration`'s list setter call. If any
+doesn't match, only the game's own two go off.
+
 ## Building and testing
 
 `./build.sh` builds the DLL with MinGW-w64 (no PE timestamp, so builds of the same source with the same
