@@ -121,6 +121,17 @@
 #define CAMERA_LEFT_EYE 0x3D0   // its left eye camera's descriptor
 #define CAMERA_RIGHT_EYE 0x3D8  // and its right one's
 #define BOOL_SETTING_VALUE 0x58 // a bool settings var's value (what the game's getters read)
+// FULL SBS TEST (not for release): the camera build, hooked to give each eye camera half the window's aspect when the
+// window is wider than 3:1 (5120x1440, 7680x2160), so a full side-by-side screen shows each eye undistorted.
+#define CAMERA_EYE_KIND 0x398    // uint8: 1 left eye, 2 right eye
+#define CAMERA_IS_EYE 0x02       // CAMERA_FLAGS bit 1: an eye camera (built off-axis for its eye)
+#define CAMERA_ASPECT 0x28       // float: width / height (the research's lead; checked by range and logged)
+#define CAMERA_BUILD_SIZE 0x62D  // the camera build's code (pdata 0x296EA0-0x2974CD)
+#define FULL_SBS_MIN_ASPECT 3.0f
+static const char AOB_CAMERA_BUILD[] =
+    "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 55 41 55 41 56 48 8D A8 58 FF FF FF 48 81 EC 90 01 00 00 "
+    "0F 29 70 D8 48 8B F1";
+static const char AOB_CAMERA_EYE[] = "F6 86 99 03 00 00 02 0F 84 ?? ?? ?? ?? 80 BE 98 03 00 00 01";
 #define HASH_WEAPON_SEP 537726408u // the weapon separation getter: float (stereo settings), Weapon Depth in metres
 #define WEAPON_SEP_SIZE 0x31       // its code (pdata 0x22849D0-0x2284A01)
 #define SET_FG_SIZE 0xBE         // SetFrameGeneration's code (pdata 0x2075E60-0x2075F1E)
@@ -254,6 +265,9 @@ static struct {
     RestoreCount dlssgCount, fsrCount, xessCount;
     PlaneOverrideFn planeOrig;
     CameraBuildFn cameraBuild;    // the game's camera build, which the plane rebuild calls
+    CameraBuildFn buildOrig;      //   FULL SBS TEST: its original, when hooked
+    volatile LONG fullSbsLogged;  //   FULL SBS TEST: first halved build logged
+    volatile LONG fullSbsSkipLogged; // FULL SBS TEST: first eye build left alone logged
     RestoreCount gunCount;        // plane rebuilds whose eye cameras were put back
     WeaponSepFn sepOrig;          // the weapon separation getter (NULL if not hooked)
     volatile LONG sepZeroed;      //   it last answered 0 for ray tracing (for the log)
@@ -986,6 +1000,35 @@ HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
     return r;
 }
 
+// FULL SBS TEST: builds an eye camera with half its aspect while the window is wider than 3:1, then puts the aspect
+// back, so whatever reads the descriptor afterwards sees the game's value. Logs the first halved build, and the first
+// eye build it left alone (its aspect), so a test run shows which case it was.
+HOOK int64_t hook_camera_build(uint8_t *camera)
+{
+    float *aspect = NULL, full = 0.0f;
+    if (camera && (camera[CAMERA_FLAGS] & CAMERA_IS_EYE) &&
+        (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2) && sbs_debug()) {
+        float a = *(float *)(camera + CAMERA_ASPECT);
+        if (a > FULL_SBS_MIN_ASPECT && a < 8.0f) {
+            aspect = (float *)(camera + CAMERA_ASPECT);
+            full = a;
+            *aspect = a * 0.5f;
+        } else if (!fg.fullSbsSkipLogged && !InterlockedExchange(&fg.fullSbsSkipLogged, 1)) {
+            const float *f = (const float *)camera;
+            plugin_log(1, "fullsbs: eye camera left as it is (+0x20 %.4f, +0x24 %.4f, +0x28 %.4f, +0x2C %.4f)", f[8], f[9],
+                       f[10], f[11]);
+        }
+    }
+    int64_t r = fg.buildOrig(camera);
+    if (aspect) {
+        *aspect = full;
+        if (!fg.fullSbsLogged && !InterlockedExchange(&fg.fullSbsLogged, 1))
+            plugin_log(1, "fullsbs: first eye camera built with half the aspect (%s eye, %.4f -> %.4f)",
+                       camera[CAMERA_EYE_KIND] == 1 ? "left" : "right", full, full * 0.5f);
+    }
+    return r;
+}
+
 REGISTER_KEEPING_THUNK(bd3d_thunk_o3d_changed, hook_o3d_changed);
 REGISTER_KEEPING_THUNK(bd3d_thunk_set_fg, hook_set_fg);
 REGISTER_KEEPING_THUNK(bd3d_thunk_dlssg_enabled, hook_dlssg_enabled);
@@ -998,6 +1041,8 @@ REGISTER_KEEPING_THUNK(bd3d_thunk_plane_override, hook_plane_override);
 int64_t bd3d_thunk_plane_override(float *override, uint8_t *camera);
 REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_weapon_sep, hook_weapon_sep);
 float bd3d_thunk_weapon_sep(void *settings);
+REGISTER_KEEPING_THUNK(bd3d_thunk_camera_build, hook_camera_build);
+int64_t bd3d_thunk_camera_build(uint8_t *camera);
 
 // ---------------------------------------------------------------- set-up
 
@@ -1342,6 +1387,28 @@ static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
+// FULL SBS TEST: hooks the camera build the gun checks found (its start and eye branch checked again). Logs why not.
+static int attach_full_sbs(void *pluginHandle, R4eHooking *h)
+{
+    uint8_t *build = (uint8_t *)fg.cameraBuild;
+    const char *why = NULL;
+    if (!build || !in_exe((uintptr_t)build, CAMERA_BUILD_SIZE)) why = "the gun checks didn't find the camera build";
+    else if (aob_find_unique(build, CAMERA_BUILD_SIZE, AOB_CAMERA_BUILD) != 0) why = "the camera build: start doesn't match";
+    else if (aob_find_unique(build, CAMERA_BUILD_SIZE, AOB_CAMERA_EYE) < 0) why = "the camera build: the eye branch isn't there";
+    else if (!h->Attach(pluginHandle, build, (void *)bd3d_thunk_camera_build, (void **)&fg.buildOrig)) {
+        fg.buildOrig = NULL;
+        why = "couldn't hook the camera build";
+    }
+    if (why) {
+        plugin_log(1, "fullsbs: %s: not hooked", why);
+        return 0;
+    }
+    plugin_log(1, "fullsbs: TEST BUILD: camera build hooked %p; with a window wider than 3:1 each eye gets half the "
+                  "aspect",
+               (void *)build);
+    return 1;
+}
+
 // RED4ext's address lookup, or NULL if this RED4ext has none.
 static ResolveFn red4ext_resolver(void)
 {
@@ -1356,6 +1423,6 @@ int framegen_load(void *pluginHandle, const R4eSdk *sdk)
     ResolveFn resolve = red4ext_resolver();
     if (!resolve) return fail("RED4ext.dll has no RED4ext_ResolveAddress");
     int attached = attach_hooks(pluginHandle, sdk->hooking, resolve);
-    attach_gun(pluginHandle, sdk->hooking, resolve);
+    if (attach_gun(pluginHandle, sdk->hooking, resolve)) attach_full_sbs(pluginHandle, sdk->hooking);
     return attached;
 }

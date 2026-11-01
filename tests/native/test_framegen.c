@@ -1020,7 +1020,7 @@ TEST(thunks_have_unwind_info)
     // Without it an exception thrown through a hook (or a crash dump's stack) can't get past the thunk.
     void *thunks[] = { (void *)bd3d_thunk_o3d_changed, (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_dlssg_enabled,
                        (void *)bd3d_thunk_flag_compute, (void *)bd3d_thunk_plane_override,
-                       (void *)bd3d_thunk_weapon_sep };
+                       (void *)bd3d_thunk_weapon_sep, (void *)bd3d_thunk_camera_build };
     for (int i = 0; i < 6; i++) {
         DWORD64 base = 0;
         CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
