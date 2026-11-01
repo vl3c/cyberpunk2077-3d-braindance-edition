@@ -45,7 +45,9 @@
 // dariulone/cyberpunk-vr-port, src/Stereo/EngineStereo.cpp). The detour keeps the eye cameras' positions across the
 // rebuild and builds each moved eye again at its own place; what else the rebuild changed (field of view, near and
 // far, the shift) stays. Only while SBSDebug is on, and in a group of its own: if its checks fail (check_gun), only
-// the weapon keeps the game's flat look.
+// the weapon keeps the game's flat look. It also steps aside while any ray tracing or path tracing is on: the game
+// hands its ray-traced passes each eye's own weapon camera, but their shaders still light and shadow the weapon as if
+// both eyes saw it from one place (as they do in the game), so each eye got different light and shadows on it.
 //
 // The handler hook also turns screen effects off when 3D Mode is switched on. On a switch in the menu the game's
 // handler already turns Chromatic Aberration and Film Grain off itself (its own rule for 3D Mode); in side by side
@@ -114,6 +116,7 @@
 #define CAMERA_HAS_EYES 0x01
 #define CAMERA_LEFT_EYE 0x3D0   // its left eye camera's descriptor
 #define CAMERA_RIGHT_EYE 0x3D8  // and its right one's
+#define BOOL_SETTING_VALUE 0x58 // a bool settings var's value (what the game's getters read)
 #define SET_FG_SIZE 0xBE         // SetFrameGeneration's code (pdata 0x2075E60-0x2075F1E)
 #define EVENT_NO_MENU 0          // the handler's event: uint8 [0] must be 0 and
 #define EVENT_MENU 1             //   [1] 1 (a switch in the menu) for the game's own effects off
@@ -239,6 +242,8 @@ static struct {
     PlaneOverrideFn planeOrig;
     CameraBuildFn cameraBuild;    // the game's camera build, which the plane rebuild calls
     RestoreCount gunCount;        // plane rebuilds whose eye cameras were put back
+    uint8_t *volatile rtVars[5];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found on first use
+    volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
     BoolVarFn boolVar;            // the effects off (all set when its checks passed, else NULL): the game's lookup
     BoolSetFn boolSet;            //   of a bool setting, its bool setter, its list setter, and the CNames of the two
     ListSetFn listSet;            //   settings the game turns off itself (read when used: filled at run time)
@@ -775,13 +780,71 @@ static void count_gun(const EyePlaces *kept)
     }
 }
 
+// The ray tracing settings that light or shadow the weapon, all in /graphics/raytracing: four bools and RT Lighting
+// (a list: Off, Medium, Ultra, Psycho). The "RayTracing" bool isn't one of them: it can read false while path
+// tracing is on.
+static const char *const RT_BOOLS[] = { "RayTracedPathTracing", "RayTracedSunShadows", "RayTracedLocalShadows",
+                                        "RayTracedReflections" };
+#define RT_BOOL_COUNT 4
+#define RT_UNKNOWN 0  // fg.rtState: not looked at yet
+#define RT_OFF 1      //   all off: the weapon gets its depth
+#define RT_ON 2       //   one is on: the weapon stays flat
+#define RT_UNREADABLE 3 // the settings can't be read: the weapon stays flat
+
+// Finds the settings vars (once: they live as long as the game). Only names the 2.5 game has: the game's lookups
+// stop the game on a name they don't know. 0 if the lookups weren't found at load (their checks failed).
+static int find_rt_vars(void)
+{
+    if (fg.rtVars[RT_BOOL_COUNT]) return 1;
+    if (!fg.boolVar || !fg.var) return 0;
+    uint64_t group = cname("/graphics/raytracing");
+    uint8_t *vars[RT_BOOL_COUNT + 1];
+    for (int i = 0; i < RT_BOOL_COUNT; i++)
+        if (!readable(vars[i] = fg.boolVar(group, cname(RT_BOOLS[i])), BOOL_SETTING_VALUE + 1)) return 0;
+    vars[RT_BOOL_COUNT] = fg.var(fg.group(fg.root(), group), cname("RayTracedLighting"));
+    if (!readable(vars[RT_BOOL_COUNT], SETTING_SIZE)) return 0;
+    for (int i = 0; i < RT_BOOL_COUNT; i++) fg.rtVars[i] = vars[i];
+    MemoryBarrier();
+    fg.rtVars[RT_BOOL_COUNT] = vars[RT_BOOL_COUNT]; // last: the others are set when another thread sees it
+    return 1;
+}
+
+// Which ray tracing setting is on, NULL if none. *readableOut is 0 if they can't be read.
+static const char *ray_tracing_on(int *readableOut)
+{
+    *readableOut = find_rt_vars();
+    if (!*readableOut) return NULL;
+    for (int i = 0; i < RT_BOOL_COUNT; i++)
+        if (*(const volatile uint8_t *)(fg.rtVars[i] + BOOL_SETTING_VALUE)) return RT_BOOLS[i];
+    // RT Lighting's applied index: 0 is Off.
+    return *(const volatile int32_t *)(fg.rtVars[RT_BOOL_COUNT] + SETTING_APPLIED) ? "RayTracedLighting" : NULL;
+}
+
+// Whether the weapon gets its depth now (all ray tracing off). Logs each change.
+static int gun_allowed(void)
+{
+    int ok;
+    const char *on = ray_tracing_on(&ok);
+    LONG state = !ok ? RT_UNREADABLE : on ? RT_ON : RT_OFF;
+    if (InterlockedExchange(&fg.rtState, state) != state) {
+        if (state == RT_UNREADABLE)
+            plugin_log(1, "gun: can't read the ray tracing settings: the weapon stays flat, as in the game");
+        else if (state == RT_ON)
+            plugin_log(1, "gun: ray tracing is on (%s): the weapon stays flat, as in the game (its ray-traced light "
+                          "and shadows would differ between the eyes)", on);
+        else
+            plugin_log(1, "gun: ray tracing is off: the weapon has depth");
+    }
+    return state == RT_OFF;
+}
+
 // Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them (this frame: the
 // view producer assigns each plane's descriptor, eyes placed, right before calling the override). Returns what the
 // original returns.
 HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
 {
     EyePlaces kept;
-    int keep = sbs_debug() && keep_eye_places(camera, &kept);
+    int keep = sbs_debug() && keep_eye_places(camera, &kept) && gun_allowed();
     int64_t r = fg.planeOrig(override, camera);
     if (keep && restore_eye_places(&kept)) count_gun(&kept);
     return r;

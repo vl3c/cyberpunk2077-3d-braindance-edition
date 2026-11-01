@@ -215,8 +215,18 @@ static int32_t f_listSetIndex;
 static uint8_t f_listSetMode;
 static uint8_t *f_listSetVar;
 
+// The ray tracing settings: RT_BOOLS, then RT Lighting (a list), and how often they were looked up.
+static uint8_t f_rtBools[RT_BOOL_COUNT][SETTING_SIZE], f_rtLighting[SETTING_SIZE], f_rtGroup[8];
+static int f_rtLookups;
+
 static uint8_t *fake_bool_var(uint64_t group, uint64_t name)
 {
+    if (group == cname("/graphics/raytracing")) {
+        f_rtLookups++;
+        for (int i = 0; i < RT_BOOL_COUNT; i++)
+            if (name == cname(RT_BOOLS[i])) return f_rtBools[i];
+        return NULL;
+    }
     if (group != cname("/graphics/basic")) return NULL;
     for (int i = 0; i < EFFECT_COUNT; i++)
         if (name == cname(EFFECTS[i])) return i == f_missingBool ? NULL : f_bools[i];
@@ -263,6 +273,11 @@ static void fake_effects(void)
     fg.gameOff[0] = &f_effectSlots[0];
     fg.gameOff[1] = &f_effectSlots[2];
     fg.effectsGroup = &f_effectSlots[1];
+    memset(f_rtBools, 0, sizeof(f_rtBools)); // all ray tracing off
+    memset(f_rtLighting, 0, sizeof(f_rtLighting));
+    f_rtLookups = 0;
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtState = RT_UNKNOWN;
 }
 
 static uint8_t f_basicGroup[8];
@@ -270,6 +285,8 @@ static void *fake_root(void) { return f_lookup; }
 static void *fake_find(void *parent, uint64_t name)
 {
     if (name == cname("/graphics/basic")) return f_basicGroup;
+    if (name == cname("/graphics/raytracing")) return f_rtGroup;
+    if (name == cname("RayTracedLighting")) return parent == f_rtGroup ? f_rtLighting : NULL;
     if (name == cname("MotionBlur")) return parent == f_basicGroup ? f_blur : NULL;
     return name == f_cnames[1] ? (void *)f_var : (void *)f_lookup;
 }
@@ -1740,7 +1757,7 @@ TEST(eye_cameras_the_rebuild_didnt_move_arent_built_again)
     place(f_eyes[1], 131072, 262144, 65536);
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 0);
-    CHECK(strstr(ft_log, "gun:") == NULL);
+    CHECK(strstr(ft_log, "weapon view") == NULL);
 }
 
 TEST(without_sbs_debug_the_weapon_stays_as_the_game_builds_it)
@@ -1783,6 +1800,68 @@ TEST(weapon_views_are_logged_first_and_then_once_a_minute)
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     CHECK(strstr(ft_log, "gun: 3 weapon views built with their own eye cameras (3 in the last minute)") != NULL);
+}
+
+TEST(any_ray_tracing_keeps_the_weapon_flat)
+{
+    for (int i = 0; i <= RT_BOOL_COUNT; i++) {
+        ft_begin();
+        if (i < RT_BOOL_COUNT) f_rtBools[i][BOOL_SETTING_VALUE] = 1;
+        else *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 2; // Ultra
+        CHECK(hook_plane_override(NULL, f_centre) == 0x5678);
+        CHECK_EQ_INT(f_overrideCalls, 1);
+        CHECK_MSG(f_builds == 0, "%s", i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting");
+        CHECK(memcmp(f_eyes[0] + CAMERA_POSITION, f_centre + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0);
+        char want[96];
+        snprintf(want, sizeof(want), "gun: ray tracing is on (%s): the weapon stays flat",
+                 i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting");
+        CHECK_MSG(strstr(ft_log, want) != NULL, "%s", want);
+    }
+}
+
+TEST(the_weapon_follows_the_ray_tracing_settings_as_they_change)
+{
+    ft_begin();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    f_rtBools[0][BOOL_SETTING_VALUE] = 1; // path tracing turned on in game
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    f_rtBools[0][BOOL_SETTING_VALUE] = 0; // and off again
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 4);
+    CHECK_EQ_INT(f_rtLookups, RT_BOOL_COUNT); // looked up once
+    const char *off = strstr(ft_log, "gun: ray tracing is off: the weapon has depth");
+    const char *on = strstr(ft_log, "gun: ray tracing is on (RayTracedPathTracing)");
+    REQUIRE(off != NULL && on != NULL);
+    CHECK(strstr(on, "gun: ray tracing is off: the weapon has depth") != NULL); // off, on, off again
+    CHECK(strstr(on + 10, "gun: ray tracing is on") == NULL); // each change logged once
+}
+
+TEST(unreadable_ray_tracing_settings_keep_the_weapon_flat)
+{
+    ft_begin();
+    fg.boolVar = NULL; // the effects checks failed: no bool lookup
+    hook_plane_override(NULL, f_centre);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    const char *log = strstr(ft_log, "gun: can't read the ray tracing settings: the weapon stays flat");
+    REQUIRE(log != NULL);
+    CHECK(strstr(log + 10, "can't read") == NULL);
+    ft_begin();
+    fg.var = fake_find_nothing; // RT Lighting not found
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(fg.rtVars[0] == NULL); // tried again next time
+    fg.var = fake_find;
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
 }
 
 // ===================================================================================== screen effects

@@ -22,8 +22,10 @@ monitor's software. This mod:
    the eyes; the mod squeezes it into each half.
 4. Lets the game's own **DLSS, FSR and XeSS Frame Generation** run in 3D Mode (the game turns it off there, because
    Samsung's monitor can't use it). FSR4 and XeSS are untested.
-5. Gives the **weapon real depth** (untested in game). The game draws your arms and gun from one point for both
-   eyes, so they look flat; the mod gives each eye its own view of them, as far apart as **Weapon Depth** sets.
+5. Gives the **weapon real depth** with ray tracing off. The game draws your arms and gun from one point for both
+   eyes, so they look flat; the mod gives each eye its own view of them, as far apart as **Weapon Depth** sets. With
+   any ray tracing or path tracing on, the weapon stays flat as in the game: the game's ray-traced light and shadows
+   would differ between the eyes on it.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
 generation and weapon depth hook a few game functions through RED4ext.

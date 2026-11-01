@@ -217,6 +217,25 @@ eye rebuilt by a call to itself, the right eye given the position at `+0x0`, the
 followed by the camera build (whose address the detour calls), and the loop to the eyes on bit 0 of `+0x399`. If
 any of that doesn't match, only the weapon stays flat.
 
+### Ray tracing
+
+With ray tracing on, the weapon's light and shadows differed between the eyes (RT Lighting darkened it in one eye,
+RT Sun Shadows put its shadows at different angles), while with ray tracing off both eyes matched. The game's code
+hands the ray-traced passes each eye's own weapon camera: the view constants builder (`RVA 0x22A7690`, called by
+every ray-traced pass with an eye argument) reads plane 2's descriptor at view `+0x8A0` and takes the eye clone
+through `RVA 0x206EE80` (eye 1 `+0x3D0`, eye 2 `+0x3D8`), and the previous-frame view blocks per eye and plane
+(view `+0x1060` / `+0x16A0` / `+0x1CE0` plus plane × `0x190`) are filled from the eye clones at the start of the
+view producer. The sun shadow pass runs once per eye. So the mismatch is in the shaders, which in the game only ever
+see one weapon camera for both eyes (the Cyberpunk VR port patches shadow shaders for the first-person rows of the
+other eye). Shaders are out of scope for this mod, so the detour steps aside while any of these is on, read on every
+call from `/graphics/raytracing`: the bools `RayTracedPathTracing`, `RayTracedSunShadows`, `RayTracedLocalShadows`
+and `RayTracedReflections` (value at `+0x58`, what the game's getters read) and the list `RayTracedLighting` (Off,
+Medium, Ultra, Psycho; applied index at `+0x78`, 0 = Off). The `RayTracing` bool isn't used: it can read false with
+path tracing on. The vars are found once, on first use, with the game's bool lookup (the one the 3D Mode handler
+uses, found by the screen effects checks) and its list lookup; those stop the game on a name they don't know, so only
+names the 2.5 game has are asked for. If the lookups weren't found at load, the weapon stays flat. Each change is
+logged (`gun: ray tracing is on (...)` / `is off`).
+
 ## Upscaler jitter in 3D
 
 Each frame the game moves the camera by a fraction of a pixel (the jitter, `+0x370` in the camera descriptor) and
