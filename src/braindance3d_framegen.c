@@ -461,18 +461,19 @@ static const char *effect_name(uint64_t name)
     return name == cname("MotionBlur") ? "MotionBlur" : NULL;
 }
 
-// Where a list setting's list has this value, -1 if it doesn't (or isn't built). Logs the list's state when it
-// doesn't find it (the layout was worked out from Frame Generation's list, which the game fills in at run time).
+// Where a list setting's list has this value, -1 if it doesn't (or is empty). Logs the list's state when it doesn't
+// find it. FLAG_LIST_BUILT isn't needed: only lists the game fills in at run time (Frame Generation's) have it; a fixed
+// list (Motion Blur's: flags 0x8F) has its values from the start.
 static int32_t list_index(const uint8_t *var, const char *name)
 {
     uint32_t flags = *(const uint32_t *)(var + SETTING_FLAGS);
     const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
     uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
     char value[32];
-    for (uint32_t i = 0; (flags & FLAG_LIST_BUILT) && i < count && count <= 16; i++)
+    for (uint32_t i = 0; i < count && count <= 16; i++)
         if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, name) == 0)
             return (int32_t)i;
-    plugin_log(1, "effects: no '%s' in the list (flags 0x%X, %u values)", name, (unsigned)flags, (unsigned)count);
+    plugin_log(1, "settings: no '%s' in the list (flags 0x%X, %u values)", name, (unsigned)flags, (unsigned)count);
     return -1;
 }
 

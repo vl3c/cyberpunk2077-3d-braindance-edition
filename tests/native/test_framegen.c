@@ -242,7 +242,7 @@ static void fake_effects(void)
     memset(f_bools, 0, sizeof(f_bools));
     memset(f_blur, 0, sizeof(f_blur));
     for (int i = 0; i < 3; i++) put_cstring(f_blurValues[i], names[i]);
-    *(uint32_t *)(f_blur + SETTING_FLAGS) = FLAG_LIST_BUILT;
+    *(uint32_t *)(f_blur + SETTING_FLAGS) = 0x8F; // as in the game: a fixed list, without FLAG_LIST_BUILT
     *(uint8_t **)(f_blur + SETTING_VALUES) = &f_blurValues[0][0];
     *(uint32_t *)(f_blur + SETTING_VALUES + 0xC) = 3;
     f_effectSlots[0] = cname("ChromaticAberration");
@@ -1673,13 +1673,13 @@ TEST(a_setting_that_isnt_found_is_left_as_it_is)
 {
     ft_begin();
     f_missingBool = 4; // Vignette
-    *(uint32_t *)(f_blur + SETTING_FLAGS) = 0; // Motion Blur's list not built
+    *(uint32_t *)(f_blur + SETTING_VALUES + 0xC) = 0; // Motion Blur's list empty
     menu_switch(0, 1);
     CHECK_EQ_INT(f_boolSets, EFFECT_COUNT - 1 + HUD_REMOVAL_COUNT);
     CHECK_EQ_INT(f_listSets, 0);
     CHECK(strstr(ft_log, "effects: couldn't find the Vignette setting, left as it is") != NULL);
     CHECK(strstr(ft_log, "effects: couldn't find the Motion Blur setting or its Off, left as it is") != NULL);
-    CHECK(strstr(ft_log, "effects: no 'Off' in the list (flags 0x0, 3 values)") != NULL);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 0 values)") != NULL);
     CHECK(strstr(ft_log, "effects: 4 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares; each can be "
                          "turned back on)") != NULL);
 }
