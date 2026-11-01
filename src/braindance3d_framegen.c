@@ -828,9 +828,9 @@ static int check_sbs_var(const uint8_t *sbs)
 }
 
 // The effects off: in the handler, its own effects off (the bool lookup, the CNames of its two settings and their
-// group, the bool setter), and SetFrameGeneration's list setter. Fills fg's effects fields when they all pass, else logs which
-// didn't and leaves them NULL: then only the game's two go off. Reads SetFrameGeneration's code, so it runs before the
-// hooks are attached.
+// group, the bool setter), and SetFrameGeneration's list setter. Fills fg's effects fields when they all pass, else
+// logs which didn't and leaves them NULL: then only the game's two go off. Reads SetFrameGeneration's code, so it runs
+// before the hooks are attached.
 static void check_effects(const uint8_t *o3d, const uint8_t *setFg)
 {
     long vars = aob_find_unique(o3d, O3D_SIZE, AOB_O3D_EFFECT_VARS);

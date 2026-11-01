@@ -222,12 +222,13 @@ which two they are.
 Right after the handler, under the same condition (and only in the branch that asked for Frame Generation Off, while
 SBSDebug is on), the plugin turns off the rest of the effects that differ between the eyes, all in the group of the
 game's own two (its CName slot, logged if it isn't `/graphics/basic`): `ChromaticAberration`, `FilmGrain`,
-`DepthOfField`, `LensFlares` and `Vignette` through the same lookup and setter (the first two again, to the value the game just set), and `MotionBlur` (a list: Off, Low, High)
-to the index of `Off` through `SetFrameGeneration`'s list setter `RVA 0x9597A0` (`(var, index, 1)`), the var found
-with the lookup `SetFrameGeneration` uses. CNames are the engine's 64-bit FNV-1a hash of the name. Nothing is greyed
-out, so a player can turn any of them back on; the game's own two go off again whenever the handler sees this event
-(the logs show it twice in a row with 3D Mode already on), and the plugin's four with them. The log lists which of
-the six were turned off, and a list setting's flags and size if its `Off` isn't found.
+`DepthOfField`, `LensFlares` and `Vignette` through the same lookup and setter (the first two again, to the value
+the game just set), and `MotionBlur` (a list: Off, Low, High) to the index of `Off` through `SetFrameGeneration`'s
+list setter `RVA 0x9597A0` (`(var, index, 1)`), the var found with the lookup `SetFrameGeneration` uses. CNames are
+the engine's 64-bit FNV-1a hash of the name. Nothing is greyed out, so a player can turn any of them back on; the
+game's own two go off again whenever the handler sees this event (the logs show it twice in a row with 3D Mode
+already on), and the plugin's four with them. The log lists which of the six were turned off, and a list setting's
+flags and size if its `Off` isn't found.
 
 Then it turns on two bools in `/accessibility/interface` through the same lookup and setter (`(var, true, 1)`):
 `PostProcessingReduction` (the menu's Remove HUD Visual Effects: the HUD's blur and glow) and
