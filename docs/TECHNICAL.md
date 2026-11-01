@@ -229,11 +229,11 @@ view producer. The sun shadow pass runs once per eye. So the mismatch is in the 
 see one weapon camera for both eyes (the Cyberpunk VR port patches shadow shaders for the first-person rows of the
 other eye). Shaders are out of scope for this mod, so the detour steps aside while ray tracing is on, read on every
 call from `/graphics/raytracing`: `RayTracedPathTracing` (a switch of its own, on even with the master off), or,
-with the master switch `RayTracing` on, `RayTracedSunShadows` (a bool: value at `+0x58`, what the game's getters
-read) or `RayTracedLighting` (a list: Off, Medium, Ultra, Psycho; applied index at `+0x78`, compared with Off's
-index, found by name). These two and path tracing are the ones seen to break the weapon in game.
-`RayTracedLocalShadows` and `RayTracedReflections` aren't checked, so the weapon keeps its depth with them (not seen
-to differ between the eyes).
+with the master switch `RayTracing` on, `RayTracedSunShadows` or `RayTracedLocalShadows` (bools: value at `+0x58`,
+what the game's getters read) or `RayTracedLighting` (a list: Off, Medium, Ultra, Psycho; applied index at `+0x78`,
+compared with Off's index, found by name). These three and path tracing are the ones seen to break the weapon in
+game. `RayTracedReflections` isn't checked, so the weapon keeps its depth with it (tested in game: both eyes look
+right).
 With the master off, the game greys those out but keeps their values, so they don't count then. The vars
 are found once, by the 3D Mode handler hook on the handler's thread right after it turned 3D Mode on (before any eye
 camera exists), with the game's bool lookup (the one the handler uses, found by the screen effects checks) and its
