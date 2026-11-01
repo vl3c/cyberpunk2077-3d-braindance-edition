@@ -261,6 +261,7 @@ static struct {
     volatile DWORD gapTick;       //   and when
     uint8_t *volatile rtVars[6];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
     int32_t rtLightingOff;        //   RT Lighting's index of Off
+    int rtSearched;               //   looked for once (the settings exist from start-up, so a miss stays a miss)
     volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
     BoolVarFn boolVar;            // the effects off (all set when its checks passed, else NULL): the game's lookup
     BoolSetFn boolSet;            //   of a bool setting, its bool setter, its list setter, and the CNames of the two
@@ -647,7 +648,8 @@ static const char *const RT_BOOLS[] = { "RayTracing", "RayTracedPathTracing", "R
 // game on a name they don't know. Does nothing if the lookups weren't found at load (their checks failed).
 static void find_rt_vars(void)
 {
-    if (fg.rtVars[RT_LIGHTING] || !fg.boolVar || !fg.var) return;
+    if (fg.rtSearched || !fg.boolVar || !fg.var) return;
+    fg.rtSearched = 1; // only the handler's thread gets here
     uint64_t group = cname("/graphics/raytracing");
     uint8_t *vars[RT_BOOL_COUNT + 1];
     for (int i = 0; i < RT_BOOL_COUNT; i++)

@@ -294,6 +294,7 @@ static void fake_effects(void)
     *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 4;
     f_rtLookups = 0;
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
     fg.rtState = RT_UNKNOWN;
 }
 
@@ -1941,7 +1942,8 @@ TEST(the_weapon_follows_the_ray_tracing_settings_as_they_change)
 TEST(the_ray_tracing_settings_are_found_when_3d_mode_goes_on)
 {
     ft_begin();
-    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars)); // not found yet
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0; // not found yet
     hook_plane_override(NULL, f_centre);
     fake_cameras();
     hook_plane_override(NULL, f_centre);
@@ -1968,6 +1970,7 @@ TEST(without_the_games_lookups_the_weapon_stays_flat)
 {
     ft_begin();
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
     fg.boolVar = NULL; // the screen effects checks failed
     menu_switch(0, 0);
     hook_plane_override(NULL, f_centre);
@@ -1975,6 +1978,7 @@ TEST(without_the_games_lookups_the_weapon_stays_flat)
     CHECK_EQ_INT(f_builds, 0);
     ft_begin();
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
     fg.var = fake_find_nothing; // RT Lighting not found
     menu_switch(0, 0);
     hook_plane_override(NULL, f_centre);
@@ -1990,6 +1994,7 @@ TEST(rt_lightings_off_is_found_by_name)
     ft_begin();
     for (int i = 0; i < 4; i++) put_cstring(values[i], names[i]);
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
     *(uint8_t **)(f_rtLighting + SETTING_VALUES) = &values[0][0];
     *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 4;
     *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 1; // Off
@@ -2009,10 +2014,28 @@ TEST(rt_lighting_without_off_keeps_the_weapon_flat)
 {
     ft_begin();
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
     *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 0; // an empty list
     menu_switch(0, 0);
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun: RayTracedLighting has no Off: the weapon stays flat") != NULL);
+    size_t logged = strlen(ft_log);
+    menu_switch(0, 0); // the next switch doesn't look (or log) again
+    CHECK(strstr(ft_log + logged, "RayTracedLighting") == NULL);
+}
+
+TEST(rt_lighting_with_other_values_but_no_off_keeps_the_weapon_flat)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    uint8_t *values = *(uint8_t **)(f_rtLighting + SETTING_VALUES);
+    put_cstring(values, "None"); // a game update renamed it
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 4 values, 4 read as text)") != NULL);
     CHECK(strstr(ft_log, "gun: RayTracedLighting has no Off: the weapon stays flat") != NULL);
 }
 
@@ -2020,6 +2043,7 @@ TEST(without_eye_cameras_or_sbs_debug_the_settings_arent_read)
 {
     ft_begin();
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
     set_sbs_debug(0);
     hook_plane_override(NULL, f_centre);
     set_sbs_debug(1);
@@ -2047,7 +2071,8 @@ TEST(with_ray_tracing_on_the_weapon_separation_is_0)
     REQUIRE(on != NULL);
     CHECK(strstr(on + 10, "gun: ray tracing is on: the weapon's eye gap") == NULL); // each change logged once
     CHECK(strstr(ft_log, "gun: the weapon's eye gap follows Weapon Depth again") != NULL);
-    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars)); // settings not found: the weapon is flat, so at screen depth
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0; // settings not found: the weapon is flat, so at screen depth
     CHECK(hook_weapon_sep(NULL) == 0.0f);
 }
 
