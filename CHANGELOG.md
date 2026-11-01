@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+- Switching 3D Mode on in the menu now also turns Depth of Field, Lens Flare, Motion Blur and Vignette off (untested
+  in game so far). They differ between the eyes in side by side. The game itself already turns Chromatic Aberration
+  and Film Grain off on that switch; the mod does the rest right after it, through the game's own setters. Nothing is
+  locked: turn one back on and it stays on until the next switch to 3D. Not at game start, only while SBSDebug is on,
+  and only if the game's code matches what the mod expects (else just the game's two go off).
 - Technical notes: the game's upscaler jitter in 3D, and why the mod leaves it as it is. Each eye's picture moves only
   half as far sideways as DLSS is told (found by the Cyberpunk VR port), but matching the two made foliage and NPCs
-  shimmer clearly more in game (DLSS Performance with path tracing and Ray Reconstruction), and the stock picture is stable.
+  shimmer clearly more in game (DLSS Performance with path tracing and Ray Reconstruction), and the stock picture is
+  stable.
 - README: which HUD and screen effects ghost in 3D, and the game settings that turn them off.
 - README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.

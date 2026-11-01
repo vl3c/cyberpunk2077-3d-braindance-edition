@@ -95,9 +95,9 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 8. **Effects that ghost in 3D:** some effects are drawn per eye, so the two eyes don't match.
    - The HUD's lens bend and color fringes ghost in opposite directions in each eye: turn on **Remove HUD Visual
      Effects** and **Remove HUD Lens Distortion** (Accessibility settings, Interface).
-   - **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette** differ between the eyes; turn off the ones
-     that bother you (Graphics settings). The game turns **Chromatic Aberration** and **Film Grain** off itself when
-     you switch 3D Mode on; leave them off.
+   - **Chromatic Aberration**, **Film Grain**, **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette**
+     differ between the eyes. When you switch 3D Mode on in the menu, the game turns the first two off and the mod
+     the other four (needs RED4ext). Nothing is locked: turn any back on in the Graphics settings if you like it.
 
 ## Troubleshooting
 
