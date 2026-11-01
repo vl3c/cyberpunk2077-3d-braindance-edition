@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- In 3D the game moved each eye's picture only half as far sideways as it told DLSS, FSR or XeSS (the anti-aliasing
-  jitter). The RED4ext plugin now gives each eye's camera its own width for the jitter, so the two match (one more
-  small hook on the camera build, checked first like the others; the mismatch was found by the Cyberpunk VR port).
+- Technical notes: the game's upscaler jitter in 3D, and why the mod leaves it as it is. Each eye's picture moves only
+  half as far sideways as DLSS is told (found by the Cyberpunk VR port), but matching the two made foliage and NPCs
+  shimmer clearly more in game (DLSS Performance with path tracing), and the stock picture is stable.
 - README: which HUD and screen effects ghost in 3D, and the game settings that turn them off.
 - README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
 

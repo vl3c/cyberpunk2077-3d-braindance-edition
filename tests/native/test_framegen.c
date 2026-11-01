@@ -34,7 +34,6 @@ void plugin_log(int level, const char *fmt, ...)
 // A fake copy of the game's code and data, inside this exe's image (like the real targets are inside the game's).
 static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
-static uint8_t f_build[CAMERA_BUILD_SIZE], f_offset[JITTER_OFFSET_SIZE]; // the camera build and the jitter offset matrix
 static uint64_t f_cnames[2];
 static const char *f_sbsVar[8];
 static int f_attachFails; // which Attach call fails (1-based), 0 = none
@@ -80,16 +79,6 @@ static void fake_game(void)
     put(f_flag + 0x730, AOB_FLAG_CLEAR_XESS);
     put(f_fsrCode, AOB_FSR_ENABLED);
 
-    // The camera build, with its eye branch and its jitter call where the 2.5 exe has them.
-    memset(f_build, 0xCC, sizeof(f_build));
-    memset(f_offset, 0xCC, sizeof(f_offset));
-    put(f_build, AOB_CAMERA_BUILD);
-    put(f_build + 0x24B, AOB_CAMERA_EYE);
-    end = put(f_build + 0x473, AOB_CAMERA_JITTER);
-    memset(end, 0, 4);
-    put_rel32(end + 4, f_offset);
-    put(f_offset, AOB_JITTER_OFFSET);
-
     f_sbsVar[VAR_NAME / 8] = "SBSDebug";
     f_sbsVar[VAR_GROUP / 8] = "Odyssey3D";
     ((uint8_t *)f_sbsVar)[VAR_VALUE] = 1;
@@ -103,8 +92,6 @@ static uintptr_t fake_resolve(uint32_t hash)
     case HASH_FLAG_COMPUTE: return (uintptr_t)f_flag;
     case HASH_DLSSG_ENABLED: return (uintptr_t)f_dlssg;
     case HASH_VAR_SBSDEBUG: return (uintptr_t)f_sbsVar;
-    case HASH_CAMERA_BUILD: return (uintptr_t)f_build;
-    case HASH_JITTER_OFFSET: return (uintptr_t)f_offset;
     }
     return 0;
 }
@@ -222,30 +209,6 @@ static uint64_t *orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *fra
     return flags; // the game's caller reads the bits through this
 }
 
-// Like the game's camera build, as far as the hook can tell: it reads the jitter's width.
-static int f_builds;
-static uint32_t f_widthSeen;
-static int64_t orig_camera_build(uint8_t *camera)
-{
-    f_builds++;
-    f_widthSeen = camera ? *(uint32_t *)(camera + CAMERA_JITTER_SIZE) : 0;
-    return 0x1234;
-}
-
-// A camera descriptor: kind 0 = not an eye (flags 0), 1 / 2 = the left / right eye camera.
-static uint8_t f_camera[0x400];
-static uint8_t *fake_camera(int kind, uint32_t width)
-{
-    memset(f_camera, 0, sizeof(f_camera));
-    f_camera[CAMERA_EYE_KIND] = (uint8_t)kind;
-    f_camera[CAMERA_EYE_FLAGS] = kind ? CAMERA_IS_EYE : 0x01; // the centre has eyes (bit 0)
-    ((float *)(f_camera + CAMERA_JITTER))[0] = 0.25f;
-    ((float *)(f_camera + CAMERA_JITTER))[1] = -0.125f;
-    ((uint32_t *)(f_camera + CAMERA_JITTER_SIZE))[0] = width;
-    ((uint32_t *)(f_camera + CAMERA_JITTER_SIZE))[1] = 1080;
-    return f_camera;
-}
-
 static void ft_begin(void)
 {
     static DWORD tls = TLS_OUT_OF_INDEXES;
@@ -284,9 +247,6 @@ static void ft_begin(void)
     fg.sbsVar = (const uint8_t *)f_sbsVar;
     f_flagsAfterOrig[0] = 0;
     f_flagsAfterOrig[1] = FEATURE_BIT(FEATURE_STEREO);
-    fg.buildOrig = orig_camera_build;
-    f_builds = 0;
-    f_widthSeen = 0;
 }
 
 static void set_sbs_debug(int on) { ((uint8_t *)f_sbsVar)[VAR_VALUE] = (uint8_t)on; }
@@ -861,8 +821,8 @@ TEST(thunks_have_unwind_info)
 {
     // Without it an exception thrown through a hook (or a crash dump's stack) can't get past the thunk.
     void *thunks[] = { (void *)bd3d_thunk_o3d_changed, (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_dlssg_enabled,
-                       (void *)bd3d_thunk_flag_compute, (void *)bd3d_thunk_camera_build };
-    for (int i = 0; i < 5; i++) {
+                       (void *)bd3d_thunk_flag_compute };
+    for (int i = 0; i < 4; i++) {
         DWORD64 base = 0;
         CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
     }
@@ -1494,144 +1454,6 @@ TEST(attach_range_detaches_what_it_attached_when_one_fails)
     CHECK_EQ_INT(f_attached, 2);
     CHECK_EQ_PTR((void *)fg.dlssgOrig, f_dlssg);
     CHECK_EQ_PTR((void *)fg.flagOrig, f_flag);
-}
-
-// ===================================================================================== the jitter
-
-TEST(check_jitter_finds_the_camera_build_and_its_jitter_call)
-{
-    ft_begin();
-    fg.sbsVar = NULL;
-    CHECK_EQ_PTR(check_jitter(fake_resolve), f_build);
-    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar); // set here too: the jitter group can work without the frame generation one
-    CHECK(strstr(ft_log, "jitter: camera build checked (jitter call at +0x4A8)") != NULL);
-}
-
-TEST(the_jitter_hook_attaches_on_its_own)
-{
-    ft_begin();
-    memset(&fg, 0, sizeof(fg));
-    CHECK_EQ_INT(attach_jitter(NULL, &f_hooking, fake_resolve), 1);
-    CHECK_EQ_INT(f_attached, 1);
-    CHECK_EQ_PTR((void *)fg.buildOrig, f_build);
-    CHECK_EQ_INT(f_build[0], 0xE9);
-    CHECK(strstr(ft_log, "jitter: hook attached") != NULL);
-    CHECK_EQ_INT(fg.framegen, 0); // the frame generation group is apart
-}
-
-TEST(the_jitter_hook_attaches_when_the_frame_generation_hooks_cant)
-{
-    ft_begin();
-    memset(&fg, 0, sizeof(fg));
-    f_o3d[0] ^= 1; // the 3D Mode handler changed: nothing of the frame generation groups attaches
-    CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
-    CHECK_EQ_INT(f_attached, 0);
-    CHECK_EQ_INT(attach_jitter(NULL, &f_hooking, fake_resolve), 1);
-    CHECK_EQ_INT(f_attached, 1);
-    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar);
-}
-
-// A changed camera build or jitter matrix: nothing is attached and the log says what.
-static void expect_no_jitter_hook(const char *why)
-{
-    ft_log[0] = 0;
-    f_attached = 0;
-    CHECK_EQ_INT(attach_jitter(NULL, &f_hooking, fake_resolve), 0);
-    CHECK_EQ_INT(f_attached, 0);
-    CHECK_MSG(strstr(ft_log, why) != NULL, "log should say '%s', got: %s", why, ft_log);
-    CHECK(strstr(ft_log, "jitter: not hooked") != NULL);
-}
-
-TEST(the_jitter_hook_isnt_attached_when_the_game_code_changed)
-{
-    ft_begin();
-    CHECK_EQ_INT(attach_jitter(NULL, &f_hooking, resolve_nothing), 0);
-    CHECK(strstr(ft_log, "didn't resolve into the game exe") != NULL);
-    ft_begin();
-    f_build[0x2C] ^= 1; // mov rsi,rcx
-    expect_no_jitter_hook("the camera build: start doesn't match");
-    ft_begin();
-    f_build[0x24B + 6] = 0x04; // tests another flag
-    expect_no_jitter_hook("the eye branch isn't there");
-    ft_begin();
-    f_build[0x473 + 4] = 0x74; // reads another field than the jitter
-    expect_no_jitter_hook("the jitter call isn't there");
-    ft_begin();
-    put_rel32(f_build + 0x473 + aob_len(AOB_CAMERA_JITTER) + 4, f_other);
-    expect_no_jitter_hook("the jitter call doesn't go to the jitter offset matrix");
-    ft_begin();
-    f_offset[7] = 0x90; // doesn't double the jitter
-    expect_no_jitter_hook("the jitter offset matrix doesn't match");
-    ft_begin();
-    f_offset[JITTER_OFFSET_SIZE - 2] = 0x20; // stores another row
-    expect_no_jitter_hook("the jitter offset matrix doesn't match");
-    ft_begin();
-    f_build[0x600] = 0xE8;
-    put_rel32(f_build + 0x605, f_offset);
-    expect_no_jitter_hook("calls the jitter offset matrix somewhere else too");
-    ft_begin();
-    f_sbsVar[VAR_NAME / 8] = "StereoEnabled";
-    expect_no_jitter_hook("jitter: the SBSDebug config var isn't named [Odyssey3D] SBSDebug (game update?)");
-}
-
-TEST(a_failed_jitter_attach_is_logged)
-{
-    ft_begin();
-    f_attachFails = 1;
-    CHECK_EQ_INT(attach_jitter(NULL, &f_hooking, fake_resolve), 0);
-    CHECK(strstr(ft_log, "couldn't hook the camera build") != NULL);
-}
-
-TEST(an_eye_camera_is_built_with_half_the_width_and_gets_it_back)
-{
-    ft_begin();
-    for (int kind = 1; kind <= 2; kind++) {
-        uint8_t *camera = fake_camera(kind, 3840);
-        CHECK(hook_camera_build(camera) == 0x1234);
-        CHECK_EQ_INT((int)f_widthSeen, 1920);
-        CHECK_EQ_INT((int)((uint32_t *)(camera + CAMERA_JITTER_SIZE))[0], 3840);
-        CHECK_EQ_INT((int)((uint32_t *)(camera + CAMERA_JITTER_SIZE))[1], 1080); // the height is right as it is
-    }
-    CHECK_EQ_INT(f_builds, 2);
-    CHECK(strstr(ft_log, "first eye camera built with its own width (left eye, jitter 0.250, -0.125 px, width 3840 -> "
-                         "1920)") != NULL);
-    CHECK_EQ_INT((int)fg.eyeCount.restored, 2);
-}
-
-TEST(other_cameras_keep_the_games_width)
-{
-    ft_begin();
-    struct { int kind; uint32_t width; int sbs; } cases[] = {
-        { 0, 3840, 1 }, // the centre (and every other camera)
-        { 1, 1, 1 },    // no jitter (the previous frame's camera)
-        { 1, 0, 1 },
-        { 2, 3840, 0 }, // a real 3D monitor
-        { 3, 3840, 1 }, // a kind this doesn't know
-    };
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        set_sbs_debug(cases[i].sbs);
-        uint8_t *camera = fake_camera(cases[i].kind, cases[i].width);
-        if (cases[i].kind == 3) camera[CAMERA_EYE_FLAGS] = CAMERA_IS_EYE;
-        CHECK(hook_camera_build(camera) == 0x1234);
-        CHECK_MSG(f_widthSeen == cases[i].width, "case %d: width %u", (int)i, (unsigned)f_widthSeen);
-    }
-    CHECK(hook_camera_build(NULL) == 0x1234);
-    CHECK_EQ_INT(f_builds, 6);
-    CHECK_EQ_INT((int)fg.eyeCount.restored, 0);
-    CHECK(strstr(ft_log, "jitter:") == NULL);
-}
-
-TEST(eye_builds_are_logged_first_and_then_once_a_minute)
-{
-    ft_begin();
-    uint8_t *camera = fake_camera(2, 2560);
-    hook_camera_build(camera);
-    CHECK(strstr(ft_log, "(right eye, jitter 0.250, -0.125 px, width 2560 -> 1280)") != NULL);
-    hook_camera_build(camera);
-    CHECK(strstr(ft_log, "eye camera builds with their own width") == NULL);
-    fg.eyeCount.lastSummary = GetTickCount() - 61000;
-    hook_camera_build(camera);
-    CHECK(strstr(ft_log, "jitter: 3 eye camera builds with their own width (3 in the last minute)") != NULL);
 }
 
 TEST(red4ext_resolver_needs_red4ext)
