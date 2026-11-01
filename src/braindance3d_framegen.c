@@ -662,8 +662,9 @@ static void count_gun(const EyePlaces *kept)
     }
 }
 
-// Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them. Returns what
-// the original returns.
+// Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them (this frame: the
+// view producer assigns each plane's descriptor, eyes placed, right before calling the override). Returns what the
+// original returns.
 HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
 {
     EyePlaces kept;

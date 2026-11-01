@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The weapon has real depth in 3D. The game places the first-person camera's two eyes left and right, then its
+- The weapon has real depth in 3D (untested in game so far). The game places the first-person camera's two eyes left and right, then its
   weapon-plane rebuild moves both back to the centre, so the arms and the gun were drawn from one point and looked
   flat. A new RED4ext hook puts the eyes back after that rebuild (Weapon Depth sets how far apart). Only while
   SBSDebug is on; it checks the game's code first, and if that changed, only the weapon stays flat.

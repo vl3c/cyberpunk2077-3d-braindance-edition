@@ -208,7 +208,9 @@ The plugin's detour on the plane override (`src/braindance3d_framegen.c`) notes 
 game's override, then puts back each eye the rebuild moved and builds it again with the camera build. The rest of what
 the rebuild set (field of view, near/far, the shift) stays. An eye that didn't move (the plane already matched its
 override, or the eyes sit at the centre, as while aiming, when the game fades the separation out) is left alone. It
-changes nothing unless SBSDebug is on.
+changes nothing unless SBSDebug is on. The kept positions are this frame's: the view producer (`RVA 0x4240DC`) runs
+one pass per plane (four), and each pass assigns the plane's descriptor, its eyes placed, right before handing it to
+the plane override.
 
 Before attaching, the plugin checks the override's start and its one call to the rebuild, and in the rebuild: the left
 eye rebuilt by a call to itself, the right eye given the position at `+0x0`, the position in metres at `+0x280`
