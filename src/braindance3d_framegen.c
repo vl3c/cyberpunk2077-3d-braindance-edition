@@ -45,8 +45,9 @@
 // dariulone/cyberpunk-vr-port, src/Stereo/EngineStereo.cpp). The detour keeps the eye cameras' positions across the
 // rebuild and builds each moved eye again at its own place; what else the rebuild changed (field of view, near and
 // far, the shift) stays. Only while SBSDebug is on, and in a group of its own: if its checks fail (check_gun), only
-// the weapon keeps the game's flat look. It also steps aside while any ray tracing or path tracing is on: the game
-// hands its ray-traced passes each eye's own weapon camera, but their shaders still light and shadow the weapon as if
+// the weapon keeps the game's flat look. It also steps aside while path tracing is on, or ray tracing with RT
+// Lighting, Sun Shadows or Local Shadows (the settings seen to break it; RT Reflections wasn't): the game hands its
+// ray-traced passes each eye's own weapon camera, but their shaders still light and shadow the weapon as if
 // both eyes saw it from one place (as they do in the game), so each eye got different light and shadows on it. That
 // check reads the game's settings through the lookups the frame generation and screen effects checks find, so if
 // those failed, the weapon stays flat too.
@@ -259,7 +260,7 @@ static struct {
     volatile LONG sepZeroed;      //   it last answered 0 for ray tracing (for the log)
     volatile LONG gapTenths;      // the eye gap last logged, in 0.1 mm, plus 1 (0: none yet)
     volatile DWORD gapTick;       //   and when
-    uint8_t *volatile rtVars[6];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
+    uint8_t *volatile rtVars[5];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
     int32_t rtLightingOff;        //   RT Lighting's index of Off
     int rtSearched;               //   looked for once (the settings exist from start-up, so a miss stays a miss)
     volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
@@ -628,17 +629,19 @@ static void effects_off(void)
     hud_effects_off();
 }
 
-// The ray tracing settings that light or shadow the weapon, all in /graphics/raytracing: the master switch, path
-// tracing (on its own: it can be on with the master off), three more bools under the master, and RT Lighting (a list:
-// Off, Medium, Ultra, Psycho), also under the master.
+// The ray tracing settings that make the weapon's light or shadows differ between the eyes (seen in game), all in
+// /graphics/raytracing: the master switch, path tracing (on its own: it can be on with the master off), Sun Shadows
+// and Local Shadows under the master, and RT Lighting (a list: Off, Medium, Ultra, Psycho), also under the master.
+// Reflections isn't here: the weapon keeps its depth with it (tested in game: both eyes look right).
 static const char *const RT_BOOLS[] = { "RayTracing", "RayTracedPathTracing", "RayTracedSunShadows",
-                                        "RayTracedLocalShadows", "RayTracedReflections" };
+                                        "RayTracedLocalShadows" };
 #define RT_MASTER 0
 #define RT_PATH 1
-#define RT_BOOL_COUNT 5
+#define RT_BOOL_COUNT 4
 #define RT_LIGHTING RT_BOOL_COUNT // fg.rtVars: RT Lighting's var after the bools
+_Static_assert(sizeof(fg.rtVars) / sizeof(fg.rtVars[0]) == RT_BOOL_COUNT + 1, "fg.rtVars: RT_BOOLS and RT Lighting");
 #define RT_UNKNOWN 0    // fg.rtState: not looked at yet
-#define RT_OFF 1        //   all off: the weapon gets its depth
+#define RT_OFF 1        //   none on (RT Reflections may be): the weapon gets its depth
 #define RT_ON 2         //   one is on: the weapon stays flat
 #define RT_UNREADABLE 3 //   the settings weren't found: the weapon stays flat
 
@@ -691,7 +694,7 @@ static const char *ray_tracing_on(int *found)
                ? "RayTracedLighting" : NULL;
 }
 
-// Whether the weapon gets its depth now (all ray tracing off). Logs each change.
+// Whether the weapon gets its depth now (none of those ray tracing settings on). Logs each change.
 static int gun_allowed(void)
 {
     int found;
@@ -704,7 +707,7 @@ static int gun_allowed(void)
             plugin_log(1, "gun: ray tracing is on (%s): the weapon stays flat, as in the game (its ray-traced light "
                           "and shadows would differ between the eyes)", on);
         else
-            plugin_log(1, "gun: ray tracing is off: the weapon has depth");
+            plugin_log(1, "gun: no path tracing, RT Lighting or RT shadows: the weapon has depth");
     }
     return state == RT_OFF;
 }
@@ -927,10 +930,11 @@ static void count_gun(const EyePlaces *kept)
     }
 }
 
-// Weapon Depth as the view producer reads it each frame. While ray tracing is on (in side by side, or the ray tracing
-// settings weren't found, when the gun hook keeps the weapon flat as well) it answers 0, as if Weapon Depth were 0: the game's flat weapon then sits at screen depth in both eyes, with no shift between them
-// (above 0 the flat picture is only slid apart, which looks wrong). The setting itself keeps its value, so with ray
-// tracing off the weapon gets its depth from it again.
+// Weapon Depth as the view producer reads it each frame. While the gun hook keeps the weapon flat for ray tracing
+// (gun_allowed's settings on, or not found yet; in side by side) it answers 0, as if Weapon Depth were 0: the game's
+// flat weapon then sits at screen depth in both eyes, with no shift between them (above 0 the flat picture is only
+// slid apart, which looks wrong). The setting itself keeps its value, so once those are off the weapon gets its depth from
+// it again.
 HOOK float hook_weapon_sep(void *settings)
 {
     int found = 0;
@@ -941,7 +945,8 @@ HOOK float hook_weapon_sep(void *settings)
         zero = !found || on; // settings not found: the gun hook keeps the weapon flat, so at screen depth too
     }
     if (fg.sepZeroed != zero && InterlockedExchange(&fg.sepZeroed, zero) != zero)
-        plugin_log(1, zero ? "gun: ray tracing is on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)"
+        plugin_log(1, zero ? "gun: path tracing or RT Lighting or Shadows on (or unknown): the weapon's eye gap is 0 "
+                             "(as Weapon Depth 0)"
                            : "gun: the weapon's eye gap follows Weapon Depth again");
     return zero ? 0.0f : fg.sepOrig(settings);
 }
@@ -1303,7 +1308,7 @@ static uint8_t *check_gun(ResolveFn resolve)
 }
 
 // The weapon separation getter: checked, then hooked. Part of the gun group (only with the plane override hooked); if
-// it fails, the weapon under ray tracing keeps the game's Weapon Depth shift.
+// it fails, the flat weapon under ray tracing keeps the game's Weapon Depth shift.
 static int attach_weapon_sep(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
     uint8_t *sep = (uint8_t *)resolve(HASH_WEAPON_SEP);
@@ -1315,10 +1320,12 @@ static int attach_weapon_sep(void *pluginHandle, R4eHooking *h, ResolveFn resolv
         why = "couldn't hook the weapon separation getter";
     }
     if (why) {
-        plugin_log(1, "gun: %s (game update?): with ray tracing on the flat weapon keeps Weapon Depth's shift", why);
+        plugin_log(1, "gun: %s (game update?): with path tracing or RT Lighting or Shadows on the flat weapon keeps "
+                      "Weapon Depth's shift", why);
         return 0;
     }
-    plugin_log(1, "gun: weapon separation hooked %p: with ray tracing on the weapon's eye gap is 0", (void *)sep);
+    plugin_log(1, "gun: weapon separation hooked %p: with path tracing or RT Lighting or Shadows on the weapon's eye "
+                  "gap is 0", (void *)sep);
     return 1;
 }
 
@@ -1336,8 +1343,8 @@ static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
                       "effects checks failed): the weapon stays flat, as in the game");
         return 1;
     }
-    plugin_log(1, "gun: hook attached; in side by side the weapon is seen from both eyes with ray tracing off (while "
-                  "[Odyssey3D] SBSDebug is on; Weapon Depth sets how far apart)");
+    plugin_log(1, "gun: hook attached; in side by side the weapon is seen from both eyes unless path tracing, RT "
+                  "Lighting or Shadows is on (while [Odyssey3D] SBSDebug is on; Weapon Depth sets how far apart)");
     attach_weapon_sep(pluginHandle, h, resolve);
     return 1;
 }

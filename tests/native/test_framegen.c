@@ -1884,7 +1884,7 @@ static void rt_on(int i)
     else *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 2; // Ultra
 }
 
-TEST(any_ray_tracing_keeps_the_weapon_flat)
+TEST(each_listed_ray_tracing_setting_keeps_the_weapon_flat)
 {
     for (int i = RT_PATH; i <= RT_LIGHTING; i++) {
         const char *name = i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting";
@@ -1899,6 +1899,29 @@ TEST(any_ray_tracing_keeps_the_weapon_flat)
         snprintf(want, sizeof(want), "gun: ray tracing is on (%s): the weapon stays flat", name);
         CHECK_MSG(strstr(ft_log, want) != NULL, "%s", want);
     }
+}
+
+// The gun's log lines when the weapon gets its depth back, and when its eye gap goes to 0.
+#define LOG_GUN_DEPTH \
+    "gun: no path tracing, RT Lighting or RT shadows: the weapon has depth"
+#define LOG_GAP_ZERO \
+    "gun: path tracing or RT Lighting or Shadows on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)"
+
+TEST(rt_reflections_keep_the_weapons_depth)
+{
+    // Only the settings seen to break the weapon are checked: Reflections isn't even looked up (the fake lookup fails
+    // a test on any name it doesn't know). Local Shadows is (seen to break it).
+    int localShadows = 0;
+    for (int i = 0; i < RT_BOOL_COUNT; i++) {
+        CHECK_MSG(strcmp(RT_BOOLS[i], "RayTracedReflections") != 0, "%s", RT_BOOLS[i]);
+        localShadows |= strcmp(RT_BOOLS[i], "RayTracedLocalShadows") == 0;
+    }
+    CHECK(localShadows);
+    ft_begin();
+    f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1; // ray tracing on, with only Reflections (not looked at)
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    CHECK(strstr(ft_log, LOG_GUN_DEPTH) != NULL);
 }
 
 TEST(with_the_ray_tracing_switch_off_only_path_tracing_counts)
@@ -1934,8 +1957,8 @@ TEST(the_weapon_follows_the_ray_tracing_settings_as_they_change)
     CHECK_EQ_INT(f_builds, 4);
     CHECK_EQ_INT(f_rtLookups, 0); // the render threads only read what the handler hook found
     const char *on = strstr(ft_log, "gun: ray tracing is on (RayTracedPathTracing)");
-    REQUIRE(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL && on != NULL);
-    CHECK(strstr(on, "gun: ray tracing is off: the weapon has depth") != NULL); // off, on, off again
+    REQUIRE(strstr(ft_log, LOG_GUN_DEPTH) != NULL && on != NULL);
+    CHECK(strstr(on, LOG_GUN_DEPTH) != NULL); // off, on, off again
     CHECK(strstr(on + 10, "gun: ray tracing is on") == NULL); // each change logged once
 }
 
@@ -1963,7 +1986,7 @@ TEST(the_ray_tracing_settings_are_found_when_3d_mode_goes_on)
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 2);
-    CHECK(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL);
+    CHECK(strstr(ft_log, LOG_GUN_DEPTH) != NULL);
 }
 
 TEST(without_the_games_lookups_the_weapon_stays_flat)
@@ -2067,9 +2090,9 @@ TEST(with_ray_tracing_on_the_weapon_separation_is_0)
     set_sbs_debug(1);
     f_rtBools[2][BOOL_SETTING_VALUE] = 0;
     CHECK(hook_weapon_sep(NULL) == 0.017f);
-    const char *on = strstr(ft_log, "gun: ray tracing is on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)");
+    const char *on = strstr(ft_log, LOG_GAP_ZERO);
     REQUIRE(on != NULL);
-    CHECK(strstr(on + 10, "gun: ray tracing is on: the weapon's eye gap") == NULL); // each change logged once
+    CHECK(strstr(on + 10, "gun: path tracing or RT Lighting or Shadows on") == NULL); // each change logged once
     CHECK(strstr(ft_log, "gun: the weapon's eye gap follows Weapon Depth again") != NULL);
     memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
     fg.rtSearched = 0; // settings not found: the weapon is flat, so at screen depth
