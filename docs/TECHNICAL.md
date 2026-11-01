@@ -217,6 +217,25 @@ eye rebuilt by a call to itself, the right eye given the position at `+0x0`, the
 followed by the camera build (whose address the detour calls), and the loop to the eyes on bit 0 of `+0x399`. If
 any of that doesn't match, only the weapon stays flat.
 
+## Upscaler jitter in 3D
+
+Each frame the game moves the camera by a fraction of a pixel (the jitter, `+0x370` in the camera descriptor) and
+tells DLSS, FSR or XeSS the offset; the upscaler builds a sharper picture from those offsets. The camera build
+(`RVA 0x296EA0`) turns the jitter into a screen offset as `2 * jitter / width` (`RVA 0xC28EC0`), with the width at
+`+0x378`. The two eye cameras (`+0x399` bit 1, `+0x398` = 1 left, 2 right) get the width of the whole side-by-side
+frame, but each eye fills only half of it. So each eye's picture moves half a pixel sideways while the upscaler is told
+a whole one (vertical is right). The Cyberpunk VR port found and measured this
+([docs/engine-stereo-plan.md](https://github.com/dariulone/cyberpunk-vr-port/blob/main/docs/engine-stereo-plan.md),
+"Lamp flicker with DLSS only"). It fixed it on the DLSS side for its own per-eye DLSS; its test of this change with
+TAA and FSR 2.1 on still frames showed no gain
+([docs/engine-stereo-framegen-foveated-20261024.md](https://github.com/dariulone/cyberpunk-vr-port/blob/main/docs/engine-stereo-framegen-foveated-20261024.md)).
+
+**The mod leaves this as the game has it.** A test build hooked the camera build and handed each eye camera half the
+width for the build, so each eye moved the whole pixel the upscaler is told. In game (4K side by side, DLSS Performance,
+path tracing and Ray Reconstruction, DLSS frame generation 2x) trees, foliage and NPCs shimmered clearly more, the
+tester saw it most at lower render resolutions; with the game's own jitter the picture is stable. So the half-pixel offset isn't worth correcting, at
+least for the game's DLSS on the side-by-side frame.
+
 ## Building and testing
 
 `./build.sh` builds the DLL with MinGW-w64 (no PE timestamp, so builds of the same source with the same

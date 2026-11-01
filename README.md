@@ -73,9 +73,9 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50).
    - Without DLSS frame generation, pick **FSR3** and restart the game: the game's FSR 3.1 frame generation (2x)
      stays on with 3D Mode too (needs RED4ext). We tested it on an NVIDIA card, not yet on AMD.
-   - On an RX 9000, the game's **FSR4** frame generation stays on too, but it's untested: if the picture looks wrong,
-     use FSR3 and please report it. On an Intel Arc, pick **XESS** and restart the game; it's untested too, so the
-     same goes for it.
+   - On an RX 9000, pick **FSR4** and restart the game: its frame generation stays on too, but it's untested. If the
+     picture looks wrong, use FSR3 and please report it. On an Intel Arc, pick **XESS** and restart the game; it's
+     untested too, so the same goes for it.
    - [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work on the
      side-by-side frame, but we haven't tested it (we tested OptiScaler's frame generation only with its DLSS-G
      output, on an RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and
@@ -94,6 +94,12 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 7. **Field of View:** a flat image looks natural only when the game's FOV matches how much of your view the screen
    fills. Too wide, and everything looks small and far away and swells at the edges. With a large Virtual Desktop
    cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
+8. **Effects that ghost in 3D:** some effects are drawn per eye, so the two eyes don't match.
+   - The HUD's lens bend and color fringes ghost in opposite directions in each eye: turn on **Remove HUD Visual
+     Effects** and **Remove HUD Lens Distortion** (Accessibility settings, Interface).
+   - **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette** differ between the eyes; turn off the ones
+     that bother you (Graphics settings). The game turns **Chromatic Aberration** and **Film Grain** off itself when
+     you switch 3D Mode on; leave them off.
 
 ## Troubleshooting
 
