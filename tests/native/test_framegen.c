@@ -35,7 +35,7 @@ void plugin_log(int level, const char *fmt, ...)
 static uint8_t f_o3d[O3D_SIZE], f_setFg[SET_FG_SIZE], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
 static uint64_t f_cnames[2];
-static uint8_t f_override[PLANE_OVERRIDE_SIZE], f_rebuild[PLANE_REBUILD_SIZE], f_buildCode[16];
+static uint8_t f_override[PLANE_OVERRIDE_SIZE], f_rebuild[PLANE_REBUILD_SIZE], f_buildCode[16], f_sep[WEAPON_SEP_SIZE];
 static uint8_t f_boolVarCode[16], f_boolSetCode[16], f_listSetCode[16];
 static uint64_t f_effectSlots[4]; // the handler's CNames: its two settings and their group, twice
 static const char *f_sbsVar[8];
@@ -104,6 +104,8 @@ static void fake_game(void)
     put_rel32(f_rebuild + 0xE2 + REBUILD_EYES_CALL + 5, f_rebuild); // the left eye: the rebuild calls itself
     put_rel32(put(f_rebuild + 0x19E, AOB_REBUILD_BUILD) + 4, f_buildCode);
     put(f_rebuild + 0x201, AOB_REBUILD_LOOP);
+    memset(f_sep, 0xCC, sizeof(f_sep));
+    put(f_sep, AOB_WEAPON_SEP);
 
     f_sbsVar[VAR_NAME / 8] = "SBSDebug";
     f_sbsVar[VAR_GROUP / 8] = "Odyssey3D";
@@ -120,6 +122,7 @@ static uintptr_t fake_resolve(uint32_t hash)
     case HASH_VAR_SBSDEBUG: return (uintptr_t)f_sbsVar;
     case HASH_PLANE_OVERRIDE: return (uintptr_t)f_override;
     case HASH_PLANE_REBUILD: return (uintptr_t)f_rebuild;
+    case HASH_WEAPON_SEP: return (uintptr_t)f_sep;
     }
     return 0;
 }
@@ -1009,8 +1012,9 @@ TEST(thunks_have_unwind_info)
 {
     // Without it an exception thrown through a hook (or a crash dump's stack) can't get past the thunk.
     void *thunks[] = { (void *)bd3d_thunk_o3d_changed, (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_dlssg_enabled,
-                       (void *)bd3d_thunk_flag_compute, (void *)bd3d_thunk_plane_override };
-    for (int i = 0; i < 5; i++) {
+                       (void *)bd3d_thunk_flag_compute, (void *)bd3d_thunk_plane_override,
+                       (void *)bd3d_thunk_weapon_sep };
+    for (int i = 0; i < 6; i++) {
         DWORD64 base = 0;
         CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
     }
@@ -1668,11 +1672,36 @@ TEST(the_gun_hook_attaches_on_its_own)
 {
     ft_begin();
     memset(&fg, 0, sizeof(fg));
+    fg.boolVar = fake_bool_var; // the settings lookups (found by the other checks)
+    fg.var = fake_find;
     CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
-    CHECK_EQ_INT(f_attached, 1);
     CHECK(fg.planeOrig == (PlaneOverrideFn)(void *)f_override);
     CHECK_EQ_INT(f_override[0], 0xE9);
     CHECK(strstr(ft_log, "gun: hook attached") != NULL);
+    CHECK_EQ_INT(f_attached, 2);
+    CHECK(fg.sepOrig == (WeaponSepFn)(void *)f_sep);
+    CHECK(strstr(ft_log, "gun: weapon separation hooked") != NULL);
+}
+
+TEST(the_gun_hook_attaches_without_the_weapon_separation)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    fg.boolVar = fake_bool_var;
+    fg.var = fake_find;
+    f_sep[0] = 0x90; // a game update changed the getter
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK_EQ_INT(f_attached, 1);
+    CHECK(fg.sepOrig == NULL);
+    CHECK(strstr(ft_log, "gun: the weapon separation getter doesn't match (game update?)") != NULL);
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    fg.boolVar = fake_bool_var;
+    fg.var = fake_find;
+    f_attachFails = 2;
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK(fg.sepOrig == NULL);
+    CHECK(strstr(ft_log, "gun: couldn't hook the weapon separation getter") != NULL);
 }
 
 TEST(the_gun_hook_attaches_when_the_frame_generation_hooks_cant)
@@ -1959,6 +1988,40 @@ TEST(without_eye_cameras_or_sbs_debug_the_settings_arent_read)
     f_centre[CAMERA_FLAGS] = 0;
     hook_plane_override(NULL, f_centre);
     CHECK(strstr(ft_log, "gun: the ray tracing settings") == NULL);
+}
+
+static float fake_weapon_sep(void *settings) { (void)settings; return 0.017f; } // Weapon Depth 1.0
+
+TEST(with_ray_tracing_on_the_weapon_separation_is_0)
+{
+    ft_begin();
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(hook_weapon_sep(NULL) == 0.017f); // ray tracing off: the game's value
+    f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1;
+    rt_on(2); // Sun Shadows
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+    set_sbs_debug(0); // a real 3D monitor: the game's rule
+    CHECK(hook_weapon_sep(NULL) == 0.017f);
+    set_sbs_debug(1);
+    f_rtBools[2][BOOL_SETTING_VALUE] = 0;
+    CHECK(hook_weapon_sep(NULL) == 0.017f);
+    const char *on = strstr(ft_log, "gun: ray tracing is on: the weapon's eye gap is 0 (as Weapon Depth 0)");
+    REQUIRE(on != NULL);
+    CHECK(strstr(on + 10, "gun: ray tracing is on: the weapon's eye gap") == NULL); // each change logged once
+    CHECK(strstr(ft_log, "gun: the weapon's eye gap follows Weapon Depth again") != NULL);
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars)); // settings not found: the game's value
+    rt_on(RT_PATH);
+    CHECK(hook_weapon_sep(NULL) == 0.017f);
+}
+
+TEST(the_weapon_separation_thunk_returns_the_hooks_answer)
+{
+    ft_begin();
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(bd3d_thunk_weapon_sep(NULL) == 0.017f);
+    rt_on(RT_PATH);
+    CHECK(bd3d_thunk_weapon_sep(NULL) == 0.0f);
 }
 
 // ===================================================================================== screen effects

@@ -120,6 +120,8 @@
 #define CAMERA_LEFT_EYE 0x3D0   // its left eye camera's descriptor
 #define CAMERA_RIGHT_EYE 0x3D8  // and its right one's
 #define BOOL_SETTING_VALUE 0x58 // a bool settings var's value (what the game's getters read)
+#define HASH_WEAPON_SEP 537726408u // the weapon separation getter: float (stereo settings), Weapon Depth in metres
+#define WEAPON_SEP_SIZE 0x31       // its code (pdata 0x22849D0-0x2284A01)
 #define SET_FG_SIZE 0xBE         // SetFrameGeneration's code (pdata 0x2075E60-0x2075F1E)
 #define EVENT_NO_MENU 0          // the handler's event: uint8 [0] must be 0 and
 #define EVENT_MENU 1             //   [1] 1 (a switch in the menu) for the game's own effects off
@@ -203,6 +205,12 @@ static const char AOB_REBUILD_BUILD[] =
     "8B 47 40 48 8B CB 89 43 40 8B 47 44 89 43 44 E8";
 // In it, the loop to the eye cameras: test byte [rbx+399h],1; jnz.
 static const char AOB_REBUILD_LOOP[] = "F6 83 99 03 00 00 01 0F 85";
+// The weapon separation getter: under the settings lock, return the float at +0x57C (Weapon Depth, already in metres).
+// The view producer reads it once a frame for the first-person plane: its eye cameras sit half of it left and right
+// of the centre, and their off-axis shift uses it too.
+static const char AOB_WEAPON_SEP[] =
+    "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 83 C1 38 E8 ?? ?? ?? ?? F3 0F 10 87 7C 05 00 00 48 8D 4F 38 "
+    "48 8B 5C 24 30 48 83 C4 20 5F E9";
 
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
@@ -214,6 +222,7 @@ typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
 typedef int64_t (*PlaneOverrideFn)(float *override, uint8_t *camera);
 typedef int64_t (*CameraBuildFn)(uint8_t *camera);
+typedef float (*WeaponSepFn)(void *settings);
 typedef uint8_t *(*BoolVarFn)(uint64_t group, uint64_t name);
 typedef void (*BoolSetFn)(uint8_t *var, uint8_t value, uint8_t mode);
 typedef void (*ListSetFn)(uint8_t *var, int32_t index, uint8_t mode);
@@ -245,6 +254,8 @@ static struct {
     PlaneOverrideFn planeOrig;
     CameraBuildFn cameraBuild;    // the game's camera build, which the plane rebuild calls
     RestoreCount gunCount;        // plane rebuilds whose eye cameras were put back
+    WeaponSepFn sepOrig;          // the weapon separation getter (NULL if not hooked)
+    volatile LONG sepZeroed;      //   it last answered 0 for ray tracing (for the log)
     uint8_t *volatile rtVars[6];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
     int32_t rtLightingOff;        //   RT Lighting's index of Off
     volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
@@ -463,6 +474,20 @@ static int keep_in_3d(const uint8_t *var, const char *value, int known)
             "movdqu %xmm3, 0x50(%rsp)\nmovdqu %xmm4, 0x60(%rsp)\nmovdqu %xmm5, 0x70(%rsp)\n"                      \
             "call " #impl "\n"                                                                                      \
             "movdqu 0x20(%rsp), %xmm0\nmovdqu 0x30(%rsp), %xmm1\nmovdqu 0x40(%rsp), %xmm2\n"                      \
+            "movdqu 0x50(%rsp), %xmm3\nmovdqu 0x60(%rsp), %xmm4\nmovdqu 0x70(%rsp), %xmm5\n"                      \
+            "add $0x88, %rsp\npop %r11\npop %r10\npop %r9\npop %r8\npop %rdx\npop %rcx\nret\n.seh_endproc\n")
+
+// The same for a hook that returns a float: xmm0 is its answer, so it isn't put back.
+#define REGISTER_KEEPING_FLOAT_THUNK(thunk, impl)                                                                   \
+    __asm__(".text\n.p2align 4\n.globl " #thunk "\n.def " #thunk "; .scl 2; .type 32; .endef\n"                  \
+            ".seh_proc " #thunk "\n" #thunk ":\n"                                                                   \
+            "push %rcx\n.seh_pushreg %rcx\npush %rdx\n.seh_pushreg %rdx\npush %r8\n.seh_pushreg %r8\n"             \
+            "push %r9\n.seh_pushreg %r9\npush %r10\n.seh_pushreg %r10\npush %r11\n.seh_pushreg %r11\n"             \
+            "sub $0x88, %rsp\n.seh_stackalloc 0x88\n.seh_endprologue\n" /* rsp is 16-aligned here */             \
+            "movdqu %xmm1, 0x30(%rsp)\nmovdqu %xmm2, 0x40(%rsp)\n"                                                  \
+            "movdqu %xmm3, 0x50(%rsp)\nmovdqu %xmm4, 0x60(%rsp)\nmovdqu %xmm5, 0x70(%rsp)\n"                      \
+            "call " #impl "\n"                                                                                      \
+            "movdqu 0x30(%rsp), %xmm1\nmovdqu 0x40(%rsp), %xmm2\n"                                                  \
             "movdqu 0x50(%rsp), %xmm3\nmovdqu 0x60(%rsp), %xmm4\nmovdqu 0x70(%rsp), %xmm5\n"                      \
             "add $0x88, %rsp\npop %r11\npop %r10\npop %r9\npop %r8\npop %rdx\npop %rcx\nret\n.seh_endproc\n")
 
@@ -891,13 +916,43 @@ static void count_gun(const EyePlaces *kept)
     }
 }
 
+// Weapon Depth as the view producer reads it each frame. While ray tracing is on (in side by side) it answers 0, as if
+// Weapon Depth were 0: the game's flat weapon then sits at screen depth in both eyes, with no shift between them
+// (above 0 the flat picture is only slid apart, which looks wrong). The setting itself keeps its value, so with ray
+// tracing off the weapon gets its depth from it again.
+HOOK float hook_weapon_sep(void *settings)
+{
+    int found = 0;
+    const char *on = sbs_debug() ? ray_tracing_on(&found) : NULL;
+    LONG zero = found && on;
+    if (fg.sepZeroed != zero && InterlockedExchange(&fg.sepZeroed, zero) != zero)
+        plugin_log(1, zero ? "gun: ray tracing is on: the weapon's eye gap is 0 (as Weapon Depth 0)"
+                           : "gun: the weapon's eye gap follows Weapon Depth again");
+    return zero ? 0.0f : fg.sepOrig(settings);
+}
+
 // Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them (this frame: the
 // view producer assigns each plane's descriptor, eyes placed, right before calling the override). Returns what the
 // original returns.
+// Logs the gap between the eye cameras the game placed whenever it changes by more than 0.5 mm (Weapon Depth, or the
+// fade while aiming), so the log shows what the weapon's depth comes from.
+static void log_gun_gap(const EyePlaces *kept)
+{
+    static float last[3] = { -1000.0f, 0.0f, 0.0f }; // from several threads: at worst a line too many, harmless
+    const float *l = (const float *)kept->world[0], *r = (const float *)kept->world[1];
+    float d[3] = { 1000.0f * (r[0] - l[0]), 1000.0f * (r[1] - l[1]), 1000.0f * (r[2] - l[2]) };
+    float change = 0.0f;
+    for (int i = 0; i < 3; i++) change += (d[i] - last[i]) * (d[i] - last[i]);
+    if (change < 0.25f) return;
+    memcpy(last, d, sizeof(last));
+    plugin_log(1, "gun: the weapon's eye cameras are now %.1f, %.1f, %.1f mm apart (right from left)", d[0], d[1], d[2]);
+}
+
 HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
 {
     EyePlaces kept;
     int keep = sbs_debug() && keep_eye_places(camera, &kept) && gun_allowed();
+    if (keep) log_gun_gap(&kept);
     int64_t r = fg.planeOrig(override, camera);
     if (keep && restore_eye_places(&kept)) count_gun(&kept);
     return r;
@@ -913,6 +968,8 @@ uint8_t bd3d_thunk_dlssg_enabled(uint8_t *sl);
 uint64_t *bd3d_thunk_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
 REGISTER_KEEPING_THUNK(bd3d_thunk_plane_override, hook_plane_override);
 int64_t bd3d_thunk_plane_override(float *override, uint8_t *camera);
+REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_weapon_sep, hook_weapon_sep);
+float bd3d_thunk_weapon_sep(void *settings);
 
 // ---------------------------------------------------------------- set-up
 
@@ -1217,6 +1274,26 @@ static uint8_t *check_gun(ResolveFn resolve)
     return override;
 }
 
+// The weapon separation getter: checked, then hooked. Part of the gun group (only with the plane override hooked); if
+// it fails, the weapon under ray tracing keeps the game's Weapon Depth shift.
+static int attach_weapon_sep(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
+{
+    uint8_t *sep = (uint8_t *)resolve(HASH_WEAPON_SEP);
+    const char *why = NULL;
+    if (!in_exe((uintptr_t)sep, WEAPON_SEP_SIZE)) why = "the weapon separation getter didn't resolve into the game exe";
+    else if (aob_find_unique(sep, WEAPON_SEP_SIZE, AOB_WEAPON_SEP) != 0) why = "the weapon separation getter doesn't match";
+    else if (!h->Attach(pluginHandle, sep, (void *)bd3d_thunk_weapon_sep, (void **)&fg.sepOrig)) {
+        fg.sepOrig = NULL;
+        why = "couldn't hook the weapon separation getter";
+    }
+    if (why) {
+        plugin_log(1, "gun: %s (game update?): with ray tracing on the flat weapon keeps Weapon Depth's shift", why);
+        return 0;
+    }
+    plugin_log(1, "gun: weapon separation hooked %p: with ray tracing on the weapon's eye gap is 0", (void *)sep);
+    return 1;
+}
+
 // The gun group: checked, then attached on its own. Returns 1 when attached.
 static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
@@ -1233,6 +1310,7 @@ static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     }
     plugin_log(1, "gun: hook attached; in side by side the weapon is seen from both eyes with ray tracing off (while "
                   "[Odyssey3D] SBSDebug is on; Weapon Depth sets how far apart)");
+    attach_weapon_sep(pluginHandle, h, resolve);
     return 1;
 }
 

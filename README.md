@@ -24,8 +24,8 @@ monitor's software. This mod:
    Samsung's monitor can't use it). FSR4 and XeSS are untested.
 5. Gives the **weapon real depth** with ray tracing off. The game draws your arms and gun from one point for both
    eyes, so they look flat; the mod gives each eye its own view of them, as far apart as **Weapon Depth** sets. With
-   any ray tracing or path tracing on, the weapon stays flat as in the game: the game's ray-traced light and shadows
-   would differ between the eyes on it.
+   any ray tracing or path tracing on, the weapon stays flat as in the game, at screen depth (Weapon Depth is ignored
+   then, as if it were 0): the game's ray-traced light and shadows would differ between the eyes on it.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
 generation and weapon depth hook a few game functions through RED4ext.
