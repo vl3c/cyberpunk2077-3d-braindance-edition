@@ -191,6 +191,24 @@ chain (`amd_fidelityfx_framegeneration_dx12.dll`), with XeSS through Intel's (`l
 patches the Present of whichever swap chain the game uses (tested with Streamline's and FidelityFX's). The game offers
 XESS only when `xefgSwapChainD3D12CreateContext` succeeded at start (in practice an Intel Arc GPU).
 
+## Upscaler jitter in 3D
+
+Each frame the game moves the camera by a fraction of a pixel (the jitter, `+0x370` in the camera descriptor) and
+tells DLSS, FSR or XeSS the offset; the upscaler builds a sharper picture from those offsets. The camera build
+(`RVA 0x296EA0`) turns the jitter into a screen offset as `2 * jitter / width` (`RVA 0xC28EC0`), with the width at
+`+0x378`. The two eye cameras (`+0x399` bit 1, `+0x398` = 1 left, 2 right) get the width of the whole side-by-side
+frame, but each eye fills only half of it. So each eye's picture moves half a pixel sideways while the upscaler is told
+a whole one (vertical is right). The Cyberpunk VR port found and measured this
+([docs/engine-stereo-plan.md](https://github.com/dariulone/cyberpunk-vr-port/blob/main/docs/engine-stereo-plan.md),
+"Lamp flicker with DLSS only").
+
+A fifth detour, on the camera build, hands an eye camera half that width for the build and then puts the descriptor's
+width back, so anything else that reads it sees the game's value. Widths under 2 (no jitter: the previous frame's
+camera) and every other camera are left alone, and so is everything while `SBSDebug` is off. Before attaching, the
+plugin checks the build's start, its eye branch, the jitter call going to the jitter offset function (which must also
+be where its own hash resolves, double the jitter and divide by the size) and being its only call there. If anything
+doesn't match, only this detour stays off; it's its own group.
+
 ## Building and testing
 
 `./build.sh` builds the DLL with MinGW-w64 (no PE timestamp, so builds of the same source with the same

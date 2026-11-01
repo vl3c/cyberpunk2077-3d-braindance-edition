@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 3D with DLSS, FSR or XeSS: the game moved each eye's picture only half as far sideways as it told the upscaler
+  (the anti-aliasing jitter), which can make small lights flicker and fine detail shimmer. The RED4ext plugin now
+  gives each eye's camera its own width for the jitter (one more small hook on the camera build, checked first like
+  the others; the bug was found by the Cyberpunk VR port).
+- README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
+
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.
 - Nexus page: says in red that FSR4 and XeSS frame generation are untested (DLSS and FSR 3.1 are tested), lists Field of View among the depth settings, and drops two lines.
 - README and Nexus page: the Field of View slider is in the Graphics settings, not Gameplay.
@@ -9,10 +15,10 @@
 
 ## 0.3.1 (2026-10-31)
 
-- The game's FSR 3.1 frame generation now works in 3D Mode too (any GPU; pick FSR3, then restart the game: the game
-  fixes its frame generation at start, as with DLSS). FSR 4 frame generation (RX 9000) is allowed too, through the
-  same code, but untested. Same hooks as DLSS: the FSR part checks the game's code first, and if it changed, only FSR
-  keeps the game's rule.
+- The game's FSR 3.1 frame generation now works in 3D Mode too (any GPU, tested on an NVIDIA card only; pick FSR3,
+  then restart the game: the game fixes its frame generation at start, as with DLSS). FSR 4 frame generation (RX 9000)
+  is allowed too, through the same code, but untested. Same hooks as DLSS: the FSR part checks the game's code first,
+  and if it changed, only FSR keeps the game's rule.
 - The game's XeSS frame generation (Intel Arc) is allowed in 3D Mode too, untested (pick XESS, then restart the
   game). Same hooks again: the XeSS part checks the game's code first, and if it changed, only XeSS keeps the game's
   rule.

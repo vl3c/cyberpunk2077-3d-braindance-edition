@@ -36,6 +36,15 @@
 // XeSS. With FSR at start the game presents through FidelityFX's frame generation swap chain, with XeSS through
 // Intel's (libxess_fg.dll).
 //
+// A fifth detour fixes the upscaler's jitter in side by side. Each frame the game moves its camera by a fraction of a
+// pixel (the jitter) and tells DLSS, FSR or XeSS by how much; the upscaler builds a sharper picture from those offsets.
+// The camera build turns the jitter in pixels into a screen offset as 2 * jitter / width, and the two eye cameras get
+// the width of the whole side-by-side frame. Each eye fills only half of it, so its picture moves half a pixel
+// sideways while the upscaler is told a whole one (found by the Cyberpunk VR port, dariulone/cyberpunk-vr-port,
+// docs/engine-stereo-plan.md). The detour on the camera build hands an eye camera half that width for the build, then
+// puts the width back; nothing else changes. It works only while SBSDebug is on, like the others, and is its own
+// group: if its checks fail (check_jitter), only the jitter keeps the game's value.
+//
 // License: MIT (see LICENSE).
 
 #define WIN32_LEAN_AND_MEAN
@@ -53,6 +62,8 @@
 #define HASH_FLAG_COMPUTE 102052349u   // FlagCompute: uint64_t *(renderer, uint64_t flags[2], frame, settings), returns flags
 #define HASH_DLSSG_ENABLED 1336151854u // IsDlssgEnabled: bool (Streamline object)
 #define HASH_VAR_SBSDEBUG 3257143555u  // the [Odyssey3D] SBSDebug config var
+#define HASH_CAMERA_BUILD 1097666260u  // the camera build: (camera descriptor), builds its matrices
+#define HASH_JITTER_OFFSET 497094081u  // the jitter offset matrix: 2 * jitter / max(size, 1), called by the camera build
 
 #define O3D_SIZE 0x560          // the handler's code (pdata 0x2073C00-0x207415F)
 #define FLAG_COMPUTE_SIZE 0x116A // FlagCompute and its chained body (pdata 0x227E5D0 up to 0x227F73A)
@@ -81,6 +92,13 @@
 #define XESS_FG_ON 0xDD          //   its "frame generation on" flag (uint8_t), what FlagCompute reads
 #define FEATURE_STEREO 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
+// The camera descriptor the camera build takes.
+#define CAMERA_BUILD_SIZE 0x62D  // its code (pdata 0x296EA0-0x2974CD)
+#define CAMERA_JITTER 0x370      // float x, y: the jitter in pixels
+#define CAMERA_JITTER_SIZE 0x378 // uint32 width, height: the size the build turns the jitter into a screen offset with
+#define CAMERA_EYE_KIND 0x398    // uint8: 1 left eye, 2 right eye
+#define CAMERA_EYE_FLAGS 0x399   // uint8: bit 1 = an eye camera (built off-axis for its eye)
+#define CAMERA_IS_EYE 0x02
 
 // Byte patterns, each found exactly once in the 2.5 exe ("??" = any byte).
 // Start of the 3D Mode handler.
@@ -124,6 +142,22 @@ static const char AOB_FLAG_CLEAR_FSR[] = "45 84 DB 74 0A 45 84 E4 75 05 41 B0 01
 // And the one of feature 75: xess && !stereo.
 static const char AOB_FLAG_CLEAR_XESS[] = "45 84 D2 74 0A 45 84 E4 75 05 41 B0 01 EB 03 45 33 C0 BA 4B 00 00 00 E8";
 
+// Start of the camera build, through mov rsi,rcx (the descriptor stays in rsi).
+static const char AOB_CAMERA_BUILD[] =
+    "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 55 41 55 41 56 48 8D A8 58 FF FF FF 48 81 EC 90 01 00 00 "
+    "0F 29 70 D8 48 8B F1";
+// In it, the eye branch: test byte [rsi+399h],2; jz; cmp byte [rsi+398h],1.
+static const char AOB_CAMERA_EYE[] = "F6 86 99 03 00 00 02 0F 84 ?? ?? ?? ?? 80 BE 98 03 00 00 01";
+// In it, the jitter: if [rsi+370h] or [rsi+374h] isn't 0, call the jitter offset matrix with them and the width and
+// height at [rsi+378h] / [rsi+37Ch] (the last E8).
+static const char AOB_CAMERA_JITTER[] =
+    "F3 0F 10 8E 70 03 00 00 41 0F 2E C8 75 0A 44 0F 2E 86 74 03 00 00 74 ?? 8B 86 7C 03 00 00 48 8D 4D D0 "
+    "F3 0F 10 96 74 03 00 00 44 8B 8E 78 03 00 00 89 44 24 20 E8";
+// Start of the jitter offset matrix: x + x, then divided by max(width, 1) (and the same for y and the height).
+static const char AOB_JITTER_OFFSET[] =
+    "0F 28 1D ?? ?? ?? ?? F3 0F 58 D2 0F 28 05 ?? ?? ?? ?? BA 01 00 00 00 39 54 24 28 8B C2 0F 11 01 0F 28 E1 "
+    "0F 47 44 24 28 F3 0F 58 E4";
+
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
 typedef uint8_t (*SetFgFn)(int32_t index, uint8_t mode);
@@ -132,6 +166,7 @@ typedef uint8_t (*DlssgEnabledFn)(uint8_t *sl);
 typedef uint8_t (*FsrFgEnabledFn)(const uint8_t *fsr);
 typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
+typedef int64_t (*CameraBuildFn)(uint8_t *camera);
 
 // Frames whose frame generation feature was put back, for the log.
 typedef struct {
@@ -157,6 +192,8 @@ static struct {
     int offAsked;                 // that handler call asked for Frame Generation Off (its 3D-on branch)
     uint32_t *keptFlags;          // and it was kept: Frame Generation's flags, NULL if not kept
     RestoreCount dlssgCount, fsrCount, xessCount;
+    CameraBuildFn buildOrig;
+    RestoreCount eyeCount;        // eye camera builds given their own width
 } fg;
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
@@ -555,6 +592,49 @@ HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame
     return ret;
 }
 
+// An eye camera of the game's stereo (only stereo views have them).
+static int eye_camera(const uint8_t *camera)
+{
+    return (camera[CAMERA_EYE_FLAGS] & CAMERA_IS_EYE) && (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2);
+}
+
+// Counts an eye build with its own width; logs the first one and then a count once a minute.
+static void count_eye_build(const uint8_t *camera, uint32_t full)
+{
+    LONG64 n = InterlockedIncrement64(&fg.eyeCount.restored);
+    DWORD now = GetTickCount();
+    if (n == 1) {
+        const float *j = (const float *)(camera + CAMERA_JITTER);
+        plugin_log(1, "jitter: first eye camera built with its own width (%s eye, jitter %.3f, %.3f px, width %u -> %u)",
+                   camera[CAMERA_EYE_KIND] == 1 ? "left" : "right", j[0], j[1], (unsigned)full, (unsigned)(full / 2));
+        fg.eyeCount.lastSummary = now;
+    } else if (now - fg.eyeCount.lastSummary >= 60000) { // from several threads: a count can be off by a few, harmless
+        plugin_log(1, "jitter: %lld eye camera builds with their own width (%lld in the last minute)", (long long)n,
+                   (long long)(n - fg.eyeCount.lastRestored));
+        fg.eyeCount.lastSummary = now;
+        fg.eyeCount.lastRestored = n;
+    }
+}
+
+// Builds an eye camera with its jitter turned into a screen offset by its own width (half the side-by-side frame's),
+// then puts the descriptor's width back, so whatever else reads it sees the game's value. A width under 2 means no
+// jitter (the previous frame's camera, rebuilds): left alone.
+HOOK int64_t hook_camera_build(uint8_t *camera)
+{
+    uint32_t *width = camera ? (uint32_t *)(camera + CAMERA_JITTER_SIZE) : NULL;
+    uint32_t full = 0;
+    if (width && eye_camera(camera) && *width >= 2 && sbs_debug()) {
+        full = *width;
+        *width = full / 2;
+    }
+    int64_t r = fg.buildOrig(camera);
+    if (full) {
+        *width = full;
+        count_eye_build(camera, full);
+    }
+    return r;
+}
+
 REGISTER_KEEPING_THUNK(bd3d_thunk_o3d_changed, hook_o3d_changed);
 REGISTER_KEEPING_THUNK(bd3d_thunk_set_fg, hook_set_fg);
 REGISTER_KEEPING_THUNK(bd3d_thunk_dlssg_enabled, hook_dlssg_enabled);
@@ -563,6 +643,8 @@ void bd3d_thunk_o3d_changed(uint8_t *event);
 uint8_t bd3d_thunk_set_fg(int32_t index, uint8_t mode);
 uint8_t bd3d_thunk_dlssg_enabled(uint8_t *sl);
 uint64_t *bd3d_thunk_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
+REGISTER_KEEPING_THUNK(bd3d_thunk_camera_build, hook_camera_build);
+int64_t bd3d_thunk_camera_build(uint8_t *camera);
 
 // ---------------------------------------------------------------- set-up
 
@@ -762,6 +844,53 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
+// The camera build: its start, the eye branch, and the jitter call going to the jitter offset matrix (whose hash
+// resolves to the same place, and whose code doubles the jitter and divides it by the size). Also the SBSDebug var.
+// Returns the camera build, or NULL (logged): then the jitter keeps the game's value.
+static uint8_t *check_jitter(ResolveFn resolve)
+{
+    uint8_t *build = (uint8_t *)resolve(HASH_CAMERA_BUILD);
+    uint8_t *offset = (uint8_t *)resolve(HASH_JITTER_OFFSET);
+    uint8_t *sbs = (uint8_t *)resolve(HASH_VAR_SBSDEBUG);
+    plugin_log(1, "jitter: resolved the camera build %p, the jitter offset matrix %p", (void *)build, (void *)offset);
+    const char *why = NULL;
+    long jitter = -1;
+    if (!in_exe((uintptr_t)build, CAMERA_BUILD_SIZE) || !in_exe((uintptr_t)offset, 64) || !in_exe((uintptr_t)sbs, VAR_VALUE + 1))
+        why = "the camera build, the jitter offset matrix or the SBSDebug var didn't resolve into the game exe";
+    else if (aob_find_unique(build, CAMERA_BUILD_SIZE, AOB_CAMERA_BUILD) != 0) why = "the camera build: start doesn't match";
+    else if (aob_find_unique(build, CAMERA_BUILD_SIZE, AOB_CAMERA_EYE) < 0) why = "the camera build: the eye branch isn't there";
+    else if ((jitter = aob_find_unique(build, CAMERA_BUILD_SIZE, AOB_CAMERA_JITTER)) < 0)
+        why = "the camera build: the jitter call isn't there";
+    else if (call_target(build + jitter + aob_len(AOB_CAMERA_JITTER) - 1) != (uintptr_t)offset)
+        why = "the camera build: the jitter call doesn't go to the jitter offset matrix";
+    else if (aob_find_unique(offset, 64, AOB_JITTER_OFFSET) != 0) why = "the jitter offset matrix doesn't match";
+    else if (count_calls(build, CAMERA_BUILD_SIZE, (uintptr_t)offset) != 1)
+        why = "the camera build calls the jitter offset matrix somewhere else too";
+    else if (!check_sbs_var(sbs)) why = "see above";
+    if (why) {
+        fail(why);
+        plugin_log(1, "jitter: not hooked: in 3D each eye keeps the game's jitter (half a pixel sideways)");
+        return NULL;
+    }
+    fg.sbsVar = sbs;
+    plugin_log(2, "jitter: camera build checked (jitter call at +0x%lX)", jitter + (long)aob_len(AOB_CAMERA_JITTER) - 1);
+    return build;
+}
+
+// The jitter group: checked, then attached on its own. Returns 1 when attached.
+static int attach_jitter(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
+{
+    uint8_t *build = check_jitter(resolve);
+    if (!build) return 0;
+    if (!h->Attach(pluginHandle, build, (void *)bd3d_thunk_camera_build, (void **)&fg.buildOrig)) {
+        plugin_log(1, "jitter: couldn't hook the camera build: in 3D each eye keeps the game's jitter");
+        return 0;
+    }
+    plugin_log(1, "jitter: hook attached; in side by side each eye's jitter is a whole pixel of its own, as the upscaler "
+                  "is told (while [Odyssey3D] SBSDebug is on)");
+    return 1;
+}
+
 // RED4ext's address lookup, or NULL if this RED4ext has none.
 static ResolveFn red4ext_resolver(void)
 {
@@ -775,5 +904,7 @@ int framegen_load(void *pluginHandle, const R4eSdk *sdk)
         return fail("RED4ext didn't pass a hooking interface");
     ResolveFn resolve = red4ext_resolver();
     if (!resolve) return fail("RED4ext.dll has no RED4ext_ResolveAddress");
-    return attach_hooks(pluginHandle, sdk->hooking, resolve);
+    int attached = attach_hooks(pluginHandle, sdk->hooking, resolve);
+    attach_jitter(pluginHandle, sdk->hooking, resolve);
+    return attached;
 }

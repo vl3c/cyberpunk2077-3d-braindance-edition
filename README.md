@@ -71,9 +71,9 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50).
    - Without DLSS frame generation, pick **FSR3** and restart the game: the game's FSR 3.1 frame generation (2x)
      stays on with 3D Mode too (needs RED4ext). We tested it on an NVIDIA card, not yet on AMD.
-   - On an RX 9000, the game's **FSR4** frame generation stays on too, but it's untested: if the picture looks wrong,
-     use FSR3 and please report it. On an Intel Arc, pick **XESS** and restart the game; it's untested too, so the
-     same goes for it.
+   - On an RX 9000, pick **FSR4** and restart the game: its frame generation stays on too, but it's untested. If the
+     picture looks wrong, use FSR3 and please report it. On an Intel Arc, pick **XESS** and restart the game; it's
+     untested too, so the same goes for it.
    - [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work on the
      side-by-side frame, but we haven't tested it (we tested OptiScaler's frame generation only with its DLSS-G
      output, on an RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and
