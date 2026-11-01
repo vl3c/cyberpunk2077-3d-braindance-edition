@@ -9,8 +9,8 @@ Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the
 [*]Makes the game draw the eyes [b]side by side[/b] (a hidden engine option).[/*]
 [*]Makes [b]menus readable[/b]: menus, the map and loading screens are squeezed into each eye.[/*]
 [*]Keeps the game's [b]DLSS[/b], [b]FSR[/b] and [b]XeSS Frame Generation[/b] working in 3D Mode (pick one, then restart the game; [b]DLSS and FSR 3.1 tested, [color=#cc0000]FSR4 and XeSS untested![/color][/b]).[/*]
-[*]Gives your [b]weapon and hands real depth[/b] (the game draws them flat), as much as [b]Weapon Depth[/b] sets. They stay flat with path tracing, RT Lighting or RT shadows on (the game lights them wrongly per eye); RT Reflections keeps the depth.[/*]
-[*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens bend). Change any back if you like.[/*]
+[*]Gives your [b]weapon and hands real depth[/b] (the game draws them flat), as much as [b]Weapon Depth[/b] sets. They stay flat with path tracing, RT Lighting or RT shadows on, because their light and shadows on them would differ between the eyes; RT Reflections keeps the depth.[/*]
+[*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on in the menu (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens bend). Change any back if you like (until the next switch to 3D).[/*]
 [/list]
 [b]It's the game's own stereo renderer, not a depth-map effect.[/b] No game files are modified.
 
@@ -43,7 +43,7 @@ For 2D, turn 3D Mode off. [b]Uninstall:[/b] remove the mod in Vortex ([url=https
 [*][b]Claude[/b] (Anthropic's AI), my co-pilot on this one: reverse engineering the game's 3D interface, writing the stand-in and the RED4ext plugin, and testing it with me.[/*]
 [/list]
 [size=4][b]Troubleshooting[/b][/size]
-Settings and logs are in [i]bin\x64\Braindance3D[/i] (or [i]%LOCALAPPDATA%\Braindance3D[/i] if the game folder is read-only).
+Settings and logs are in [i]bin\x64\Braindance3D[/i] (logs in [i]%LOCALAPPDATA%\Braindance3D[/i] if the game folder is read-only).
 [list]
 [*][b]Crash or no start after installing or a game update:[/b] disable the mod and report your game version.[/*]
 [*][b]3D Mode greyed out:[/b] check RED4ext and read [i]Braindance3D-autosetup.log[/i]. With several monitors, set [i]Monitor = primary[/i] in [i]Braindance3D-Settings.ini[/i] and play on it.[/*]

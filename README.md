@@ -21,12 +21,12 @@ monitor's software. This mod:
 3. Makes **menus readable**. The game draws menus, the map and loading screens as one flat picture split across
    the eyes; the mod squeezes it into each half.
 4. Lets the game's own **DLSS, FSR and XeSS Frame Generation** run in 3D Mode (the game turns it off there, because
-   Samsung's monitor can't use it). FSR4 and XeSS are untested.
+   the 3D monitor it was made for can't use it). FSR4 and XeSS are untested.
 5. Gives the **weapon real depth** (the game draws it flat), as much as **Weapon Depth** sets. It stays flat with
-   path tracing, RT Lighting or RT shadows on, because the game lights it wrongly per eye; RT Reflections keeps the
-   depth.
+   path tracing, RT Lighting or RT shadows on, because their light and shadows on it would differ between the eyes;
+   RT Reflections keeps the depth.
 6. Turns off the **effects that ghost in 3D** (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens
-   bend) when you switch 3D Mode on. Change any back if you like.
+   bend) when you switch 3D Mode on in the menu. Change any back if you like.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
 generation, weapon depth and effects switch hook a few game functions through RED4ext.
@@ -55,8 +55,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 ## Settings
 
 - In game: **Depth** (0.5 to 1.0 suits a headset), **Weapon Depth**, **Motion Comfort** and **Preset**.
-- **More 3D depth:** lower the game's **Field of View** (Graphics settings), e.g. 90 to 80. The world looks
-  life-sized, edges stretch less, and depth feels much stronger.
+- **More 3D depth:** lower the game's **Field of View** (Graphics settings), e.g. 90 to 80 (see step 7
+  below).
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
   multi-monitor PCs) and menu fix (`[Menus] Squeeze = auto` or `off`).
 - Each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice lowers
@@ -94,8 +94,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
 8. **Effects that ghost in 3D** differ between the eyes. When you switch 3D Mode on in the menu, the game turns off
    Chromatic Aberration and Film Grain, and the mod turns off Depth of Field, Lens Flare, Motion Blur and Vignette
-   (Graphics) and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion (Accessibility, Interface). Turn
-   any back on if you like; the next switch to 3D turns them off again.
+   (Graphics) and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion (Accessibility, Interface). Change
+   any back if you like; the next switch to 3D in the menu redoes it.
 
 ## Troubleshooting
 
@@ -110,7 +110,7 @@ Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.l
   first), and OptiScaler's menu and FPS counter always. Turn 3D Mode off to use them; it switches live.
   `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter readable in the left eye.
 - **No DLSS in the game's Frame Generation list with OptiScaler:** set `FGInput = nofg` and `FGOutput = nofg` in
-  `OptiScaler.ini` (see the recommended setup).
+  `OptiScaler.ini`.
 - **Depth inside out:** use your viewer's swap-eyes option.
 
 **Bugs:** report via [GitHub issues](https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues) or the
