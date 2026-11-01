@@ -22,14 +22,11 @@ monitor's software. This mod:
    the eyes; the mod squeezes it into each half.
 4. Lets the game's own **DLSS, FSR and XeSS Frame Generation** run in 3D Mode (the game turns it off there, because
    Samsung's monitor can't use it). FSR4 and XeSS are untested.
-5. Gives the **weapon real depth**. The game draws your arms and gun from one point for both eyes, so they look
-   flat; the mod gives each eye its own view of them, as far apart as **Weapon Depth** sets. With path tracing, RT
-   Lighting, RT Sun Shadows or RT Local Shadows on, the weapon stays flat as in the game, at screen depth (Weapon
-   Depth is ignored then, as if it were 0): the game's ray-traced light and shadows would differ between the eyes on
-   it. RT Reflections keeps its depth.
-6. Turns off the **effects that ghost in 3D** (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD effects) when
-   you switch 3D Mode on in the menu. Nothing is locked (step 8 of the
-   [recommended setup](#recommended-setup-quest-3--virtual-desktop)).
+5. Gives the **weapon real depth** (the game draws it flat), as much as **Weapon Depth** sets. It stays flat with
+   path tracing, RT Lighting or RT shadows on, because the game lights it wrongly per eye; RT Reflections keeps the
+   depth.
+6. Turns off the **effects that ghost in 3D** (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens
+   bend) when you switch 3D Mode on. Change any back if you like.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
 generation, weapon depth and effects switch hook a few game functions through RED4ext.
@@ -38,8 +35,7 @@ generation, weapon depth and effects switch hook a few game functions through RE
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
-  ([No RED4ext](#no-red4ext)), which leaves menus split, frame generation off, the weapon flat and the screen
-  effects as they are in 3D.
+  ([No RED4ext](#no-red4ext)): then only 3D Mode and side by side work.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
@@ -75,23 +71,17 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 2. **Half SBS, matching refresh rates:** in Virtual Desktop, use Half SBS for the desktop screen and stream at
    the virtual monitor's rate (both 72 or both 90 Hz). Faster frames are dropped; a mismatch judders.
 3. **Path tracing with DLSS Performance** (Balanced with headroom). DLSS renders the whole SBS frame at 1920x1080
-   internally, so each eye starts from 960x1080. The weapon then stays flat (see feature 5); for weapon depth, turn
-   path tracing off and use at most RT Reflections.
+   internally, so each eye starts from 960x1080. The weapon then stays flat; for weapon depth, turn path tracing
+   off (RT Reflections alone is fine).
 4. **Frame generation:** pick **DLSS** Frame Generation in the game's graphics settings and restart the game (DLSS-G
    loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50).
-   - Without DLSS frame generation, pick **FSR3** and restart the game: the game's FSR 3.1 frame generation (2x)
-     stays on with 3D Mode too (needs RED4ext). We tested it on an NVIDIA card, not yet on AMD.
-   - On an RX 9000, pick **FSR4** and restart the game: its frame generation stays on too, but it's untested. If the
-     picture looks wrong, use FSR3 and please report it. On an Intel Arc, pick **XESS** and restart the game; it's
-     untested too, so the same goes for it.
-   - [OptiScaler](https://github.com/optiscaler/OptiScaler)'s FSR or XeSS frame generation may work on the
-     side-by-side frame, but we haven't tested it (we tested OptiScaler's frame generation only with its DLSS-G
-     output, on an RTX 50). Install it as `winhttp.dll`, not `winmm.dll` or `version.dll`, which RED4ext and
-     Cyber Engine Tweaks use. Use one frame generation, not both: with OptiScaler's on, keep the game's off.
-   - To use the game's DLSS frame generation with OptiScaler installed (for its upscaling), set `FGInput = nofg` and
-     `FGOutput = nofg` in `OptiScaler.ini`. With `FGOutput = DLSSG`, OptiScaler holds DLSS-G even with
-     `[FrameGen] Enabled = false`, so the game's Streamline skips it and the game drops DLSS from its Frame Generation
-     list.
+   - Otherwise pick **FSR3** (2x, tested on an NVIDIA card), or on an RX 9000 **FSR4**, or on an Intel Arc **XESS**,
+     and restart the game. FSR4 and XeSS are untested: if the picture looks wrong, use FSR3 and please report it.
+   - [OptiScaler](https://github.com/optiscaler/OptiScaler): install it as `winhttp.dll` (RED4ext and Cyber Engine
+     Tweaks use `winmm.dll` and `version.dll`) and use one frame generation, not both. Its FSR or XeSS frame
+     generation is untested in 3D. To keep the game's DLSS frame generation with OptiScaler's upscaling, set
+     `FGInput = nofg` and `FGOutput = nofg` in `OptiScaler.ini` (with `FGOutput = DLSSG` the game drops DLSS from its
+     list).
 5. **Multiplier:** refresh rate / multiplier = the base frame rate needed; input lag follows it. We find 24+ playable
    for a screen you look at; many want 40+. RTX 40 stops at 2x; 3x+ needs RTX 50.
    - RTX 50: 72 Hz 3x needs 24; 90 Hz 3x needs 30; 120 Hz 4x needs 30.
@@ -102,14 +92,10 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 7. **Field of View:** a flat image looks natural only when the game's FOV matches how much of your view the screen
    fills. Too wide, and everything looks small and far away and swells at the edges. With a large Virtual Desktop
    cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
-8. **Effects that ghost in 3D:** some effects are drawn per eye, so the two eyes don't match.
-   - The HUD's lens bend, blur and color fringes ghost in opposite directions in each eye: **Remove HUD Visual
-     Effects** and **Remove HUD Lens Distortion** (Accessibility settings, Interface) fix that. The mod turns both
-     on when you switch 3D Mode on in the menu (needs RED4ext).
-   - **Chromatic Aberration**, **Film Grain**, **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette**
-     differ between the eyes. When you switch 3D Mode on in the menu, the game turns the first two off and the mod
-     the other four (needs RED4ext). Nothing is locked: turn any back on in the Graphics settings if you like it.
-     They go off again the next time you switch 3D Mode on in the menu.
+8. **Effects that ghost in 3D** differ between the eyes. When you switch 3D Mode on in the menu, the game turns off
+   Chromatic Aberration and Film Grain, and the mod turns off Depth of Field, Lens Flare, Motion Blur and Vignette
+   (Graphics) and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion (Accessibility, Interface). Turn
+   any back on if you like; the next switch to 3D turns them off again.
 
 ## Troubleshooting
 
@@ -120,11 +106,9 @@ Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.l
 - **3D Mode greyed out:** check RED4ext and the autosetup log. With several monitors, use `Monitor = primary` and
   the primary monitor.
 - **Menus look wrong:** set `[Menus] Squeeze = off` and report with the hooks log.
-- **Overlays look split in 3D:** the menu fix covers only overlays drawn before it, and only over menus, the map and
-  loading screens. Cyber Engine Tweaks' overlay looks right over a game menu, so pause before opening it, but is split
-  over 3D gameplay. OptiScaler's menu and FPS counter are always split in 3D. To use them, turn 3D Mode off in the
-  game's settings; it switches live, with no restart. `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter
-  readable in the left eye.
+- **Overlays look split in 3D:** Cyber Engine Tweaks' overlay during gameplay (fine over a game menu, so pause
+  first), and OptiScaler's menu and FPS counter always. Turn 3D Mode off to use them; it switches live.
+  `FpsOverlayPos = 0` in `OptiScaler.ini` keeps the counter readable in the left eye.
 - **No DLSS in the game's Frame Generation list with OptiScaler:** set `FGInput = nofg` and `FGOutput = nofg` in
   `OptiScaler.ini` (see the recommended setup).
 - **Depth inside out:** use your viewer's swap-eyes option.

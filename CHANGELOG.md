@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- README and Nexus page: shorter.
+
 ## 0.4.0 (2026-11-01)
 
 - The weapon has real depth in 3D (tested in game). The game draws your arms and gun from one point for both eyes,
