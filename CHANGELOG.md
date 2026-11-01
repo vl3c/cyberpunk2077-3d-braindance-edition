@@ -8,11 +8,11 @@
   puts the eyes back after that rebuild (Weapon Depth sets how far apart). With path tracing on, or ray tracing on
   with RT Lighting or Sun Shadows, it steps aside and the weapon stays flat: the game's ray-traced light and shadows
   on it differed between the eyes (darker in one, shadows falling the other way). RT Local Shadows and RT Reflections
-  keep the weapon's depth. It follows those settings as they change. While the weapon stays flat, Weapon Depth also
-  counts as 0 (the game's flat weapon is otherwise slid apart between the eyes, which looks wrong); the setting keeps
-  its value. The log shows the weapon's eye gap whenever it changes. It reads those settings through lookups the frame
-  generation and screen effects checks find, so if those checks fail the weapon stays flat too. Only while SBSDebug is
-  on; it checks the game's code first, and if that changed, only the weapon stays flat.
+  keep the weapon's depth. It follows those settings as they change. While they keep the weapon flat, Weapon Depth
+  also counts as 0 (the game's flat weapon is otherwise slid apart between the eyes, which looks wrong); the setting
+  keeps its value. The log shows the weapon's eye gap whenever it changes. It reads those settings through lookups
+  the frame generation and screen effects checks find, so if those checks fail the weapon stays flat too. Only while
+  SBSDebug is on; it checks the game's code first, and if that changed, only the weapon stays flat.
 - Switching 3D Mode on in the menu now also turns Depth of Field, Lens Flare, Motion Blur and Vignette off (tested
   in game). It also turns on Remove HUD Visual Effects and Remove HUD Lens Distortion (Accessibility, Interface),
   whose blur and lens bend ghost on the HUD. They all differ between the eyes in side by side. The game
