@@ -27,15 +27,19 @@ monitor's software. This mod:
    Lighting, RT Sun Shadows or RT Local Shadows on, the weapon stays flat as in the game, at screen depth (Weapon
    Depth is ignored then, as if it were 0): the game's ray-traced light and shadows would differ between the eyes on
    it. RT Reflections keeps its depth.
+6. Turns off the **effects that ghost in 3D** (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD effects) when
+   you switch 3D Mode on in the menu. Nothing is locked (step 8 of the
+   [recommended setup](#recommended-setup-quest-3--virtual-desktop)).
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
-generation and weapon depth hook a few game functions through RED4ext.
+generation, weapon depth and effects switch hook a few game functions through RED4ext.
 
 ## Requirements
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
-  ([No RED4ext](#no-red4ext)), which leaves menus split, frame generation off and the weapon flat in 3D.
+  ([No RED4ext](#no-red4ext)), which leaves menus split, frame generation off, the weapon flat and the screen
+  effects as they are in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
@@ -71,7 +75,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 2. **Half SBS, matching refresh rates:** in Virtual Desktop, use Half SBS for the desktop screen and stream at
    the virtual monitor's rate (both 72 or both 90 Hz). Faster frames are dropped; a mismatch judders.
 3. **Path tracing with DLSS Performance** (Balanced with headroom). DLSS renders the whole SBS frame at 1920x1080
-   internally, so each eye starts from 960x1080.
+   internally, so each eye starts from 960x1080. The weapon then stays flat (see feature 5); for weapon depth, turn
+   path tracing off and use at most RT Reflections.
 4. **Frame generation:** pick **DLSS** Frame Generation in the game's graphics settings and restart the game (DLSS-G
    loads only at start). It stays on with 3D Mode (needs RED4ext and an RTX 40 or 50).
    - Without DLSS frame generation, pick **FSR3** and restart the game: the game's FSR 3.1 frame generation (2x)
@@ -103,8 +108,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
      on when you switch 3D Mode on in the menu (needs RED4ext).
    - **Chromatic Aberration**, **Film Grain**, **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette**
      differ between the eyes. When you switch 3D Mode on in the menu, the game turns the first two off and the mod
-     the other four (needs RED4ext). Nothing is locked here either: turn any
-     back on in the Graphics settings if you like it. The game may turn them off again the next time it applies 3D Mode.
+     the other four (needs RED4ext). Nothing is locked: turn any back on in the Graphics settings if you like it.
+     They go off again the next time you switch 3D Mode on in the menu.
 
 ## Troubleshooting
 

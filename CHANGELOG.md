@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-01)
 
 - The weapon has real depth in 3D (tested in game). The game draws your arms and gun from one point for both eyes,
   so they looked flat; a new RED4ext hook gives each eye its own view, as far apart as Weapon Depth sets.
@@ -11,19 +11,17 @@
   keeps the depth.
 - Switching 3D Mode on in the menu also turns off Depth of Field, Lens Flare, Motion Blur and Vignette, and turns on
   Remove HUD Visual Effects and Remove HUD Lens Distortion (tested in game). Why: they differ between the eyes in side
-  by side. Nothing is locked: you can change any back, though the game may switch them again when it next applies
-  3D Mode.
+  by side. Nothing is locked: change any back if you like; they're switched again the next time you switch 3D Mode
+  on in the menu.
 - Upscaler jitter stays as the game has it. Why: matching it to each eye's half (found by the Cyberpunk VR port) made
   foliage and NPCs shimmer more in game.
 - Weapon depth and the effects switch work only while SBSDebug is on and check the game's code first: if a game
   update changed it, that part turns itself off (the weapon stays flat, the effects stay as they are). The log names
   every change they make.
-- README: which HUD and screen effects ghost in 3D, and the game settings that turn them off.
-- README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
-- Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.
-- Nexus page: says in red that FSR4 and XeSS frame generation are untested (DLSS and FSR 3.1 are tested), lists Field of View among the depth settings, and drops two lines.
-- README and Nexus page: the Field of View slider is in the Graphics settings, not Gameplay.
-- Technical notes: the RED4ext plugin keeps DLSS, FSR or XeSS frame generation in 3D Mode, not only DLSS.
+- README and Nexus page: weapon depth and the effects switch in the feature lists, the effects that ghost in 3D and
+  how to turn them off, FSR4 on an RX 9000 (pick it and restart the game), FSR4 and XeSS frame generation marked
+  untested, and the Field of View slider is in the Graphics settings.
+- Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
 
 ## 0.3.1 (2026-10-31)
 
