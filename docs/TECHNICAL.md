@@ -201,12 +201,13 @@ frame, but each eye fills only half of it. So each eye's picture moves half a pi
 a whole one (vertical is right). The Cyberpunk VR port found and measured this
 ([docs/engine-stereo-plan.md](https://github.com/dariulone/cyberpunk-vr-port/blob/main/docs/engine-stereo-plan.md),
 "Lamp flicker with DLSS only"). It fixed it on the DLSS side for its own per-eye DLSS; its test of this change with
-TAA and FSR 2.1 on still frames showed no gain (docs/engine-stereo-framegen-foveated-20261024.md).
+TAA and FSR 2.1 on still frames showed no gain
+([docs/engine-stereo-framegen-foveated-20261024.md](https://github.com/dariulone/cyberpunk-vr-port/blob/main/docs/engine-stereo-framegen-foveated-20261024.md)).
 
 **The mod leaves this as the game has it.** A test build hooked the camera build and handed each eye camera half the
-width for the build, so each eye moved the whole pixel the upscaler is told. In game (DLSS Performance, path tracing
-and Ray Reconstruction, frame generation on) trees, foliage and NPCs shimmered clearly more, most at lower
-resolutions; with the game's own jitter the picture is stable. So the half-pixel offset isn't worth correcting, at
+width for the build, so each eye moved the whole pixel the upscaler is told. In game (4K side by side, DLSS Performance,
+path tracing and Ray Reconstruction, DLSS frame generation 2x) trees, foliage and NPCs shimmered clearly more, the
+tester saw it most at lower render resolutions; with the game's own jitter the picture is stable. So the half-pixel offset isn't worth correcting, at
 least for the game's DLSS on the side-by-side frame.
 
 ## Building and testing

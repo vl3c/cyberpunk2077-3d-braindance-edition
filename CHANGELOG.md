@@ -4,10 +4,9 @@
 
 - Technical notes: the game's upscaler jitter in 3D, and why the mod leaves it as it is. Each eye's picture moves only
   half as far sideways as DLSS is told (found by the Cyberpunk VR port), but matching the two made foliage and NPCs
-  shimmer clearly more in game (DLSS Performance with path tracing), and the stock picture is stable.
+  shimmer clearly more in game (DLSS Performance with path tracing and Ray Reconstruction), and the stock picture is stable.
 - README: which HUD and screen effects ghost in 3D, and the game settings that turn them off.
 - README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
-
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.
 - Nexus page: says in red that FSR4 and XeSS frame generation are untested (DLSS and FSR 3.1 are tested), lists Field of View among the depth settings, and drops two lines.
 - README and Nexus page: the Field of View slider is in the Graphics settings, not Gameplay.
