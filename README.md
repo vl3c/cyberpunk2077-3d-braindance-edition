@@ -34,7 +34,8 @@ generation and weapon depth hook a few game functions through RED4ext.
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
-  ([No RED4ext](#no-red4ext)), which leaves menus split, frame generation off and the weapon flat in 3D.
+  ([No RED4ext](#no-red4ext)), which leaves menus split, frame generation off, the weapon flat and the screen
+  effects as they are in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);

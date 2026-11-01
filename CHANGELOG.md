@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-01)
 
 - The weapon has real depth in 3D with ray tracing off (tested in game, ray tracing check and Weapon Depth
   counting as 0 under ray tracing included). The game places the first-person camera's two eyes left and right, then
@@ -21,6 +21,8 @@
   own two off (a switch to 3D in the menu, and possibly other menu events the game treats the same way). Not at game
   start, only while SBSDebug is on, and only if the game's code matches what the mod expects (else just the game's two
   go off). The log lists which were turned off.
+- Nexus page and README: weapon depth and the effects switch in the feature lists; without RED4ext the weapon stays
+  flat and the effects stay as they are.
 - Technical notes: the game's upscaler jitter in 3D, and why the mod leaves it as it is. Each eye's picture moves only
   half as far sideways as DLSS is told (found by the Cyberpunk VR port), but matching the two made foliage and NPCs
   shimmer clearly more in game (DLSS Performance with path tracing and Ray Reconstruction), and the stock picture is
