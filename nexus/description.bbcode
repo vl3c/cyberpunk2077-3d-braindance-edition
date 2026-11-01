@@ -3,14 +3,14 @@ Play Cyberpunk 2077 in [b]real stereoscopic 3D[/b], side by side for any [b]3D d
 
 [b]Not VR: no head tracking, no motion controls![/b] You look at a 3D screen.
 
-Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the world, the HUD and your weapon, but only when that monitor's software is installed. This mod:
+Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the world and the HUD, but only when that monitor's software is installed. This mod:
 [list=1]
 [*]Provides a small stand-in for that software, so [b]3D Mode[/b] unlocks on a normal monitor.[/*]
 [*]Turns on a hidden engine option so the game draws the eyes [b]side by side[/b].[/*]
 [*]Makes [b]menus readable[/b]: menus, the map and loading screens are squeezed into each eye.[/*]
 [*]Keeps the game's own [b]DLSS Frame Generation[/b] (RTX 40 or 50) and [b]FSR[/b] or [b]XeSS Frame Generation[/b] working in 3D Mode (pick one, then restart the game; [b]DLSS and FSR 3.1 FG have been tested. [color=#cc0000]FSR4 and XeSS untested![/color][/b]).[/*]
 [*]Gives your [b]weapon and hands real depth[/b] (the game draws them flat), as much as [b]Weapon Depth[/b] sets. With ray tracing or path tracing on they stay flat, as in the game: its ray-traced light and shadows on them would differ between the eyes.[/*]
-[*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on: Depth of Field, Lens Flare, Motion Blur and Vignette (the game itself turns off Chromatic Aberration and Film Grain), and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion. Nothing is locked: turn any back on if you like it.[/*]
+[*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on in the menu: Depth of Field, Lens Flare, Motion Blur and Vignette (the game itself turns off Chromatic Aberration and Film Grain), and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion. Nothing is locked: turn any back on if you like it.[/*]
 [/list]
 [b]It's the game's own stereo renderer, not a depth-map effect.[/b]
 
@@ -37,7 +37,7 @@ To play in 2D, turn 3D Mode off in the game Video settings.
 [size=4][b]Requirements[/b][/size]
 [list]
 [*]Cyberpunk 2077 [b]2.5[/b] on Windows 10 or 11. Tested on Epic; Steam and GOG untested.[/*]
-[*][url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url]. Without it, use the setup script from the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext]GitHub download[/url] (menus then stay split, frame generation stays off in 3D, and the weapon stays flat).[/*]
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url]. Without it, use the setup script from the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext]GitHub download[/url] (menus then stay split, frame generation stays off in 3D, the weapon stays flat and the screen effects stay as they are).[/*]
 [*]A 3D / VR headset with [b]half-SBS support[/b], or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with [url=https://www.vrdesktop.net/]Virtual Desktop[/url].[/*]
 [*][b]Frame generation in 3D[/b]: DLSS Frame Generation on an RTX 40 (up to 2x) or RTX 50 (up to 6x), or FSR3 Frame Generation (2x; tested on an NVIDIA card, not yet on AMD), picked in the game's settings. FSR4 Frame Generation (RX 9000) and XeSS Frame Generation (Intel Arc) are allowed too, but untested: please report how they look.[/*]
 [*]Own a glasses-free 3D monitor the game supports? Don't install this mod: it switches the game to side-by-side output.[/*]
@@ -53,7 +53,7 @@ Settings and logs are in [i]bin\x64\Braindance3D[/i] (logs go to [i]%LOCALAPPDAT
 [list]
 [*][b]Crash or no start after installing or a game update:[/b] disable the mod and report your game version.[/*]
 [*][b]3D Mode greyed out:[/b] check RED4ext and read [i]Braindance3D-autosetup.log[/i]. With several monitors, set [i]Monitor = primary[/i] in [i]Braindance3D-Settings.ini[/i] and play on it.[/*]
-[*][b]Menus look wrong:[/b] set [i]Squeeze = off[/i] under [i][Menus][/i] and report with [i]Braindance3D-hooks.log[/i].[/*]
+[*][b]Menus look wrong:[/b] set [i]Squeeze = off[/i] in the [i]Menus[/i] section of the settings file and report with [i]Braindance3D-hooks.log[/i].[/*]
 [*][b]No DLSS in the game's Frame Generation list with OptiScaler:[/b] set [i]FGInput = nofg[/i] and [i]FGOutput = nofg[/i] in [i]OptiScaler.ini[/i] (with [i]FGOutput = DLSSG[/i], OptiScaler holds DLSS-G even with [i]Enabled = false[/i], so the game drops DLSS from its list).[/*]
 [*][b]Depth inside out:[/b] use your viewer's swap-eyes option.[/*]
 [/list]

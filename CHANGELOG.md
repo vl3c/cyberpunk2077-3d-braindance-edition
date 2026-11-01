@@ -22,7 +22,7 @@
   start, only while SBSDebug is on, and only if the game's code matches what the mod expects (else just the game's two
   go off). The log lists which were turned off.
 - Nexus page and README: weapon depth and the effects switch in the feature lists; without RED4ext the weapon stays
-  flat and the effects stay as they are.
+  flat and the effects stay as they are. The Nexus intro no longer says the game's 3D Mode gives the weapon depth.
 - Technical notes: the game's upscaler jitter in 3D, and why the mod leaves it as it is. Each eye's picture moves only
   half as far sideways as DLSS is told (found by the Cyberpunk VR port), but matching the two made foliage and NPCs
   shimmer clearly more in game (DLSS Performance with path tracing and Ray Reconstruction), and the stock picture is

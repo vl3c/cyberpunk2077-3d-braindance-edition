@@ -26,9 +26,13 @@ monitor's software. This mod:
    eyes, so they look flat; the mod gives each eye its own view of them, as far apart as **Weapon Depth** sets. With
    any ray tracing or path tracing on, the weapon stays flat as in the game, at screen depth (Weapon Depth is ignored
    then, as if it were 0): the game's ray-traced light and shadows would differ between the eyes on it.
+6. Turns off the **effects that ghost in 3D** when you switch 3D Mode on in the menu: Depth of Field, Lens Flare,
+   Motion Blur and Vignette (the game itself turns off Chromatic Aberration and Film Grain), and turns on Remove HUD
+   Visual Effects and Remove HUD Lens Distortion. Nothing is locked (see step 8 of the
+   [recommended setup](#recommended-setup-quest-3--virtual-desktop)).
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
-generation and weapon depth hook a few game functions through RED4ext.
+generation, weapon depth and effects switch hook a few game functions through RED4ext.
 
 ## Requirements
 
@@ -103,8 +107,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
      on when you switch 3D Mode on in the menu (needs RED4ext).
    - **Chromatic Aberration**, **Film Grain**, **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette**
      differ between the eyes. When you switch 3D Mode on in the menu, the game turns the first two off and the mod
-     the other four (needs RED4ext). Nothing is locked here either: turn any
-     back on in the Graphics settings if you like it. The game may turn them off again the next time it applies 3D Mode.
+     the other four (needs RED4ext). Nothing is locked: turn any back on in the Graphics settings if you like it.
+     The game may turn them off again the next time it applies 3D Mode.
 
 ## Troubleshooting
 
