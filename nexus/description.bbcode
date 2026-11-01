@@ -1,45 +1,39 @@
 [size=4][b]Description[/b][/size]
-Play Cyberpunk 2077 in [b]real stereoscopic 3D[/b], side by side for any [b]3D display / VR headset in half SBS mode[/b], on a big virtual screen with real depth. [b]With DLSS and FSR Frame Generation in 3D[/b] - up to 6x the frames on RTX 50, for smooth 3D even with path tracing and DLSS 5 on.
+Play Cyberpunk 2077 in [b]real stereoscopic 3D[/b], side by side for any [b]3D display / VR headset in half SBS mode[/b], on a big virtual screen. [b]With DLSS and FSR Frame Generation in 3D[/b] - up to 6x the frames on RTX 50, for smooth 3D even with path tracing and DLSS 5 on.
 
 [b]Not VR: no head tracking, no motion controls![/b] You look at a 3D screen.
 
-Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the world and the HUD, but only when that monitor's software is installed. This mod:
+Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the world and the HUD, but only with that monitor's software installed. This mod:
 [list=1]
 [*]Provides a small stand-in for that software, so [b]3D Mode[/b] unlocks on a normal monitor.[/*]
-[*]Turns on a hidden engine option so the game draws the eyes [b]side by side[/b].[/*]
+[*]Makes the game draw the eyes [b]side by side[/b] (a hidden engine option).[/*]
 [*]Makes [b]menus readable[/b]: menus, the map and loading screens are squeezed into each eye.[/*]
-[*]Keeps the game's own [b]DLSS Frame Generation[/b] (RTX 40 or 50) and [b]FSR[/b] or [b]XeSS Frame Generation[/b] working in 3D Mode (pick one, then restart the game; [b]DLSS and FSR 3.1 FG have been tested. [color=#cc0000]FSR4 and XeSS untested![/color][/b]).[/*]
-[*]Gives your [b]weapon and hands real depth[/b] (the game draws them flat), as much as [b]Weapon Depth[/b] sets. With path tracing, RT Lighting, RT Sun Shadows or RT Local Shadows on they stay flat, as in the game, because its ray-traced light and shadows on them would differ between the eyes. RT Reflections keeps the depth.[/*]
-[*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on in the menu: Depth of Field, Lens Flare, Motion Blur and Vignette (the game itself turns off Chromatic Aberration and Film Grain), and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion. Nothing is locked: turn any back on if you like it (until the next switch to 3D).[/*]
+[*]Keeps the game's [b]DLSS[/b], [b]FSR[/b] and [b]XeSS Frame Generation[/b] working in 3D Mode (pick one, then restart the game; [b]DLSS and FSR 3.1 tested, [color=#cc0000]FSR4 and XeSS untested![/color][/b]).[/*]
+[*]Gives your [b]weapon and hands real depth[/b] (the game draws them flat), as much as [b]Weapon Depth[/b] sets. They stay flat with path tracing, RT Lighting or RT shadows on, because their light and shadows on them would differ between the eyes; RT Reflections keeps the depth.[/*]
+[*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on in the menu (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens bend). Change any back if you like (until the next switch to 3D).[/*]
 [/list]
-[b]It's the game's own stereo renderer, not a depth-map effect.[/b]
+[b]It's the game's own stereo renderer, not a depth-map effect.[/b] No game files are modified.
 
 [size=4][b]Installation instructions[/b][/size]
 [list=1]
-[*]Install [url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url].[/*]
-[*]Install this mod with Vortex (or extract it into the game folder with [i]bin[/i], [i]engine[/i] and [i]red4ext[/i]).[/*]
-[*]In the game's video settings, turn on [b]3D Mode[/b]. You now see two images side by side.[/*]
-[*]In your headset, show the PC screen in [b]half side-by-side[/b] 3D (in Virtual Desktop: the desktop screen's 3D mode). The game must run on the monitor the headset shows.[/*]
+[*]Install [url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url], then this mod with Vortex (or extract it into the game folder with [i]bin[/i], [i]engine[/i] and [i]red4ext[/i]).[/*]
+[*]Turn on [b]3D Mode[/b] in the game's video settings. You now see two images side by side.[/*]
+[*]In your headset, show the PC screen in [b]half side-by-side[/b] 3D (Virtual Desktop: the desktop screen's 3D mode). The game must run on the monitor the headset shows.[/*]
 [/list]
-To play in 2D, turn 3D Mode off in the game Video settings.
-[b]Uninstall:[/b] remove the mod in Vortex ([url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext-uninstall-and-other-details]details[/url]).
+For 2D, turn 3D Mode off. [b]Uninstall:[/b] remove the mod in Vortex ([url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext-uninstall-and-other-details]details[/url]).
 
-[size=4][b]Main features[/b][/size]
-[list]
-[*]Depth tuned with the game's own settings: [b]Preset[/b], [b]Depth[/b], [b]Weapon Depth[/b], [b]Motion Comfort[/b] and [b]Field of View[/b]. Depth 0.5 to 1.0 works well in a headset.[/*]
-[*][b]No game files modified.[/b] The game loads the stand-in DLL through its own 3D support; the menu fix, frame generation, weapon depth and effects switch hook a few game functions through RED4ext.[/*]
-[/list]
 [size=4][b]Good to know[/b][/size]
 [list]
-[*]Each eye gets half the horizontal resolution, so [b]higher resolution looks sharper[/b]. Every frame renders twice, so expect a lower frame rate than in 2D. I recommend a [b]4K (virtual) monitor in Virtual Desktop[/b] and the game's DLSS Frame Generation, which this mod keeps working in 3D Mode (pick it, then restart the game): see the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#recommended-setup-quest-3--virtual-desktop]recommended setup[/url].[/*]
-[*][b]More 3D depth:[/b] change the game's Field of View (Graphics settings) until the world looks life-sized, edges stretch less, and depth feels stronger.[/*]
+[*]Tune depth with the game's [b]Preset[/b], [b]Depth[/b] (0.5 to 1.0 suits a headset), [b]Weapon Depth[/b] and [b]Motion Comfort[/b].[/*]
+[*][b]More depth:[/b] lower the game's Field of View (Graphics settings) until the world looks life-sized.[/*]
+[*]Each eye gets half the horizontal resolution and every frame renders twice: use a [b]4K (virtual) monitor[/b] and frame generation. See the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#recommended-setup-quest-3--virtual-desktop]recommended setup[/url].[/*]
 [/list]
 [size=4][b]Requirements[/b][/size]
 [list]
 [*]Cyberpunk 2077 [b]2.5[/b] on Windows 10 or 11. Tested on Epic; Steam and GOG untested.[/*]
-[*][url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url]. Without it, use the setup script from the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext]GitHub download[/url] (menus then stay split, frame generation stays off in 3D, the weapon stays flat and the screen effects stay as they are).[/*]
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url]. Without it, use the setup script from the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext]GitHub download[/url] (then only 3D Mode and side by side work).[/*]
 [*]A 3D / VR headset with [b]half-SBS support[/b], or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with [url=https://www.vrdesktop.net/]Virtual Desktop[/url].[/*]
-[*][b]Frame generation in 3D[/b]: DLSS Frame Generation on an RTX 40 (up to 2x) or RTX 50 (up to 6x), or FSR3 Frame Generation (2x; tested on an NVIDIA card, not yet on AMD), picked in the game's settings. FSR4 Frame Generation (RX 9000) and XeSS Frame Generation (Intel Arc) are allowed too, but untested: please report how they look.[/*]
+[*][b]Frame generation in 3D[/b]: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), or FSR3 (2x; tested on an NVIDIA card, not yet on AMD). FSR4 (RX 9000) and XeSS (Intel Arc) are untested: please report how they look.[/*]
 [*]Own a glasses-free 3D monitor the game supports? Don't install this mod: it switches the game to side-by-side output.[/*]
 [/list]
 [size=4][b]Shout outs[/b][/size]
@@ -49,19 +43,18 @@ To play in 2D, turn 3D Mode off in the game Video settings.
 [*][b]Claude[/b] (Anthropic's AI), my co-pilot on this one: reverse engineering the game's 3D interface, writing the stand-in and the RED4ext plugin, and testing it with me.[/*]
 [/list]
 [size=4][b]Troubleshooting[/b][/size]
-Settings and logs are in [i]bin\x64\Braindance3D[/i] (logs go to [i]%LOCALAPPDATA%\Braindance3D[/i] if the game folder is read-only).
+Settings and logs are in [i]bin\x64\Braindance3D[/i] (logs in [i]%LOCALAPPDATA%\Braindance3D[/i] if the game folder is read-only).
 [list]
 [*][b]Crash or no start after installing or a game update:[/b] disable the mod and report your game version.[/*]
 [*][b]3D Mode greyed out:[/b] check RED4ext and read [i]Braindance3D-autosetup.log[/i]. With several monitors, set [i]Monitor = primary[/i] in [i]Braindance3D-Settings.ini[/i] and play on it.[/*]
 [*][b]Menus look wrong:[/b] set [i]Squeeze = off[/i] in the [i]Menus[/i] section of the settings file and report with [i]Braindance3D-hooks.log[/i].[/*]
-[*][b]No DLSS in the game's Frame Generation list with OptiScaler:[/b] set [i]FGInput = nofg[/i] and [i]FGOutput = nofg[/i] in [i]OptiScaler.ini[/i] (with [i]FGOutput = DLSSG[/i], OptiScaler holds DLSS-G even with [i]Enabled = false[/i], so the game drops DLSS from its list).[/*]
+[*][b]No DLSS in the Frame Generation list with OptiScaler:[/b] set [i]FGInput = nofg[/i] and [i]FGOutput = nofg[/i] in [i]OptiScaler.ini[/i].[/*]
 [*][b]Depth inside out:[/b] use your viewer's swap-eyes option.[/*]
 [/list]
 [size=4][b]Known limitations[/b][/size]
 [list]
-[*]Overlays drawn over the game look split in 3D (fine in 2D): Cyber Engine Tweaks' overlay during gameplay (fine over a game menu, so pause before opening it), and OptiScaler's own menu and FPS counter always. To use them, turn 3D Mode off in the game's settings; it switches live, with no restart. [i]FpsOverlayPos = 0[/i] keeps OptiScaler's counter readable in the left eye.[/*]
-[*]Mod Organizer 2 isn't supported yet.[/*]
-[*]Untested: multi-monitor setups, viewers other than Virtual Desktop.[/*]
+[*]Overlays drawn over the game look split in 3D: Cyber Engine Tweaks' overlay during gameplay (fine over a game menu, so pause first), and OptiScaler's menu and FPS counter always. Turn 3D Mode off to use them; it switches live. [i]FpsOverlayPos = 0[/i] keeps OptiScaler's counter readable in the left eye.[/*]
+[*]Mod Organizer 2 isn't supported yet. Untested: multi-monitor setups, viewers other than Virtual Desktop.[/*]
 [/list]
 [size=4][b]Bugs[/b][/size]
 Use the Bugs tab or [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues]GitHub issues[/url]. Include game version and store, GPU, how you view the 3D, and the logs ([i]braindance3d.log[/i], [i]Braindance3D-autosetup.log[/i], [i]Braindance3D-hooks.log[/i]) with [i]Level = 2[/i] in the settings file. Logs contain folder paths, which can include your Windows user name.
