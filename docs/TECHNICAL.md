@@ -240,12 +240,12 @@ stop the game on a name they don't know, so only names the 2.5 game has are aske
 those checks failed at load, the weapon stays flat (logged at load). Each change is logged (`gun: ray tracing is on
 (...)` / `is off`).
 
-While ray tracing is on, the plugin also hooks the weapon separation getter (`RVA 0x22849D0`: under the stereo
+The plugin also hooks the weapon separation getter (`RVA 0x22849D0`: under the stereo
 settings lock it returns the float at `+0x57C`, Weapon Depth already in metres, `0.017` per unit). The view producer
 reads it once a frame for the first-person plane: the eye cameras sit half of it left and right of the centre
 (`RVA 0x206EC30`), and the camera build's off-axis shift uses it too (`+0x3C0`). Above 0 the game's flat weapon is
-only slid apart between the eyes, which looks wrong, so the hook answers 0 then, as if Weapon Depth were 0, without
-touching the setting: with ray tracing off the slider works again. If the getter's check fails, the flat weapon keeps
+only slid apart between the eyes, which looks wrong, so while ray tracing is on (or its settings weren't found) and
+SBSDebug is on, the hook answers 0, as if Weapon Depth were 0, without touching the setting: with ray tracing off the slider works again. If the getter's check fails, the flat weapon keeps
 the game's Weapon Depth shift under ray tracing. If CDPR fixes the ray-traced first-person lighting in stereo, both
 the step-aside and this can go.
 

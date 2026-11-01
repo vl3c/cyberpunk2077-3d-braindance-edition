@@ -1199,8 +1199,10 @@ __asm__(".text\n.globl ft_call_thunk\nft_call_thunk:\n"
         "movq %xmm4, 88(%rdi)\nmovq %xmm5, 96(%rdi)\n"
         "add $0x20, %rsp\npop %rsi\npop %rbx\npop %rdi\nret\n");
 
+static float fake_weapon_sep(void *settings) { (void)settings; return 0.017f; } // Weapon Depth 1.0
+
 // Returns rax.
-static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
+static uint64_t check_thunk_registers(void *thunk, uint64_t rdxValue, uint64_t *xmm0)
 {
     uint64_t out[13] = { 0 };
     ft_call_thunk(thunk, out, rdxValue);
@@ -1209,8 +1211,25 @@ static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
                           0x8888888888888888ull, 0x9999999999999999ull, 0xAAAAAAAAAAAAAAAAull,
                           0xBBBBBBBBBBBBBBBBull, 0xCCCCCCCCCCCCCCCCull };
     for (int i = 0; i < 13; i++)
-        if (i != 6) CHECK_MSG(out[i] == want[i], "register %d changed to %llx", i, (unsigned long long)out[i]);
+        if (i != 6 && !(i == 7 && xmm0))
+            CHECK_MSG(out[i] == want[i], "register %d changed to %llx", i, (unsigned long long)out[i]);
+    if (xmm0) *xmm0 = out[7];
     return out[6];
+}
+
+static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
+{
+    return check_thunk_registers(thunk, rdxValue, NULL);
+}
+
+// The same for a thunk whose hook returns a float: xmm0 (register 7) is its answer.
+static float check_float_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
+{
+    uint64_t xmm0 = 0;
+    check_thunk_registers(thunk, rdxValue, &xmm0);
+    float f;
+    memcpy(&f, &xmm0, sizeof(f));
+    return f;
 }
 
 TEST(thunks_keep_the_callers_registers_and_return_the_result)
@@ -1238,6 +1257,9 @@ TEST(thunks_keep_the_callers_registers_and_return_the_result)
     // The plane override (rcx is a test value: the fake original doesn't read the override): the eyes are put back.
     CHECK(check_thunk_keeps_registers((void *)bd3d_thunk_plane_override, (uint64_t)(uintptr_t)f_centre) == 0x5678);
     CHECK_EQ_INT(f_builds, 2);
+    // The weapon separation getter (rcx is a test value: the fake original doesn't read it).
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(check_float_thunk_keeps_registers((void *)bd3d_thunk_weapon_sep, 0x2222222222222222ull) == 0.017f);
 }
 
 // ===================================================================================== one function at a time
@@ -1990,7 +2012,6 @@ TEST(without_eye_cameras_or_sbs_debug_the_settings_arent_read)
     CHECK(strstr(ft_log, "gun: the ray tracing settings") == NULL);
 }
 
-static float fake_weapon_sep(void *settings) { (void)settings; return 0.017f; } // Weapon Depth 1.0
 
 TEST(with_ray_tracing_on_the_weapon_separation_is_0)
 {
@@ -2006,13 +2027,37 @@ TEST(with_ray_tracing_on_the_weapon_separation_is_0)
     set_sbs_debug(1);
     f_rtBools[2][BOOL_SETTING_VALUE] = 0;
     CHECK(hook_weapon_sep(NULL) == 0.017f);
-    const char *on = strstr(ft_log, "gun: ray tracing is on: the weapon's eye gap is 0 (as Weapon Depth 0)");
+    const char *on = strstr(ft_log, "gun: ray tracing is on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)");
     REQUIRE(on != NULL);
     CHECK(strstr(on + 10, "gun: ray tracing is on: the weapon's eye gap") == NULL); // each change logged once
     CHECK(strstr(ft_log, "gun: the weapon's eye gap follows Weapon Depth again") != NULL);
-    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars)); // settings not found: the game's value
-    rt_on(RT_PATH);
-    CHECK(hook_weapon_sep(NULL) == 0.017f);
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars)); // settings not found: the weapon is flat, so at screen depth
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+}
+
+TEST(the_eye_gap_is_logged_as_a_distance_when_it_changes)
+{
+    ft_begin();
+    fg.gapTenths = 0; // nothing logged yet
+    EyePlaces kept;
+    memset(&kept, 0, sizeof(kept));
+    float *l = (float *)kept.world[0], *r = (float *)kept.world[1];
+    r[0] = 0.017f; // 17 mm along x
+    log_gun_gap(&kept);
+    const char *after = strstr(ft_log, "gun: the weapon's eye cameras are now 17.0 mm apart");
+    REQUIRE(after != NULL);
+    after += strlen("gun: the weapon's eye cameras are now 17.0 mm apart");
+    r[0] = 0.0f, r[1] = 0.017f; // turned 90 degrees: the same gap, nothing logged
+    log_gun_gap(&kept);
+    l[0] = 0.0001f; // 0.1 mm: under the threshold
+    log_gun_gap(&kept);
+    CHECK(strstr(after, "eye cameras are now") == NULL);
+    r[1] = 0.005f; // Weapon Depth changed, but within a second of the last line
+    log_gun_gap(&kept);
+    CHECK(strstr(after, "eye cameras are now") == NULL);
+    fg.gapTick = GetTickCount() - 1500; // a second and a half later
+    log_gun_gap(&kept);
+    CHECK(strstr(after, "gun: the weapon's eye cameras are now 5.0 mm apart") != NULL);
 }
 
 TEST(the_weapon_separation_thunk_returns_the_hooks_answer)

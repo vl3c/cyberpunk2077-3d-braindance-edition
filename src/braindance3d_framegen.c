@@ -256,6 +256,8 @@ static struct {
     RestoreCount gunCount;        // plane rebuilds whose eye cameras were put back
     WeaponSepFn sepOrig;          // the weapon separation getter (NULL if not hooked)
     volatile LONG sepZeroed;      //   it last answered 0 for ray tracing (for the log)
+    volatile LONG gapTenths;      // the eye gap last logged, in 0.1 mm, plus 1 (0: none yet)
+    volatile DWORD gapTick;       //   and when
     uint8_t *volatile rtVars[6];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
     int32_t rtLightingOff;        //   RT Lighting's index of Off
     volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
@@ -916,38 +918,55 @@ static void count_gun(const EyePlaces *kept)
     }
 }
 
-// Weapon Depth as the view producer reads it each frame. While ray tracing is on (in side by side) it answers 0, as if
-// Weapon Depth were 0: the game's flat weapon then sits at screen depth in both eyes, with no shift between them
+// Weapon Depth as the view producer reads it each frame. While ray tracing is on (in side by side, or the ray tracing
+// settings weren't found, when the gun hook keeps the weapon flat as well) it answers 0, as if Weapon Depth were 0: the game's flat weapon then sits at screen depth in both eyes, with no shift between them
 // (above 0 the flat picture is only slid apart, which looks wrong). The setting itself keeps its value, so with ray
 // tracing off the weapon gets its depth from it again.
 HOOK float hook_weapon_sep(void *settings)
 {
     int found = 0;
-    const char *on = sbs_debug() ? ray_tracing_on(&found) : NULL;
-    LONG zero = found && on;
+    const char *on = NULL;
+    LONG zero = 0;
+    if (sbs_debug()) {
+        on = ray_tracing_on(&found);
+        zero = !found || on; // settings not found: the gun hook keeps the weapon flat, so at screen depth too
+    }
     if (fg.sepZeroed != zero && InterlockedExchange(&fg.sepZeroed, zero) != zero)
-        plugin_log(1, zero ? "gun: ray tracing is on: the weapon's eye gap is 0 (as Weapon Depth 0)"
+        plugin_log(1, zero ? "gun: ray tracing is on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)"
                            : "gun: the weapon's eye gap follows Weapon Depth again");
     return zero ? 0.0f : fg.sepOrig(settings);
+}
+
+// The square root of x >= 0, without the C library's (a few Newton steps from a power of two: plenty for a log).
+static float root(float x)
+{
+    if (x <= 0.0f) return 0.0f;
+    float r = 1.0f;
+    while (r * r < x) r *= 2.0f;
+    for (int i = 0; i < 12; i++) r = 0.5f * (r + x / r);
+    return r;
+}
+
+// Logs the gap between the eye cameras the game placed when it changes by more than 0.5 mm (Weapon Depth, or the
+// fade while aiming), at most once a second, so the log shows what the weapon's depth comes from. The distance, not
+// the world-axis difference, so turning around doesn't change it.
+static void log_gun_gap(const EyePlaces *kept)
+{
+    const float *l = (const float *)kept->world[0], *r = (const float *)kept->world[1];
+    float d[3] = { r[0] - l[0], r[1] - l[1], r[2] - l[2] };
+    LONG tenths = (LONG)(10000.0f * root(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) + 0.5f); // in 0.1 mm
+    LONG prev = fg.gapTenths - 1; // from several threads: at worst a line too many, harmless
+    DWORD now = GetTickCount();
+    if (prev >= 0 && (tenths - prev <= 5 && prev - tenths <= 5)) return;
+    if (prev >= 0 && now - fg.gapTick < 1000) return;
+    fg.gapTenths = tenths + 1;
+    fg.gapTick = now;
+    plugin_log(1, "gun: the weapon's eye cameras are now %ld.%ld mm apart", (long)(tenths / 10), (long)(tenths % 10));
 }
 
 // Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them (this frame: the
 // view producer assigns each plane's descriptor, eyes placed, right before calling the override). Returns what the
 // original returns.
-// Logs the gap between the eye cameras the game placed whenever it changes by more than 0.5 mm (Weapon Depth, or the
-// fade while aiming), so the log shows what the weapon's depth comes from.
-static void log_gun_gap(const EyePlaces *kept)
-{
-    static float last[3] = { -1000.0f, 0.0f, 0.0f }; // from several threads: at worst a line too many, harmless
-    const float *l = (const float *)kept->world[0], *r = (const float *)kept->world[1];
-    float d[3] = { 1000.0f * (r[0] - l[0]), 1000.0f * (r[1] - l[1]), 1000.0f * (r[2] - l[2]) };
-    float change = 0.0f;
-    for (int i = 0; i < 3; i++) change += (d[i] - last[i]) * (d[i] - last[i]);
-    if (change < 0.25f) return;
-    memcpy(last, d, sizeof(last));
-    plugin_log(1, "gun: the weapon's eye cameras are now %.1f, %.1f, %.1f mm apart (right from left)", d[0], d[1], d[2]);
-}
-
 HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
 {
     EyePlaces kept;
