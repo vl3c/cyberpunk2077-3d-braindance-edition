@@ -5,11 +5,12 @@
 - The weapon has real depth in 3D with ray tracing off (tested in game; the ray tracing check below isn't yet). The
   game places the first-person camera's two eyes left and right, then its weapon-plane rebuild moves both back to the
   centre, so the arms and the gun were drawn from one point and looked flat. A new RED4ext hook puts the eyes back
-  after that rebuild (Weapon Depth sets how far apart). With any ray tracing or path tracing on (Path Tracing, RT
-  Lighting, Sun Shadows, Local Shadows or Reflections) it steps aside and the weapon stays flat: the game's ray-traced
+  after that rebuild (Weapon Depth sets how far apart). With path tracing on, or ray tracing on with any of RT
+  Lighting, Sun Shadows, Local Shadows or Reflections, it steps aside and the weapon stays flat: the game's ray-traced
   light and shadows on it differed between the eyes (darker in one, shadows falling the other way). It follows those
-  settings as they change. Only while SBSDebug is on; it checks the game's code first, and if that changed, only the
-  weapon stays flat.
+  settings as they change. It reads those settings through lookups the frame generation and screen effects checks
+  find, so if those checks fail the weapon stays flat too. Only while SBSDebug is on; it checks the game's code first,
+  and if that changed, only the weapon stays flat.
 - Switching 3D Mode on in the menu now also turns Depth of Field, Lens Flare, Motion Blur and Vignette off (untested
   in game so far). They differ between the eyes in side by side. The game itself already turns Chromatic Aberration
   and Film Grain off on that switch; the mod does the rest right after it, through the game's own setters. Nothing is

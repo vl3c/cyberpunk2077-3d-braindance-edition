@@ -227,14 +227,18 @@ through `RVA 0x206EE80` (eye 1 `+0x3D0`, eye 2 `+0x3D8`), and the previous-frame
 (view `+0x1060` / `+0x16A0` / `+0x1CE0` plus plane × `0x190`) are filled from the eye clones at the start of the
 view producer. The sun shadow pass runs once per eye. So the mismatch is in the shaders, which in the game only ever
 see one weapon camera for both eyes (the Cyberpunk VR port patches shadow shaders for the first-person rows of the
-other eye). Shaders are out of scope for this mod, so the detour steps aside while any of these is on, read on every
-call from `/graphics/raytracing`: the bools `RayTracedPathTracing`, `RayTracedSunShadows`, `RayTracedLocalShadows`
-and `RayTracedReflections` (value at `+0x58`, what the game's getters read) and the list `RayTracedLighting` (Off,
-Medium, Ultra, Psycho; applied index at `+0x78`, 0 = Off). The `RayTracing` bool isn't used: it can read false with
-path tracing on. The vars are found once, on first use, with the game's bool lookup (the one the 3D Mode handler
-uses, found by the screen effects checks) and its list lookup; those stop the game on a name they don't know, so only
-names the 2.5 game has are asked for. If the lookups weren't found at load, the weapon stays flat. Each change is
-logged (`gun: ray tracing is on (...)` / `is off`).
+other eye). Shaders are out of scope for this mod, so the detour steps aside while ray tracing is on, read on every
+call from `/graphics/raytracing`: `RayTracedPathTracing` (a switch of its own, on even with the master off), or,
+with the master switch `RayTracing` on, any of `RayTracedSunShadows`, `RayTracedLocalShadows`,
+`RayTracedReflections` (bools: value at `+0x58`, what the game's getters read) or `RayTracedLighting` (a list: Off,
+Medium, Ultra, Psycho; applied index at `+0x78`, compared with Off's index, found by name when the list is built,
+else 0). With the master off, the game greys those out but keeps their values, so they don't count then. The vars
+are found once, by the 3D Mode handler hook on the handler's thread right after it turned 3D Mode on (before any eye
+camera exists), with the game's bool lookup (the one the handler uses, found by the screen effects checks) and its
+list lookup (found by the frame generation checks); the detour on the render threads only reads them. The lookups
+stop the game on a name they don't know, so only names the 2.5 game has are asked for. Until they're found, or if
+those checks failed at load, the weapon stays flat (logged at load). Each change is logged (`gun: ray tracing is on
+(...)` / `is off`).
 
 ## Upscaler jitter in 3D
 

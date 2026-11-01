@@ -225,6 +225,7 @@ static uint8_t *fake_bool_var(uint64_t group, uint64_t name)
         f_rtLookups++;
         for (int i = 0; i < RT_BOOL_COUNT; i++)
             if (name == cname(RT_BOOLS[i])) return f_rtBools[i];
+        CHECK_MSG(0, "looked up a ray tracing setting the 2.5 game doesn't have (the game would stop)");
         return NULL;
     }
     if (group != cname("/graphics/basic")) return NULL;
@@ -418,9 +419,18 @@ static void ft_begin(void)
     f_overrideSeen = NULL;
     f_cameraSeen = NULL;
     fake_effects();
+    find_rt_vars(); // as the handler hook does when 3D Mode goes on
+    f_rtLookups = 0;
 }
 
 static void set_sbs_debug(int on) { ((uint8_t *)f_sbsVar)[VAR_VALUE] = (uint8_t)on; }
+
+// The 3D Mode handler hook, called with this event (bytes [0] and [1]).
+static void menu_switch(uint8_t ev0, uint8_t ev1)
+{
+    uint8_t event[8] = { ev0, ev1 };
+    hook_o3d_changed(event);
+}
 
 // ===================================================================================== byte patterns
 
@@ -1802,21 +1812,44 @@ TEST(weapon_views_are_logged_first_and_then_once_a_minute)
     CHECK(strstr(ft_log, "gun: 3 weapon views built with their own eye cameras (3 in the last minute)") != NULL);
 }
 
+// Turns one ray tracing setting on: RT_BOOLS[i], or RT Lighting for RT_LIGHTING.
+static void rt_on(int i)
+{
+    if (i < RT_BOOL_COUNT) f_rtBools[i][BOOL_SETTING_VALUE] = 1;
+    else *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 2; // Ultra
+}
+
 TEST(any_ray_tracing_keeps_the_weapon_flat)
 {
-    for (int i = 0; i <= RT_BOOL_COUNT; i++) {
+    for (int i = RT_PATH; i <= RT_LIGHTING; i++) {
+        const char *name = i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting";
         ft_begin();
-        if (i < RT_BOOL_COUNT) f_rtBools[i][BOOL_SETTING_VALUE] = 1;
-        else *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 2; // Ultra
+        f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1;
+        rt_on(i);
         CHECK(hook_plane_override(NULL, f_centre) == 0x5678);
         CHECK_EQ_INT(f_overrideCalls, 1);
-        CHECK_MSG(f_builds == 0, "%s", i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting");
+        CHECK_MSG(f_builds == 0, "%s", name);
         CHECK(memcmp(f_eyes[0] + CAMERA_POSITION, f_centre + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0);
         char want[96];
-        snprintf(want, sizeof(want), "gun: ray tracing is on (%s): the weapon stays flat",
-                 i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting");
+        snprintf(want, sizeof(want), "gun: ray tracing is on (%s): the weapon stays flat", name);
         CHECK_MSG(strstr(ft_log, want) != NULL, "%s", want);
     }
+}
+
+TEST(with_the_ray_tracing_switch_off_only_path_tracing_counts)
+{
+    // The game keeps the other settings' values while its Ray Tracing switch is off (greyed out), and doesn't use them.
+    for (int i = RT_PATH + 1; i <= RT_LIGHTING; i++) {
+        ft_begin();
+        rt_on(i);
+        hook_plane_override(NULL, f_centre);
+        CHECK_MSG(f_builds == 2, "%s", i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting");
+    }
+    ft_begin();
+    rt_on(RT_PATH); // path tracing has a switch of its own
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun: ray tracing is on (RayTracedPathTracing)") != NULL);
 }
 
 TEST(the_weapon_follows_the_ray_tracing_settings_as_they_change)
@@ -1824,44 +1857,101 @@ TEST(the_weapon_follows_the_ray_tracing_settings_as_they_change)
     ft_begin();
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 2);
-    f_rtBools[0][BOOL_SETTING_VALUE] = 1; // path tracing turned on in game
+    rt_on(RT_PATH); // path tracing turned on in game
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 2);
-    f_rtBools[0][BOOL_SETTING_VALUE] = 0; // and off again
+    f_rtBools[RT_PATH][BOOL_SETTING_VALUE] = 0; // and off again
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 4);
-    CHECK_EQ_INT(f_rtLookups, RT_BOOL_COUNT); // looked up once
-    const char *off = strstr(ft_log, "gun: ray tracing is off: the weapon has depth");
+    CHECK_EQ_INT(f_rtLookups, 0); // the render threads only read what the handler hook found
     const char *on = strstr(ft_log, "gun: ray tracing is on (RayTracedPathTracing)");
-    REQUIRE(off != NULL && on != NULL);
+    REQUIRE(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL && on != NULL);
     CHECK(strstr(on, "gun: ray tracing is off: the weapon has depth") != NULL); // off, on, off again
     CHECK(strstr(on + 10, "gun: ray tracing is on") == NULL); // each change logged once
 }
 
-TEST(unreadable_ray_tracing_settings_keep_the_weapon_flat)
+TEST(the_ray_tracing_settings_are_found_when_3d_mode_goes_on)
 {
     ft_begin();
-    fg.boolVar = NULL; // the effects checks failed: no bool lookup
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars)); // not found yet
     hook_plane_override(NULL, f_centre);
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 0);
-    const char *log = strstr(ft_log, "gun: can't read the ray tracing settings: the weapon stays flat");
+    CHECK_EQ_INT(f_rtLookups, 0);
+    const char *log = strstr(ft_log, "gun: the ray tracing settings weren't found: the weapon stays flat");
     REQUIRE(log != NULL);
-    CHECK(strstr(log + 10, "can't read") == NULL);
-    ft_begin();
-    fg.var = fake_find_nothing; // RT Lighting not found
-    hook_plane_override(NULL, f_centre);
-    CHECK_EQ_INT(f_builds, 0);
-    CHECK(fg.rtVars[0] == NULL); // tried again next time
-    fg.var = fake_find;
+    CHECK(strstr(log + 45, "weren't found") == NULL);
+    f_o3dSetsFgOff = 0; // the handler took the 3D-off branch: nothing looked up
+    menu_switch(0, 0);
+    f_o3dSetsFgOff = 1;
+    CHECK_EQ_INT(f_rtLookups, 0);
+    menu_switch(0, 0); // 3D Mode on at start-up
+    CHECK_EQ_INT(f_rtLookups, RT_BOOL_COUNT);
+    menu_switch(0, 1); // and in the menu: found once
+    CHECK_EQ_INT(f_rtLookups, RT_BOOL_COUNT);
     fake_cameras();
     hook_plane_override(NULL, f_centre);
     CHECK_EQ_INT(f_builds, 2);
+    CHECK(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL);
+}
+
+TEST(without_the_games_lookups_the_weapon_stays_flat)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.boolVar = NULL; // the screen effects checks failed
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_rtLookups, 0);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.var = fake_find_nothing; // RT Lighting not found
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun: couldn't find the RayTracedLighting setting: the weapon stays flat") != NULL);
+    CHECK(fg.rtVars[0] == NULL); // nothing half set
+}
+
+TEST(rt_lightings_off_is_found_by_name_when_its_list_is_built)
+{
+    static uint8_t values[4][CSTRING_SIZE];
+    static const char *const names[] = { "Psycho", "Off", "Medium", "Ultra" }; // a made-up order
+    ft_begin();
+    for (int i = 0; i < 4; i++) put_cstring(values[i], names[i]);
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    *(uint32_t *)(f_rtLighting + SETTING_FLAGS) = FLAG_LIST_BUILT;
+    *(uint8_t **)(f_rtLighting + SETTING_VALUES) = &values[0][0];
+    *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 4;
+    *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 1; // Off
+    f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1;
+    menu_switch(0, 0);
+    CHECK_EQ_INT(fg.rtLightingOff, 1);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 0; // Psycho
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    CHECK(strstr(ft_log, "gun: ray tracing is on (RayTracedLighting)") != NULL);
+}
+
+TEST(without_eye_cameras_or_sbs_debug_the_settings_arent_read)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    set_sbs_debug(0);
+    hook_plane_override(NULL, f_centre);
+    set_sbs_debug(1);
+    f_centre[CAMERA_FLAGS] = 0;
+    hook_plane_override(NULL, f_centre);
+    CHECK(strstr(ft_log, "gun: the ray tracing settings") == NULL);
 }
 
 // ===================================================================================== screen effects
@@ -1918,11 +2008,6 @@ TEST(the_effects_off_isnt_set_up_when_the_game_code_changed)
     }
 }
 
-static void menu_switch(uint8_t ev0, uint8_t ev1)
-{
-    uint8_t event[8] = { ev0, ev1 };
-    hook_o3d_changed(event);
-}
 
 TEST(a_menu_switch_to_3d_turns_the_effects_off)
 {
@@ -1987,7 +2072,7 @@ TEST(a_setting_that_isnt_found_is_left_as_it_is)
     CHECK_EQ_INT(f_listSets, 0);
     CHECK(strstr(ft_log, "effects: couldn't find the Vignette setting, left as it is") != NULL);
     CHECK(strstr(ft_log, "effects: couldn't find the Motion Blur setting or its Off, left as it is") != NULL);
-    CHECK(strstr(ft_log, "effects: no 'Off' in the list (flags 0x0, 3 values)") != NULL);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x0, 3 values)") != NULL);
     CHECK(strstr(ft_log, "effects: 4 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares; each can be "
                          "turned back on)") != NULL);
 }

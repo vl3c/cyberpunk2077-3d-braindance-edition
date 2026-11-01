@@ -47,7 +47,9 @@
 // far, the shift) stays. Only while SBSDebug is on, and in a group of its own: if its checks fail (check_gun), only
 // the weapon keeps the game's flat look. It also steps aside while any ray tracing or path tracing is on: the game
 // hands its ray-traced passes each eye's own weapon camera, but their shaders still light and shadow the weapon as if
-// both eyes saw it from one place (as they do in the game), so each eye got different light and shadows on it.
+// both eyes saw it from one place (as they do in the game), so each eye got different light and shadows on it. That
+// check reads the game's settings through the lookups the frame generation and screen effects checks find, so if
+// those failed, the weapon stays flat too.
 //
 // The handler hook also turns screen effects off when 3D Mode is switched on. On a switch in the menu the game's
 // handler already turns Chromatic Aberration and Film Grain off itself (its own rule for 3D Mode); in side by side
@@ -242,7 +244,8 @@ static struct {
     PlaneOverrideFn planeOrig;
     CameraBuildFn cameraBuild;    // the game's camera build, which the plane rebuild calls
     RestoreCount gunCount;        // plane rebuilds whose eye cameras were put back
-    uint8_t *volatile rtVars[5];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found on first use
+    uint8_t *volatile rtVars[6];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
+    int32_t rtLightingOff;        //   RT Lighting's index of Off
     volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
     BoolVarFn boolVar;            // the effects off (all set when its checks passed, else NULL): the game's lookup
     BoolSetFn boolSet;            //   of a bool setting, its bool setter, its list setter, and the CNames of the two
@@ -525,7 +528,7 @@ static int32_t list_index(const uint8_t *var, const char *name)
     for (uint32_t i = 0; (flags & FLAG_LIST_BUILT) && i < count && count <= 16; i++)
         if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, name) == 0)
             return (int32_t)i;
-    plugin_log(1, "effects: no '%s' in the list (flags 0x%X, %u values)", name, (unsigned)flags, (unsigned)count);
+    plugin_log(1, "settings: no '%s' in the list (flags 0x%X, %u values)", name, (unsigned)flags, (unsigned)count);
     return -1;
 }
 
@@ -564,6 +567,89 @@ static void effects_off(void)
     plugin_log(1, "effects: %d of 6 off (%s; each can be turned back on)", count, count ? done : "none");
 }
 
+// The ray tracing settings that light or shadow the weapon, all in /graphics/raytracing: the master switch, path
+// tracing (on its own: it can be on with the master off), three more bools under the master, and RT Lighting (a list:
+// Off, Medium, Ultra, Psycho), also under the master.
+static const char *const RT_BOOLS[] = { "RayTracing", "RayTracedPathTracing", "RayTracedSunShadows",
+                                        "RayTracedLocalShadows", "RayTracedReflections" };
+#define RT_MASTER 0
+#define RT_PATH 1
+#define RT_BOOL_COUNT 5
+#define RT_LIGHTING RT_BOOL_COUNT // fg.rtVars: RT Lighting's var after the bools
+#define RT_UNKNOWN 0    // fg.rtState: not looked at yet
+#define RT_OFF 1        //   all off: the weapon gets its depth
+#define RT_ON 2         //   one is on: the weapon stays flat
+#define RT_UNREADABLE 3 //   the settings weren't found: the weapon stays flat
+
+// Finds the ray tracing settings vars, once (they live as long as the game). Called from the 3D Mode handler hook on
+// the handler's thread, right after the handler turned 3D Mode on, so before any eye camera exists: the gun hook on
+// the render threads only reads what this found. Asks only for names the 2.5 game has: the game's lookups stop the
+// game on a name they don't know. Does nothing if the lookups weren't found at load (their checks failed).
+static void find_rt_vars(void)
+{
+    if (fg.rtVars[RT_LIGHTING] || !fg.boolVar || !fg.var) return;
+    uint64_t group = cname("/graphics/raytracing");
+    uint8_t *vars[RT_BOOL_COUNT + 1];
+    for (int i = 0; i < RT_BOOL_COUNT; i++)
+        if (!readable(vars[i] = fg.boolVar(group, cname(RT_BOOLS[i])), BOOL_SETTING_VALUE + 1)) {
+            plugin_log(1, "gun: couldn't find the %s setting: the weapon stays flat", RT_BOOLS[i]);
+            return;
+        }
+    vars[RT_LIGHTING] = fg.var(fg.group(fg.root(), group), cname("RayTracedLighting"));
+    if (!readable(vars[RT_LIGHTING], SETTING_SIZE)) {
+        plugin_log(1, "gun: couldn't find the RayTracedLighting setting: the weapon stays flat");
+        return;
+    }
+    // Off is the list's first value; checked by name when the list is built.
+    int32_t off = 0;
+    if (*(const uint32_t *)(vars[RT_LIGHTING] + SETTING_FLAGS) & FLAG_LIST_BUILT) {
+        off = list_index(vars[RT_LIGHTING], "Off");
+        if (off < 0) {
+            plugin_log(1, "gun: RayTracedLighting has no Off: the weapon stays flat");
+            return;
+        }
+    }
+    fg.rtLightingOff = off;
+    for (int i = 0; i < RT_BOOL_COUNT; i++) fg.rtVars[i] = vars[i];
+    MemoryBarrier();
+    fg.rtVars[RT_LIGHTING] = vars[RT_LIGHTING]; // last: the gun hook reads the others once it sees this
+    plugin_log(2, "gun: found the ray tracing settings (RayTracedLighting's Off at %d)", (int)off);
+}
+
+static int rt_bool(int i) { return *(const volatile uint8_t *)(fg.rtVars[i] + BOOL_SETTING_VALUE) != 0; }
+
+// Which ray tracing setting is on, NULL if none. *found is 0 if the settings weren't found.
+static const char *ray_tracing_on(int *found)
+{
+    *found = fg.rtVars[RT_LIGHTING] != NULL;
+    if (!*found) return NULL;
+    if (rt_bool(RT_PATH)) return RT_BOOLS[RT_PATH];
+    if (!rt_bool(RT_MASTER)) return NULL; // the rest only count under the master switch
+    for (int i = RT_PATH + 1; i < RT_BOOL_COUNT; i++)
+        if (rt_bool(i)) return RT_BOOLS[i];
+    // RT Lighting's applied index.
+    return *(const volatile int32_t *)(fg.rtVars[RT_LIGHTING] + SETTING_APPLIED) != fg.rtLightingOff
+               ? "RayTracedLighting" : NULL;
+}
+
+// Whether the weapon gets its depth now (all ray tracing off). Logs each change.
+static int gun_allowed(void)
+{
+    int found;
+    const char *on = ray_tracing_on(&found);
+    LONG state = !found ? RT_UNREADABLE : on ? RT_ON : RT_OFF;
+    if (fg.rtState != state && InterlockedExchange(&fg.rtState, state) != state) {
+        if (state == RT_UNREADABLE)
+            plugin_log(1, "gun: the ray tracing settings weren't found: the weapon stays flat, as in the game");
+        else if (state == RT_ON)
+            plugin_log(1, "gun: ray tracing is on (%s): the weapon stays flat, as in the game (its ray-traced light "
+                          "and shadows would differ between the eyes)", on);
+        else
+            plugin_log(1, "gun: ray tracing is off: the weapon has depth");
+    }
+    return state == RT_OFF;
+}
+
 HOOK void hook_o3d_changed(uint8_t *event)
 {
     // event[1] is 1 when 3D Mode was switched in the menu, 0 at start-up and on a display change. Read before the
@@ -583,6 +669,8 @@ HOOK void hook_o3d_changed(uint8_t *event)
     // The game's own effects off ran under the same condition, in the branch that asked for Frame Generation Off.
     if (offAsked && ev1 == EVENT_MENU && ev0 == EVENT_NO_MENU && fg.boolVar && fg.framegen && sbs_debug())
         effects_off();
+    // The gun hook's ray tracing check: its settings, found here (on this thread) before any eye camera exists.
+    if (offAsked && fg.planeOrig) find_rt_vars();
 }
 
 // Whether this SetFrameGeneration call is the 3D Mode handler's own "Off": (0, 1), on its thread, while it runs.
@@ -778,64 +866,6 @@ static void count_gun(const EyePlaces *kept)
         fg.gunCount.lastSummary = now;
         fg.gunCount.lastRestored = n;
     }
-}
-
-// The ray tracing settings that light or shadow the weapon, all in /graphics/raytracing: four bools and RT Lighting
-// (a list: Off, Medium, Ultra, Psycho). The "RayTracing" bool isn't one of them: it can read false while path
-// tracing is on.
-static const char *const RT_BOOLS[] = { "RayTracedPathTracing", "RayTracedSunShadows", "RayTracedLocalShadows",
-                                        "RayTracedReflections" };
-#define RT_BOOL_COUNT 4
-#define RT_UNKNOWN 0  // fg.rtState: not looked at yet
-#define RT_OFF 1      //   all off: the weapon gets its depth
-#define RT_ON 2       //   one is on: the weapon stays flat
-#define RT_UNREADABLE 3 // the settings can't be read: the weapon stays flat
-
-// Finds the settings vars (once: they live as long as the game). Only names the 2.5 game has: the game's lookups
-// stop the game on a name they don't know. 0 if the lookups weren't found at load (their checks failed).
-static int find_rt_vars(void)
-{
-    if (fg.rtVars[RT_BOOL_COUNT]) return 1;
-    if (!fg.boolVar || !fg.var) return 0;
-    uint64_t group = cname("/graphics/raytracing");
-    uint8_t *vars[RT_BOOL_COUNT + 1];
-    for (int i = 0; i < RT_BOOL_COUNT; i++)
-        if (!readable(vars[i] = fg.boolVar(group, cname(RT_BOOLS[i])), BOOL_SETTING_VALUE + 1)) return 0;
-    vars[RT_BOOL_COUNT] = fg.var(fg.group(fg.root(), group), cname("RayTracedLighting"));
-    if (!readable(vars[RT_BOOL_COUNT], SETTING_SIZE)) return 0;
-    for (int i = 0; i < RT_BOOL_COUNT; i++) fg.rtVars[i] = vars[i];
-    MemoryBarrier();
-    fg.rtVars[RT_BOOL_COUNT] = vars[RT_BOOL_COUNT]; // last: the others are set when another thread sees it
-    return 1;
-}
-
-// Which ray tracing setting is on, NULL if none. *readableOut is 0 if they can't be read.
-static const char *ray_tracing_on(int *readableOut)
-{
-    *readableOut = find_rt_vars();
-    if (!*readableOut) return NULL;
-    for (int i = 0; i < RT_BOOL_COUNT; i++)
-        if (*(const volatile uint8_t *)(fg.rtVars[i] + BOOL_SETTING_VALUE)) return RT_BOOLS[i];
-    // RT Lighting's applied index: 0 is Off.
-    return *(const volatile int32_t *)(fg.rtVars[RT_BOOL_COUNT] + SETTING_APPLIED) ? "RayTracedLighting" : NULL;
-}
-
-// Whether the weapon gets its depth now (all ray tracing off). Logs each change.
-static int gun_allowed(void)
-{
-    int ok;
-    const char *on = ray_tracing_on(&ok);
-    LONG state = !ok ? RT_UNREADABLE : on ? RT_ON : RT_OFF;
-    if (InterlockedExchange(&fg.rtState, state) != state) {
-        if (state == RT_UNREADABLE)
-            plugin_log(1, "gun: can't read the ray tracing settings: the weapon stays flat, as in the game");
-        else if (state == RT_ON)
-            plugin_log(1, "gun: ray tracing is on (%s): the weapon stays flat, as in the game (its ray-traced light "
-                          "and shadows would differ between the eyes)", on);
-        else
-            plugin_log(1, "gun: ray tracing is off: the weapon has depth");
-    }
-    return state == RT_OFF;
 }
 
 // Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them (this frame: the
@@ -1173,8 +1203,13 @@ static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
         plugin_log(1, "gun: couldn't hook the plane override: in 3D the weapon stays flat, as in the game");
         return 0;
     }
-    plugin_log(1, "gun: hook attached; in side by side the weapon is seen from both eyes (while [Odyssey3D] SBSDebug "
-                  "is on; Weapon Depth sets how far apart)");
+    if (!fg.boolVar || !fg.var) {
+        plugin_log(1, "gun: hook attached, but the ray tracing settings can't be read (the frame generation or screen "
+                      "effects checks failed): the weapon stays flat, as in the game");
+        return 1;
+    }
+    plugin_log(1, "gun: hook attached; in side by side the weapon is seen from both eyes with ray tracing off (while "
+                  "[Odyssey3D] SBSDebug is on; Weapon Depth sets how far apart)");
     return 1;
 }
 
