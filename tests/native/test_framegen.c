@@ -218,6 +218,7 @@ static uint8_t *f_listSetVar;
 // The ray tracing settings: RT_BOOLS, then RT Lighting (a list), and how often they were looked up.
 static uint8_t f_rtBools[RT_BOOL_COUNT][SETTING_SIZE], f_rtLighting[SETTING_SIZE], f_rtGroup[8];
 static int f_rtLookups;
+static uint8_t f_hud[HUD_REMOVAL_COUNT][SETTING_SIZE]; // the HUD removals in /accessibility/interface
 
 static uint8_t *fake_bool_var(uint64_t group, uint64_t name)
 {
@@ -226,6 +227,12 @@ static uint8_t *fake_bool_var(uint64_t group, uint64_t name)
         for (int i = 0; i < RT_BOOL_COUNT; i++)
             if (name == cname(RT_BOOLS[i])) return f_rtBools[i];
         CHECK_MSG(0, "looked up a ray tracing setting the 2.5 game doesn't have (the game would stop)");
+        return NULL;
+    }
+    if (group == cname("/accessibility/interface")) {
+        for (int i = 0; i < HUD_REMOVAL_COUNT; i++)
+            if (name == cname(HUD_REMOVALS[i])) return f_hud[i];
+        CHECK_MSG(0, "looked up an interface setting the 2.5 game doesn't have (the game would stop)");
         return NULL;
     }
     if (group != cname("/graphics/basic")) return NULL;
@@ -2013,7 +2020,14 @@ TEST(a_menu_switch_to_3d_turns_the_effects_off)
 {
     ft_begin();
     menu_switch(0, 1);
-    REQUIRE_EQ_INT(f_boolSets, EFFECT_COUNT);
+    REQUIRE_EQ_INT(f_boolSets, EFFECT_COUNT + HUD_REMOVAL_COUNT);
+    for (int i = 0; i < HUD_REMOVAL_COUNT; i++) {
+        CHECK_MSG(f_boolSetVar[EFFECT_COUNT + i] == f_hud[i], "%s", HUD_REMOVALS[i]);
+        CHECK_EQ_INT(f_boolSetValue[EFFECT_COUNT + i], 1); // removed
+        CHECK_EQ_INT(f_boolSetMode[EFFECT_COUNT + i], SET_FROM_MENU);
+    }
+    CHECK(strstr(ft_log, "effects: PostProcessingReduction on (the HUD's visual effects removed") != NULL);
+    CHECK(strstr(ft_log, "effects: LensDistortionOverride on (the HUD's lens distortion removed") != NULL);
     for (int i = 0; i < EFFECT_COUNT; i++) {
         CHECK_MSG(f_boolSetVar[i] == f_bools[i], "%s", EFFECTS[i]);
         CHECK_EQ_INT(f_boolSetValue[i], 0);
@@ -2035,7 +2049,7 @@ TEST(the_effects_use_the_group_the_game_uses)
     f_effectSlots[1] = cname("/graphics/other"); // a game update moved them
     menu_switch(0, 1);
     CHECK(strstr(ft_log, "effects: the game's group for its two isn't /graphics/basic") != NULL);
-    CHECK_EQ_INT(f_boolSets, 0); // the fake has them in /graphics/basic only
+    CHECK_EQ_INT(f_boolSets, HUD_REMOVAL_COUNT); // the fake has the effects in /graphics/basic only
     CHECK_EQ_INT(f_listSets, 0);
     CHECK(strstr(ft_log, "effects: 0 of 6 off (none; each can be turned back on)") != NULL);
 }
@@ -2068,7 +2082,7 @@ TEST(a_setting_that_isnt_found_is_left_as_it_is)
     f_missingBool = 4; // Vignette
     *(uint32_t *)(f_blur + SETTING_FLAGS) = 0; // Motion Blur's list not built
     menu_switch(0, 1);
-    CHECK_EQ_INT(f_boolSets, EFFECT_COUNT - 1);
+    CHECK_EQ_INT(f_boolSets, EFFECT_COUNT - 1 + HUD_REMOVAL_COUNT);
     CHECK_EQ_INT(f_listSets, 0);
     CHECK(strstr(ft_log, "effects: couldn't find the Vignette setting, left as it is") != NULL);
     CHECK(strstr(ft_log, "effects: couldn't find the Motion Blur setting or its Off, left as it is") != NULL);
@@ -2083,7 +2097,7 @@ TEST(unknown_settings_the_game_turns_off_are_named_so)
     f_effectSlots[2] = 0x1234;
     menu_switch(0, 1);
     CHECK(strstr(ft_log, "the game turned off ChromaticAberration and a setting this doesn't know") != NULL);
-    CHECK_EQ_INT(f_boolSets, EFFECT_COUNT);
+    CHECK_EQ_INT(f_boolSets, EFFECT_COUNT + HUD_REMOVAL_COUNT);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }
