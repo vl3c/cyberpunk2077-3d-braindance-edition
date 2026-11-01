@@ -40,14 +40,16 @@
 // handler already turns Chromatic Aberration and Film Grain off itself (its own rule for 3D Mode); in side by side
 // Depth of Field, Lens Flares, Motion Blur and Vignette ghost or blur too, so right after the handler, on the same
 // switch, the hook turns those off through the game's own setters, as the menu would. Nothing is greyed or locked: a
-// player who turns one back on keeps it until the next switch to 3D. Only on a menu switch (never at start-up), only
-// while SBSDebug is on, and only if its checks passed (check_effects): otherwise only the game's two go off.
+// player who turns one back on keeps it until the game next runs its own effects off (a menu switch to 3D, or another
+// menu event the handler treats the same way). Only then (never at start-up), only while SBSDebug is on, and only if
+// its checks passed (check_effects): otherwise only the game's two go off.
 //
 // License: MIT (see LICENSE).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -103,7 +105,7 @@ static const char AOB_O3D_FG_OFF[] =
 // In it, the grey: mov eax,[r15+44h]; bts eax,0Bh.
 static const char AOB_O3D_GREY[] = "41 8B 47 44 0F BA E8 0B E9";
 // In it, the two settings it turns off on a menu switch to 3D: var = boolVar(*group, *name) (the E8s), twice, the
-// first kept at [rbp+77h], the second at [rbp+7Fh].
+// first kept at [rbp+77h] (the second is kept at [rbp+7Fh] right after the pattern).
 static const char AOB_O3D_EFFECT_VARS[] =
     "48 8B 15 ?? ?? ?? ?? 48 8B F8 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? "
     "48 89 45 77 E8";
@@ -192,6 +194,7 @@ static struct {
     BoolSetFn boolSet;            //   of a bool setting, its bool setter, its list setter, and the CNames of the two
     ListSetFn listSet;            //   settings the game turns off itself (read when used: filled at run time)
     const uint64_t *gameOff[2];
+    const uint64_t *effectsGroup; //   and the CName of their group ("/graphics/basic"), the group used for all six
 } fg;
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
@@ -457,16 +460,18 @@ static const char *effect_name(uint64_t name)
     return name == cname("MotionBlur") ? "MotionBlur" : NULL;
 }
 
-// Where a list setting's list has this value, -1 if it doesn't (or isn't built).
+// Where a list setting's list has this value, -1 if it doesn't (or isn't built). Logs the list's state when it
+// doesn't find it (the layout was worked out from Frame Generation's list, which the game fills in at run time).
 static int32_t list_index(const uint8_t *var, const char *name)
 {
-    if (!(*(const uint32_t *)(var + SETTING_FLAGS) & FLAG_LIST_BUILT)) return -1;
+    uint32_t flags = *(const uint32_t *)(var + SETTING_FLAGS);
     const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
     uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
     char value[32];
-    for (uint32_t i = 0; i < count && count <= 16; i++)
+    for (uint32_t i = 0; (flags & FLAG_LIST_BUILT) && i < count && count <= 16; i++)
         if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, name) == 0)
             return (int32_t)i;
+    plugin_log(1, "effects: no '%s' in the list (flags 0x%X, %u values)", name, (unsigned)flags, (unsigned)count);
     return -1;
 }
 
@@ -474,10 +479,15 @@ static int32_t list_index(const uint8_t *var, const char *name)
 // (a list: Off, Low, High) to Off through its list setter. Called right after the handler, on its thread.
 static void effects_off(void)
 {
-    uint64_t basic = cname("/graphics/basic");
+    uint64_t basic = *fg.effectsGroup;
+    if (basic != cname("/graphics/basic"))
+        plugin_log(1, "effects: the game's group for its two isn't /graphics/basic (0x%016llX), using it anyway",
+                   (unsigned long long)basic);
     const char *a = effect_name(*fg.gameOff[0]), *b = effect_name(*fg.gameOff[1]);
     plugin_log(1, "effects: 3D Mode switched on in the menu: the game turned off %s and %s, turning off the rest",
                a ? a : "a setting this doesn't know", b ? b : "a setting this doesn't know");
+    char done[160] = "";
+    int count = 0;
     for (int i = 0; i < EFFECT_COUNT; i++) {
         uint8_t *var = fg.boolVar(basic, cname(EFFECTS[i]));
         if (!readable(var, SETTING_SIZE)) {
@@ -486,16 +496,18 @@ static void effects_off(void)
         }
         fg.boolSet(var, 0, SET_FROM_MENU);
         plugin_log(2, "effects: %s off", EFFECTS[i]);
+        snprintf(done + strlen(done), sizeof(done) - strlen(done), "%s%s", count++ ? ", " : "", EFFECTS[i]);
     }
     uint8_t *blur = fg.var(fg.group(fg.root(), basic), cname("MotionBlur"));
     int32_t off = readable(blur, SETTING_SIZE) ? list_index(blur, "Off") : -1;
-    if (off < 0) {
+    if (off < 0)
         plugin_log(1, "effects: couldn't find the Motion Blur setting or its Off, left as it is");
-        return;
+    else {
+        fg.listSet(blur, off, SET_FROM_MENU);
+        plugin_log(2, "effects: MotionBlur off");
+        snprintf(done + strlen(done), sizeof(done) - strlen(done), "%sMotionBlur", count++ ? ", " : "");
     }
-    fg.listSet(blur, off, SET_FROM_MENU);
-    plugin_log(1, "effects: Chromatic Aberration, Film Grain, Depth of Field, Lens Flares, Vignette and Motion Blur "
-                  "are off (each can be turned back on)");
+    plugin_log(1, "effects: %d of 6 off (%s; each can be turned back on)", count, count ? done : "none");
 }
 
 HOOK void hook_o3d_changed(uint8_t *event)
@@ -837,6 +849,7 @@ static void check_effects(const uint8_t *o3d, const uint8_t *setFg)
     fg.listSet = (ListSetFn)listSet;
     fg.gameOff[0] = (const uint64_t *)slots[0];
     fg.gameOff[1] = (const uint64_t *)slots[2];
+    fg.effectsGroup = (const uint64_t *)slots[1];
     plugin_log(2, "effects: checked (the handler's lookup at +0x%lX, its effects off at +0x%lX)", vars, off);
 }
 

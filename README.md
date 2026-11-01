@@ -97,7 +97,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
      Effects** and **Remove HUD Lens Distortion** (Accessibility settings, Interface).
    - **Chromatic Aberration**, **Film Grain**, **Depth of Field**, **Lens Flare**, **Motion Blur** and **Vignette**
      differ between the eyes. When you switch 3D Mode on in the menu, the game turns the first two off and the mod
-     the other four (needs RED4ext). Nothing is locked: turn any back on in the Graphics settings if you like it.
+     the other four (needs RED4ext; this part is untested in game so far). Nothing is locked: turn any back on in the
+     Graphics settings if you like it. The game may turn them off again the next time it applies 3D Mode.
 
 ## Troubleshooting
 

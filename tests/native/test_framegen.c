@@ -249,12 +249,15 @@ static void fake_effects(void)
     fg.listSet = fake_list_set;
     fg.gameOff[0] = &f_effectSlots[0];
     fg.gameOff[1] = &f_effectSlots[2];
+    fg.effectsGroup = &f_effectSlots[1];
 }
 
+static uint8_t f_basicGroup[8];
 static void *fake_root(void) { return f_lookup; }
 static void *fake_find(void *parent, uint64_t name)
 {
-    if (name == cname("MotionBlur")) return f_blur;
+    if (name == cname("/graphics/basic")) return f_basicGroup;
+    if (name == cname("MotionBlur")) return parent == f_basicGroup ? f_blur : NULL;
     return name == f_cnames[1] ? (void *)f_var : (void *)f_lookup;
 }
 static void *fake_find_nothing(void *parent, uint64_t cname) { return NULL; }
@@ -1613,7 +1616,20 @@ TEST(a_menu_switch_to_3d_turns_the_effects_off)
     CHECK_EQ_INT(f_listSetIndex, 0); // Off
     CHECK_EQ_INT(f_listSetMode, SET_FROM_MENU);
     CHECK(strstr(ft_log, "the game turned off ChromaticAberration and FilmGrain, turning off the rest") != NULL);
-    CHECK(strstr(ft_log, "Vignette and Motion Blur are off (each can be turned back on)") != NULL);
+    CHECK(strstr(ft_log, "effects: 6 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares, Vignette, "
+                         "MotionBlur; each can be turned back on)") != NULL);
+    CHECK(strstr(ft_log, "isn't /graphics/basic") == NULL);
+}
+
+TEST(the_effects_use_the_group_the_game_uses)
+{
+    ft_begin();
+    f_effectSlots[1] = cname("/graphics/other"); // a game update moved them
+    menu_switch(0, 1);
+    CHECK(strstr(ft_log, "effects: the game's group for its two isn't /graphics/basic") != NULL);
+    CHECK_EQ_INT(f_boolSets, 0); // the fake has them in /graphics/basic only
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "effects: 0 of 6 off (none; each can be turned back on)") != NULL);
 }
 
 TEST(the_effects_stay_as_they_are_otherwise)
@@ -1648,6 +1664,9 @@ TEST(a_setting_that_isnt_found_is_left_as_it_is)
     CHECK_EQ_INT(f_listSets, 0);
     CHECK(strstr(ft_log, "effects: couldn't find the Vignette setting, left as it is") != NULL);
     CHECK(strstr(ft_log, "effects: couldn't find the Motion Blur setting or its Off, left as it is") != NULL);
+    CHECK(strstr(ft_log, "effects: no 'Off' in the list (flags 0x0, 3 values)") != NULL);
+    CHECK(strstr(ft_log, "effects: 4 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares; each can be "
+                         "turned back on)") != NULL);
 }
 
 TEST(unknown_settings_the_game_turns_off_are_named_so)
