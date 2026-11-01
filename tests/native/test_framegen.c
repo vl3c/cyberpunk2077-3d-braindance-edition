@@ -1679,9 +1679,39 @@ TEST(a_setting_that_isnt_found_is_left_as_it_is)
     CHECK_EQ_INT(f_listSets, 0);
     CHECK(strstr(ft_log, "effects: couldn't find the Vignette setting, left as it is") != NULL);
     CHECK(strstr(ft_log, "effects: couldn't find the Motion Blur setting or its Off, left as it is") != NULL);
-    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 0 values)") != NULL);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 0 values, 0 read as text)") != NULL);
     CHECK(strstr(ft_log, "effects: 4 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares; each can be "
                          "turned back on)") != NULL);
+}
+
+TEST(motion_blurs_off_is_found_by_name)
+{
+    ft_begin();
+    static const char *const names[] = { "High", "Low", "Off" }; // another order: the index comes from the name
+    for (int i = 0; i < 3; i++) put_cstring(f_blurValues[i], names[i]);
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_listSets, 1);
+    CHECK_EQ_INT(f_listSetIndex, 2);
+}
+
+TEST(a_list_whose_values_arent_text_is_left_as_it_is)
+{
+    ft_begin();
+    static uint8_t notText[3][CSTRING_SIZE];
+    memset(notText, 0, sizeof(notText));
+    for (int i = 0; i < 3; i++) {
+        *(uint64_t *)notText[i] = 0x8F10615A2F8D4192ull + (uint64_t)i; // CName-like values
+        *(uint32_t *)(notText[i] + CSTRING_LEN_FLAGS) = 0xFFFFFFFFu;   // no sensible length
+    }
+    *(uint8_t **)(f_blur + SETTING_VALUES) = &notText[0][0];
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 3 values, 0 read as text; the first one's "
+                         "bytes: 92 41 8D 2F 5A 61 10 8F)") != NULL);
+    *(uint8_t **)(f_blur + SETTING_VALUES) = NULL; // or no values at all
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "3 values, 0 read as text; the first one's bytes: unreadable)") != NULL);
 }
 
 TEST(unknown_settings_the_game_turns_off_are_named_so)

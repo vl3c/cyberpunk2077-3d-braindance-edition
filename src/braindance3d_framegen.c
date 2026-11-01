@@ -69,10 +69,11 @@
 #define VAR_NAME 0x08            // config var: const char *name
 #define VAR_GROUP 0x10           // config var: const char *group
 #define VAR_VALUE 0x30           // config var: the bool value
-// Frame Generation's settings var (a list setting whose values the game fills in at run time).
+// A list setting's var: Frame Generation's (values filled in at run time), or a fixed list such as Motion Blur's.
 #define SETTING_FLAGS 0x44       // flags:
 #define FLAG_FROM_FILE 0x20u     //   SETTING_FILE_VALUE holds the value read from UserSettings.json (list not built yet)
-#define FLAG_LIST_BUILT 0x40u    //   SETTING_VALUES is filled, SETTING_PENDING indexes it
+#define FLAG_LIST_BUILT 0x40u    //   a run-time list is built: SETTING_VALUES is filled, SETTING_PENDING indexes it
+                                 //   (fixed lists, flags 0x8F, have their values without it)
 #define FLAG_GREYED 0x800u       //   shown greyed out
 #define SETTING_FILE_VALUE 0x58  // CString
 #define SETTING_APPLIED 0x78     // int32: applied index
@@ -470,10 +471,18 @@ static int32_t list_index(const uint8_t *var, const char *name)
     const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
     uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
     char value[32];
+    int read = 0;
     for (uint32_t i = 0; i < count && count <= 16; i++)
-        if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value)) && strcmp(value, name) == 0)
-            return (int32_t)i;
-    plugin_log(1, "settings: no '%s' in the list (flags 0x%X, %u values)", name, (unsigned)flags, (unsigned)count);
+        if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value))) {
+            read++;
+            if (strcmp(value, name) == 0) return (int32_t)i;
+        }
+    // When no value could be read as text, the first one's bytes show what the list holds instead.
+    char bytes[3 * 8 + 1] = "unreadable";
+    if (count && !read && readable(values, 8))
+        for (int i = 0; i < 8; i++) snprintf(bytes + 3 * i, 4, i < 7 ? "%02X " : "%02X", values[i]);
+    plugin_log(1, "settings: no '%s' in the list (flags 0x%X, %u values, %d read as text%s%s)", name, (unsigned)flags,
+               (unsigned)count, read, count && !read ? "; the first one's bytes: " : "", count && !read ? bytes : "");
     return -1;
 }
 
