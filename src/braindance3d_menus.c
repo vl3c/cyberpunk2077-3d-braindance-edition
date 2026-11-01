@@ -331,8 +331,12 @@ static const char g_hlsl[] =
     "}\n"
     "float4 ps(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target\n"
     "{\n"
-    "    // Each half of the screen shows the whole frame at half the width.\n"
-    "    float x = uv.x < 0.5 ? uv.x * 2.0 : uv.x * 2.0 - 1.0;\n"
+    "    // Each half of the screen shows the whole frame at half the width. FULL SBS TEST: with a window wider\n"
+    "    // than 3:1 the game draws menus as a 16:9 block in the middle, so each half shows that block 1:1.\n"
+    "    uint w, h;\n"
+    "    frame.GetDimensions(w, h);\n"
+    "    float half = uv.x < 0.5 ? uv.x : uv.x - 0.5;\n"
+    "    float x = w > 3 * h ? 0.25 + half : half * 2.0;\n"
     "    return frame.Sample(linearClamp, float2(x, uv.y));\n"
     "}\n";
 
