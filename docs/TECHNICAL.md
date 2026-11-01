@@ -191,6 +191,30 @@ chain (`amd_fidelityfx_framegeneration_dx12.dll`), with XeSS through Intel's (`l
 patches the Present of whichever swap chain the game uses (tested with Streamline's and FidelityFX's). The game offers
 XESS only when `xefgSwapChainD3D12CreateContext` succeeded at start (in practice an Intel Arc GPU).
 
+## Weapon depth in 3D
+
+The arms and the gun are drawn from a camera of their own: the first-person plane (plane 2), with its own field of
+view and near/far, and the separation from **Weapon Depth** (`Odyssey3D_WeaponStrength`) converging at
+`WeaponConvergenceDistance` (0.5 m). In 3D the centre camera descriptor gets two eye clones (flag bit 0 at `+0x399`,
+the left eye's descriptor at `+0x3D0`, the right one's at `+0x3D8`), placed left and right of the centre. Then the
+view producer hands each plane with an override to the plane override (`RVA 0x422D2C`), which rebuilds the
+descriptor from it through the plane rebuild (`RVA 0x422AA4`). The rebuild copies the plane's settings into the
+centre and then into both eye clones, the centre's position among them (int x, y, z in 1/131072 m at `+0x0`, float
+at `+0x280`), and builds each with the camera build (`RVA 0x296EA0`). So both eyes saw the weapon from one point,
+with only the eyes' off-axis shift between them: a flat picture at the convergence distance. Found by the Cyberpunk
+VR port (dariulone/cyberpunk-vr-port, `src/Stereo/EngineStereo.cpp`).
+
+The plugin's detour on the plane override (`src/braindance3d_framegen.c`) notes the eye clones' positions, runs the
+game's override, then puts back each eye the rebuild moved and builds it again with the camera build. The rest of what
+the rebuild set (field of view, near/far, the shift) stays. An eye that didn't move (the plane already matched its
+override, or the eyes sit at the centre, as while aiming, when the game fades the separation out) is left alone. It
+changes nothing unless SBSDebug is on.
+
+Before attaching, the plugin checks the override's start and its one call to the rebuild, and in the rebuild: the left
+eye rebuilt by a call to itself, the right eye given the position at `+0x0`, the position in metres at `+0x280`
+followed by the camera build (whose address the detour calls), and the loop to the eyes on bit 0 of `+0x399`. If
+any of that doesn't match, only the weapon stays flat.
+
 ## Building and testing
 
 `./build.sh` builds the DLL with MinGW-w64 (no PE timestamp, so builds of the same source with the same

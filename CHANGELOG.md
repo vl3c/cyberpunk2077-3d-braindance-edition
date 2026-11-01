@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The weapon has real depth in 3D. The game places the first-person camera's two eyes left and right, then its
+  weapon-plane rebuild moves both back to the centre, so the arms and the gun were drawn from one point and looked
+  flat. A new RED4ext hook puts the eyes back after that rebuild (Weapon Depth sets how far apart). Only while
+  SBSDebug is on; it checks the game's code first, and if that changed, only the weapon stays flat.
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.
 - Nexus page: says in red that FSR4 and XeSS frame generation are untested (DLSS and FSR 3.1 are tested), lists Field of View among the depth settings, and drops two lines.
 - README and Nexus page: the Field of View slider is in the Graphics settings, not Gameplay.

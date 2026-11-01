@@ -27,6 +27,7 @@ void menus_note_3d_mode(int on);
 // Writes a line to Braindance3D-hooks.log when [Log] Level is at least level (1 normal, 2 verbose).
 void plugin_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-// Installs the frame generation hooks (DLSS frame generation in 3D Mode). Call from Main on Load, after
-// menus_load. Returns 1 when they are attached, 0 when not (the reason is logged). Never stops the game.
+// Installs the frame generation hooks (DLSS frame generation in 3D Mode), and the weapon depth hook on its own. Call
+// from Main on Load, after menus_load. Returns 1 when the frame generation hooks are attached, 0 when not (the reason
+// is logged). Never stops the game.
 int framegen_load(void *pluginHandle, const R4eSdk *sdk);

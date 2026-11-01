@@ -1,4 +1,5 @@
-// 3D Braindance Edition: lets the game's own DLSS, FSR (3 and 4) and XeSS frame generation run in 3D Mode.
+// 3D Braindance Edition: lets the game's own DLSS, FSR (3 and 4) and XeSS frame generation run in 3D Mode, and gives the
+// weapon its depth there.
 //
 // The game keeps frame generation off in 3D Mode in two places (static analysis of 2.5, research/native-fg):
 //   - the 3D Mode settings handler sets Frame Generation to Off and greys it out whenever 3D Mode is on (it also
@@ -35,6 +36,16 @@
 // DLSS-G loads only when Frame Generation is DLSS at game start, so choosing it needs a restart, as in 2D; so do FSR and
 // XeSS. With FSR at start the game presents through FidelityFX's frame generation swap chain, with XeSS through
 // Intel's (libxess_fg.dll).
+//
+// Another detour gives the weapon its depth in side by side. The game draws the arms and the gun from a camera of
+// their own (the first-person plane, with its own field of view and the Weapon Depth setting's eye separation). Its
+// two eye cameras are placed left and right of its centre first, then the plane override rebuilds the plane from its
+// settings, and that rebuild writes the centre's position into both eye cameras before building them: both eyes see
+// the gun from the same point, so it looks flat, at the weapon convergence distance (found by the Cyberpunk VR port,
+// dariulone/cyberpunk-vr-port, src/Stereo/EngineStereo.cpp). The detour keeps the eye cameras' positions across the
+// rebuild and builds each moved eye again at its own place; what else the rebuild changed (field of view, near and
+// far, the shift) stays. Only while SBSDebug is on, and in a group of its own: if its checks fail (check_gun), only
+// the weapon keeps the game's flat look.
 //
 // License: MIT (see LICENSE).
 
@@ -81,6 +92,19 @@
 #define XESS_FG_ON 0xDD          //   its "frame generation on" flag (uint8_t), what FlagCompute reads
 #define FEATURE_STEREO 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
+#define HASH_PLANE_OVERRIDE 4284682890u // the plane override: (float *override, camera descriptor), rebuilds the plane
+#define HASH_PLANE_REBUILD 2830242058u  // the plane rebuild it calls: (camera descriptor, the plane's settings)
+#define PLANE_OVERRIDE_SIZE 0x101       // its code (pdata 0x422D2C-0x422E2D)
+#define PLANE_REBUILD_SIZE 0x223        // the rebuild's code (pdata 0x422AA4-0x422CC7)
+// A camera descriptor (what the camera build takes).
+#define CAMERA_POSITION 0x000   // int32 x, y, z in 1/131072 m
+#define CAMERA_POSITION_SIZE 12
+#define CAMERA_WORLD 0x280      // float x, y, z, 1: the same position, in metres
+#define CAMERA_WORLD_SIZE 16
+#define CAMERA_FLAGS 0x399      // uint8: bit 0 = a centre camera with two eye cameras (the pointers below)
+#define CAMERA_HAS_EYES 0x01
+#define CAMERA_LEFT_EYE 0x3D0   // its left eye camera's descriptor
+#define CAMERA_RIGHT_EYE 0x3D8  // and its right one's
 
 // Byte patterns, each found exactly once in the 2.5 exe ("??" = any byte).
 // Start of the 3D Mode handler.
@@ -124,6 +148,26 @@ static const char AOB_FLAG_CLEAR_FSR[] = "45 84 DB 74 0A 45 84 E4 75 05 41 B0 01
 // And the one of feature 75: xess && !stereo.
 static const char AOB_FLAG_CLEAR_XESS[] = "45 84 D2 74 0A 45 84 E4 75 05 41 B0 01 EB 03 45 33 C0 BA 4B 00 00 00 E8";
 
+// Start of the plane override, through mov rbx,rdx; mov rdi,rcx (the descriptor in rbx) and its first call.
+static const char AOB_PLANE_OVERRIDE[] =
+    "48 89 5C 24 08 48 89 7C 24 10 55 48 8D 6C 24 A9 48 81 EC D0 00 00 00 48 8B DA 48 8B F9 E8";
+// In it, the rebuild: rebuild(descriptor, &settings) (the E8).
+static const char AOB_OVERRIDE_REBUILD[] = "48 8D 55 B7 48 8B CB E8";
+// Start of the plane rebuild, through lea rsi,[rdx+88h].
+static const char AOB_PLANE_REBUILD[] = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 8B 42 38 48 8D B2 88 00 00 00";
+// In it, the eye cameras: the left one ([rbx+3D0h]) rebuilt by a call to itself (the E8), then the right one
+// ([rbx+3D8h]) given the settings, the centre's position among them (its int x, y, z into [rbx], [rbx+8]).
+static const char AOB_REBUILD_EYES[] =
+    "48 8B 8B D0 03 00 00 48 8B D7 E8 ?? ?? ?? ?? 48 8B 9B D8 03 00 00 8B 47 38 F3 0F 10 0D ?? ?? ?? ?? 89 43 20 "
+    "8B 47 3C 89 43 28 F2 0F 10 47 10 F2 0F 11 03 8B 47 18 89 43 08";
+#define REBUILD_EYES_CALL 10
+// In it, the position in metres into [rbx+280h], then the camera build of the descriptor in rbx (the last E8).
+static const char AOB_REBUILD_BUILD[] =
+    "0F 16 E3 0F 11 A3 80 02 00 00 0F 10 47 20 48 8B D6 0F 11 83 90 02 00 00 48 8D 8B 88 03 00 00 E8 ?? ?? ?? ?? "
+    "8B 47 40 48 8B CB 89 43 40 8B 47 44 89 43 44 E8";
+// In it, the loop to the eye cameras: test byte [rbx+399h],1; jnz.
+static const char AOB_REBUILD_LOOP[] = "F6 83 99 03 00 00 01 0F 85";
+
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
 typedef uint8_t (*SetFgFn)(int32_t index, uint8_t mode);
@@ -132,6 +176,8 @@ typedef uint8_t (*DlssgEnabledFn)(uint8_t *sl);
 typedef uint8_t (*FsrFgEnabledFn)(const uint8_t *fsr);
 typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
+typedef int64_t (*PlaneOverrideFn)(float *override, uint8_t *camera);
+typedef int64_t (*CameraBuildFn)(uint8_t *camera);
 
 // Frames whose frame generation feature was put back, for the log.
 typedef struct {
@@ -157,6 +203,9 @@ static struct {
     int offAsked;                 // that handler call asked for Frame Generation Off (its 3D-on branch)
     uint32_t *keptFlags;          // and it was kept: Frame Generation's flags, NULL if not kept
     RestoreCount dlssgCount, fsrCount, xessCount;
+    PlaneOverrideFn planeOrig;
+    CameraBuildFn cameraBuild;    // the game's camera build, which the plane rebuild calls
+    RestoreCount gunCount;        // plane rebuilds whose eye cameras were put back
 } fg;
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
@@ -555,6 +604,75 @@ HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame
     return ret;
 }
 
+// The eye cameras of a centre camera and their places.
+typedef struct {
+    uint8_t *eye[2];
+    uint8_t position[2][CAMERA_POSITION_SIZE];
+    uint8_t world[2][CAMERA_WORLD_SIZE];
+} EyePlaces;
+
+// Notes where a centre camera's eye cameras are. 0 if it has none (a plane without stereo, or 3D Mode off).
+static int keep_eye_places(const uint8_t *camera, EyePlaces *kept)
+{
+    if (!camera || !(camera[CAMERA_FLAGS] & CAMERA_HAS_EYES)) return 0;
+    for (int e = 0; e < 2; e++) {
+        uint8_t *eye = *(uint8_t *const *)(camera + (e ? CAMERA_RIGHT_EYE : CAMERA_LEFT_EYE));
+        if (!eye) return 0;
+        kept->eye[e] = eye;
+        memcpy(kept->position[e], eye + CAMERA_POSITION, CAMERA_POSITION_SIZE);
+        memcpy(kept->world[e], eye + CAMERA_WORLD, CAMERA_WORLD_SIZE);
+    }
+    return 1;
+}
+
+// Puts each eye camera the rebuild moved back at its place and builds it again there, the way the rebuild built it
+// (the camera build, which also runs any other hook on it). An eye that didn't move (the plane already matched its
+// override, so nothing was rebuilt, or the eyes sit at the centre, as while aiming) is left alone. Returns how many
+// were put back.
+static int restore_eye_places(const EyePlaces *kept)
+{
+    int moved = 0;
+    for (int e = 0; e < 2; e++) {
+        uint8_t *eye = kept->eye[e];
+        if (memcmp(eye + CAMERA_POSITION, kept->position[e], CAMERA_POSITION_SIZE) == 0) continue;
+        memcpy(eye + CAMERA_POSITION, kept->position[e], CAMERA_POSITION_SIZE);
+        memcpy(eye + CAMERA_WORLD, kept->world[e], CAMERA_WORLD_SIZE);
+        fg.cameraBuild(eye);
+        moved++;
+    }
+    return moved;
+}
+
+// Counts a rebuild whose eyes were put back; logs the first one and then a count once a minute.
+static void count_gun(const EyePlaces *kept)
+{
+    LONG64 n = InterlockedIncrement64(&fg.gunCount.restored);
+    DWORD now = GetTickCount();
+    if (n == 1) {
+        const float *l = (const float *)kept->world[0], *r = (const float *)kept->world[1];
+        plugin_log(1, "gun: first weapon view built with its own eye cameras (right eye %.1f, %.1f, %.1f mm from the "
+                      "left)",
+                   1000.0f * (r[0] - l[0]), 1000.0f * (r[1] - l[1]), 1000.0f * (r[2] - l[2]));
+        fg.gunCount.lastSummary = now;
+    } else if (now - fg.gunCount.lastSummary >= 60000) { // from several threads: a count can be off by a few, harmless
+        plugin_log(1, "gun: %lld weapon views built with their own eye cameras (%lld in the last minute)", (long long)n,
+                   (long long)(n - fg.gunCount.lastRestored));
+        fg.gunCount.lastSummary = now;
+        fg.gunCount.lastRestored = n;
+    }
+}
+
+// Rebuilds the plane as the game does, then puts its eye cameras back where the game had placed them. Returns what
+// the original returns.
+HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
+{
+    EyePlaces kept;
+    int keep = sbs_debug() && keep_eye_places(camera, &kept);
+    int64_t r = fg.planeOrig(override, camera);
+    if (keep && restore_eye_places(&kept)) count_gun(&kept);
+    return r;
+}
+
 REGISTER_KEEPING_THUNK(bd3d_thunk_o3d_changed, hook_o3d_changed);
 REGISTER_KEEPING_THUNK(bd3d_thunk_set_fg, hook_set_fg);
 REGISTER_KEEPING_THUNK(bd3d_thunk_dlssg_enabled, hook_dlssg_enabled);
@@ -563,6 +681,8 @@ void bd3d_thunk_o3d_changed(uint8_t *event);
 uint8_t bd3d_thunk_set_fg(int32_t index, uint8_t mode);
 uint8_t bd3d_thunk_dlssg_enabled(uint8_t *sl);
 uint64_t *bd3d_thunk_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings);
+REGISTER_KEEPING_THUNK(bd3d_thunk_plane_override, hook_plane_override);
+int64_t bd3d_thunk_plane_override(float *override, uint8_t *camera);
 
 // ---------------------------------------------------------------- set-up
 
@@ -682,13 +802,16 @@ static int check_xess(const uint8_t *flagCompute)
     return 1;
 }
 
-// The config var is [Odyssey3D] SBSDebug.
-static int check_sbs_var(const uint8_t *sbs)
+// Whether the config var is [Odyssey3D] SBSDebug.
+static int is_sbs_var(const uint8_t *sbs)
 {
     const char *const *names = (const char *const *)sbs;
-    if (!text_is(names[VAR_NAME / 8], "SBSDebug") || !text_is(names[VAR_GROUP / 8], "Odyssey3D"))
-        return fail("the SBSDebug config var isn't named [Odyssey3D] SBSDebug");
-    return 1;
+    return text_is(names[VAR_NAME / 8], "SBSDebug") && text_is(names[VAR_GROUP / 8], "Odyssey3D");
+}
+
+static int check_sbs_var(const uint8_t *sbs)
+{
+    return is_sbs_var(sbs) || fail("the SBSDebug config var isn't named [Odyssey3D] SBSDebug");
 }
 
 // The rest that frame generation in 3D needs: the grey, the settings lookup, FlagCompute and the SBSDebug var. Fills
@@ -762,6 +885,72 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
+// The plane override and its rebuild: the override's start and its rebuild call going to the rebuild (whose hash
+// resolves to the same place, called once); in the rebuild, the eye cameras at +0x3D0 / +0x3D8 given the centre's
+// position at +0x0 and +0x280, the camera build after it (whose address the hook calls), and the loop to the eye
+// cameras on flag bit 0 of +0x399. Also the SBSDebug var. Returns the plane override, or NULL (logged): then the
+// weapon keeps the game's flat look.
+static uint8_t *check_gun(ResolveFn resolve)
+{
+    uint8_t *override = (uint8_t *)resolve(HASH_PLANE_OVERRIDE);
+    uint8_t *rebuild = (uint8_t *)resolve(HASH_PLANE_REBUILD);
+    uint8_t *sbs = (uint8_t *)resolve(HASH_VAR_SBSDEBUG);
+    plugin_log(1, "gun: resolved the plane override %p, the plane rebuild %p", (void *)override, (void *)rebuild);
+    const char *why = NULL;
+    long call = -1, eyes = -1, build = -1;
+    uintptr_t buildFn = 0;
+    if (!in_exe((uintptr_t)override, PLANE_OVERRIDE_SIZE) || !in_exe((uintptr_t)rebuild, PLANE_REBUILD_SIZE) ||
+        !in_exe((uintptr_t)sbs, VAR_VALUE + 1))
+        why = "the plane override, the plane rebuild or the SBSDebug var didn't resolve into the game exe";
+    else if (aob_find_unique(override, PLANE_OVERRIDE_SIZE, AOB_PLANE_OVERRIDE) != 0)
+        why = "the plane override: start doesn't match";
+    else if ((call = aob_find_unique(override, PLANE_OVERRIDE_SIZE, AOB_OVERRIDE_REBUILD)) < 0)
+        why = "the plane override: the rebuild call isn't there";
+    else if (call_target(override + call + aob_len(AOB_OVERRIDE_REBUILD) - 1) != (uintptr_t)rebuild)
+        why = "the plane override: the rebuild call doesn't go to the plane rebuild";
+    else if (count_calls(override, PLANE_OVERRIDE_SIZE, (uintptr_t)rebuild) != 1)
+        why = "the plane override calls the plane rebuild somewhere else too";
+    else if (aob_find_unique(rebuild, PLANE_REBUILD_SIZE, AOB_PLANE_REBUILD) != 0)
+        why = "the plane rebuild: start doesn't match";
+    else if ((eyes = aob_find_unique(rebuild, PLANE_REBUILD_SIZE, AOB_REBUILD_EYES)) < 0)
+        why = "the plane rebuild: the eye cameras aren't given the position where expected";
+    else if (call_target(rebuild + eyes + REBUILD_EYES_CALL) != (uintptr_t)rebuild)
+        why = "the plane rebuild: the left eye camera isn't rebuilt by the rebuild";
+    else if ((build = aob_find_unique(rebuild, PLANE_REBUILD_SIZE, AOB_REBUILD_BUILD)) < 0)
+        why = "the plane rebuild: the camera build after the position isn't there";
+    else if (!in_exe(buildFn = call_target(rebuild + build + aob_len(AOB_REBUILD_BUILD) - 1), 16))
+        why = "the plane rebuild: the camera build call points outside the exe";
+    else if (count_calls(rebuild, PLANE_REBUILD_SIZE, buildFn) != 1)
+        why = "the plane rebuild calls the camera build somewhere else too";
+    else if (aob_find_unique(rebuild, PLANE_REBUILD_SIZE, AOB_REBUILD_LOOP) < 0)
+        why = "the plane rebuild: the loop to the eye cameras isn't there";
+    else if (!is_sbs_var(sbs)) why = "the SBSDebug config var isn't named [Odyssey3D] SBSDebug";
+    if (why) {
+        plugin_log(1, "gun: %s (game update?)", why);
+        plugin_log(1, "gun: not hooked: in 3D the weapon stays flat, as in the game");
+        return NULL;
+    }
+    fg.sbsVar = sbs;
+    fg.cameraBuild = (CameraBuildFn)buildFn;
+    plugin_log(2, "gun: plane override checked (rebuild call at +0x%lX, camera build %p)",
+               call + (long)aob_len(AOB_OVERRIDE_REBUILD) - 1, (void *)buildFn);
+    return override;
+}
+
+// The gun group: checked, then attached on its own. Returns 1 when attached.
+static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
+{
+    uint8_t *override = check_gun(resolve);
+    if (!override) return 0;
+    if (!h->Attach(pluginHandle, override, (void *)bd3d_thunk_plane_override, (void **)&fg.planeOrig)) {
+        plugin_log(1, "gun: couldn't hook the plane override: in 3D the weapon stays flat, as in the game");
+        return 0;
+    }
+    plugin_log(1, "gun: hook attached; in side by side the weapon is seen from both eyes (while [Odyssey3D] SBSDebug "
+                  "is on; Weapon Depth sets how far apart)");
+    return 1;
+}
+
 // RED4ext's address lookup, or NULL if this RED4ext has none.
 static ResolveFn red4ext_resolver(void)
 {
@@ -775,5 +964,7 @@ int framegen_load(void *pluginHandle, const R4eSdk *sdk)
         return fail("RED4ext didn't pass a hooking interface");
     ResolveFn resolve = red4ext_resolver();
     if (!resolve) return fail("RED4ext.dll has no RED4ext_ResolveAddress");
-    return attach_hooks(pluginHandle, sdk->hooking, resolve);
+    int attached = attach_hooks(pluginHandle, sdk->hooking, resolve);
+    attach_gun(pluginHandle, sdk->hooking, resolve);
+    return attached;
 }

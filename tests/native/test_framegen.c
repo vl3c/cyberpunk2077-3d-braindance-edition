@@ -35,6 +35,7 @@ void plugin_log(int level, const char *fmt, ...)
 static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
 static uint64_t f_cnames[2];
+static uint8_t f_override[PLANE_OVERRIDE_SIZE], f_rebuild[PLANE_REBUILD_SIZE], f_buildCode[16];
 static const char *f_sbsVar[8];
 static int f_attachFails; // which Attach call fails (1-based), 0 = none
 static int f_attached, f_detached;
@@ -79,6 +80,16 @@ static void fake_game(void)
     put(f_flag + 0x730, AOB_FLAG_CLEAR_XESS);
     put(f_fsrCode, AOB_FSR_ENABLED);
 
+    memset(f_override, 0xCC, sizeof(f_override));
+    memset(f_rebuild, 0xCC, sizeof(f_rebuild));
+    put(f_override, AOB_PLANE_OVERRIDE);
+    put_rel32(put(f_override + 0xCB, AOB_OVERRIDE_REBUILD) + 4, f_rebuild);
+    put(f_rebuild, AOB_PLANE_REBUILD);
+    put(f_rebuild + 0xE2, AOB_REBUILD_EYES);
+    put_rel32(f_rebuild + 0xE2 + REBUILD_EYES_CALL + 5, f_rebuild); // the left eye: the rebuild calls itself
+    put_rel32(put(f_rebuild + 0x19E, AOB_REBUILD_BUILD) + 4, f_buildCode);
+    put(f_rebuild + 0x201, AOB_REBUILD_LOOP);
+
     f_sbsVar[VAR_NAME / 8] = "SBSDebug";
     f_sbsVar[VAR_GROUP / 8] = "Odyssey3D";
     ((uint8_t *)f_sbsVar)[VAR_VALUE] = 1;
@@ -92,6 +103,8 @@ static uintptr_t fake_resolve(uint32_t hash)
     case HASH_FLAG_COMPUTE: return (uintptr_t)f_flag;
     case HASH_DLSSG_ENABLED: return (uintptr_t)f_dlssg;
     case HASH_VAR_SBSDEBUG: return (uintptr_t)f_sbsVar;
+    case HASH_PLANE_OVERRIDE: return (uintptr_t)f_override;
+    case HASH_PLANE_REBUILD: return (uintptr_t)f_rebuild;
     }
     return 0;
 }
@@ -209,6 +222,60 @@ static uint64_t *orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *fra
     return flags; // the game's caller reads the bits through this
 }
 
+// A centre camera with two eye cameras, a plane override that moves them to the centre (like the game's rebuild), and
+// a camera build that notes what it was given.
+static _Alignas(16) uint8_t f_centre[0x400], f_eyes[2][0x400];
+static int f_overrideCalls, f_rebuildMoves, f_builds;
+static uint8_t *f_built[4];
+static int32_t f_builtAt[4][3]; // each built eye's position when it was built
+static float *f_overrideSeen;
+static uint8_t *f_cameraSeen;
+
+static void place(uint8_t *camera, int32_t x, int32_t y, int32_t z)
+{
+    int32_t *p = (int32_t *)(camera + CAMERA_POSITION);
+    float *w = (float *)(camera + CAMERA_WORLD);
+    p[0] = x, p[1] = y, p[2] = z;
+    w[0] = x / 131072.0f, w[1] = y / 131072.0f, w[2] = z / 131072.0f, w[3] = 1.0f;
+}
+
+static void fake_cameras(void)
+{
+    memset(f_centre, 0, sizeof(f_centre));
+    memset(f_eyes, 0, sizeof(f_eyes));
+    f_centre[CAMERA_FLAGS] = CAMERA_HAS_EYES;
+    *(uint8_t **)(f_centre + CAMERA_LEFT_EYE) = f_eyes[0];
+    *(uint8_t **)(f_centre + CAMERA_RIGHT_EYE) = f_eyes[1];
+    f_eyes[0][CAMERA_FLAGS] = f_eyes[1][CAMERA_FLAGS] = 0x02; // eye cameras
+    place(f_centre, 131072, 262144, 65536);
+    place(f_eyes[0], 131072 - 4194, 262144, 65536); // 32 mm left and right of the centre
+    place(f_eyes[1], 131072 + 4194, 262144, 65536);
+}
+
+static int64_t orig_plane_override(float *override, uint8_t *camera)
+{
+    f_overrideCalls++;
+    f_overrideSeen = override;
+    f_cameraSeen = camera;
+    if (f_rebuildMoves && camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES))
+        for (int e = 0; e < 2; e++) {
+            uint8_t *eye = *(uint8_t **)(camera + (e ? CAMERA_RIGHT_EYE : CAMERA_LEFT_EYE));
+            memcpy(eye + CAMERA_POSITION, camera + CAMERA_POSITION, CAMERA_POSITION_SIZE);
+            memcpy(eye + CAMERA_WORLD, camera + CAMERA_WORLD, CAMERA_WORLD_SIZE);
+        }
+    return 0x5678;
+}
+
+static int64_t fake_camera_build(uint8_t *camera)
+{
+    if (f_builds < 4) {
+        f_built[f_builds] = camera;
+        memcpy(f_builtAt[f_builds], camera + CAMERA_POSITION, CAMERA_POSITION_SIZE);
+    }
+    f_builds++;
+    return 0;
+}
+
 static void ft_begin(void)
 {
     static DWORD tls = TLS_OUT_OF_INDEXES;
@@ -247,6 +314,13 @@ static void ft_begin(void)
     fg.sbsVar = (const uint8_t *)f_sbsVar;
     f_flagsAfterOrig[0] = 0;
     f_flagsAfterOrig[1] = FEATURE_BIT(FEATURE_STEREO);
+    fake_cameras();
+    fg.planeOrig = orig_plane_override;
+    fg.cameraBuild = fake_camera_build;
+    f_overrideCalls = f_builds = 0;
+    f_rebuildMoves = 1;
+    f_overrideSeen = NULL;
+    f_cameraSeen = NULL;
 }
 
 static void set_sbs_debug(int on) { ((uint8_t *)f_sbsVar)[VAR_VALUE] = (uint8_t)on; }
@@ -821,8 +895,8 @@ TEST(thunks_have_unwind_info)
 {
     // Without it an exception thrown through a hook (or a crash dump's stack) can't get past the thunk.
     void *thunks[] = { (void *)bd3d_thunk_o3d_changed, (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_dlssg_enabled,
-                       (void *)bd3d_thunk_flag_compute };
-    for (int i = 0; i < 4; i++) {
+                       (void *)bd3d_thunk_flag_compute, (void *)bd3d_thunk_plane_override };
+    for (int i = 0; i < 5; i++) {
         DWORD64 base = 0;
         CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
     }
@@ -1043,6 +1117,9 @@ TEST(thunks_keep_the_callers_registers_and_return_the_result)
     check_thunk_keeps_registers((void *)bd3d_thunk_o3d_changed, 0x2222222222222222ull);
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK(strstr(ft_log, "kept and choosable") != NULL);
+    // The plane override (rcx is a test value: the fake original doesn't read the override): the eyes are put back.
+    CHECK(check_thunk_keeps_registers((void *)bd3d_thunk_plane_override, (uint64_t)(uintptr_t)f_centre) == 0x5678);
+    CHECK_EQ_INT(f_builds, 2);
 }
 
 // ===================================================================================== one function at a time
@@ -1459,6 +1536,173 @@ TEST(attach_range_detaches_what_it_attached_when_one_fails)
 TEST(red4ext_resolver_needs_red4ext)
 {
     CHECK(red4ext_resolver() == NULL); // no RED4ext.dll in this process
+}
+
+// ===================================================================================== the gun
+
+TEST(check_gun_finds_the_plane_override_and_the_camera_build)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    CHECK_EQ_PTR(check_gun(fake_resolve), f_override);
+    CHECK_EQ_PTR((void *)fg.cameraBuild, f_buildCode);
+    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar);
+    CHECK(strstr(ft_log, "gun: plane override checked (rebuild call at +0xD2") != NULL);
+}
+
+TEST(the_gun_hook_attaches_on_its_own)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK_EQ_INT(f_attached, 1);
+    CHECK(fg.planeOrig == (PlaneOverrideFn)(void *)f_override);
+    CHECK_EQ_INT(f_override[0], 0xE9);
+    CHECK(strstr(ft_log, "gun: hook attached") != NULL);
+}
+
+TEST(the_gun_hook_attaches_when_the_frame_generation_hooks_cant)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    f_o3d[0] = 0x90;
+    CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK_EQ_INT(f_attached, 1);
+}
+
+static uintptr_t resolve_without_the_rebuild(uint32_t hash) { return hash == HASH_PLANE_REBUILD ? 0 : fake_resolve(hash); }
+
+TEST(the_gun_hook_isnt_attached_when_the_game_code_changed)
+{
+    static const char *const logs[] = {
+        "didn't resolve into the game exe",
+        "the plane override: start doesn't match",
+        "the plane override: the rebuild call isn't there",
+        "the rebuild call doesn't go to the plane rebuild",
+        "the plane override calls the plane rebuild somewhere else too",
+        "the plane rebuild: start doesn't match",
+        "the eye cameras aren't given the position where expected",
+        "the left eye camera isn't rebuilt by the rebuild",
+        "the camera build after the position isn't there",
+        "the camera build call points outside the exe",
+        "the plane rebuild calls the camera build somewhere else too",
+        "the loop to the eye cameras isn't there",
+        "isn't named [Odyssey3D] SBSDebug",
+    };
+    for (int k = 0; k < 13; k++) {
+        ft_begin();
+        memset(&fg, 0, sizeof(fg));
+        ResolveFn resolve = fake_resolve;
+        switch (k) {
+        case 0: resolve = resolve_without_the_rebuild; break;
+        case 1: f_override[0] = 0x90; break;
+        case 2: f_override[0xCB] = 0x90; break;
+        case 3: put_rel32(f_override + 0xCB + aob_len(AOB_OVERRIDE_REBUILD) + 4, f_other); break;
+        case 4: f_override[0x60] = 0xE8, put_rel32(f_override + 0x65, f_rebuild); break;
+        case 5: f_rebuild[0] = 0x90; break;
+        case 6: f_rebuild[0xE2 + 50] = 0x13; break; // [rbx] -> [rbx+...]: not the position
+        case 7: put_rel32(f_rebuild + 0xE2 + REBUILD_EYES_CALL + 5, f_other); break;
+        case 8: f_rebuild[0x19E + 4] = 0x8B; break; // the position in metres goes elsewhere
+        case 9: *(int32_t *)(f_rebuild + 0x19E + aob_len(AOB_REBUILD_BUILD)) = 0x7FFFFFF0; break;
+        case 10: f_rebuild[0x60] = 0xE8, put_rel32(f_rebuild + 0x65, f_buildCode); break;
+        case 11: f_rebuild[0x201 + 6] = 0x02; break; // tests another flag
+        case 12: f_sbsVar[VAR_NAME / 8] = "StereoEnabled"; break;
+        }
+        CHECK_MSG(attach_gun(NULL, &f_hooking, resolve) == 0, "case %d attached", k);
+        CHECK_EQ_INT(f_attached, 0);
+        CHECK_MSG(strstr(ft_log, logs[k]) != NULL, "case %d: no \"%s\" in:\n%s", k, logs[k], ft_log);
+        CHECK(strstr(ft_log, "gun: not hooked: in 3D the weapon stays flat, as in the game") != NULL);
+    }
+}
+
+TEST(a_failed_gun_attach_is_logged)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    f_attachFails = 1;
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 0);
+    CHECK(strstr(ft_log, "gun: couldn't hook the plane override") != NULL);
+}
+
+TEST(the_weapons_eye_cameras_are_put_back_and_built_again)
+{
+    ft_begin();
+    uint8_t want[2][0x400];
+    memcpy(want, f_eyes, sizeof(want));
+    float override[8] = { 0 };
+    CHECK(hook_plane_override(override, f_centre) == 0x5678);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_PTR(f_overrideSeen, override);
+    CHECK_EQ_PTR(f_cameraSeen, f_centre);
+    for (int e = 0; e < 2; e++) {
+        CHECK_MSG(memcmp(f_eyes[e] + CAMERA_POSITION, want[e] + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0, "eye %d", e);
+        CHECK_MSG(memcmp(f_eyes[e] + CAMERA_WORLD, want[e] + CAMERA_WORLD, CAMERA_WORLD_SIZE) == 0, "eye %d", e);
+    }
+    REQUIRE_EQ_INT(f_builds, 2);
+    CHECK_EQ_PTR(f_built[0], f_eyes[0]);
+    CHECK_EQ_PTR(f_built[1], f_eyes[1]);
+    CHECK_EQ_INT(f_builtAt[0][0], 131072 - 4194); // built at its own place, not at the centre
+    CHECK_EQ_INT(f_builtAt[1][0], 131072 + 4194);
+    CHECK(strstr(ft_log, "gun: first weapon view built with its own eye cameras (right eye 64.0, 0.0, 0.0 mm from the "
+                         "left)") != NULL);
+}
+
+TEST(eye_cameras_the_rebuild_didnt_move_arent_built_again)
+{
+    ft_begin();
+    f_rebuildMoves = 0; // the plane matched its override: nothing rebuilt
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    place(f_eyes[0], 131072, 262144, 65536); // aiming: the eyes sit at the centre
+    place(f_eyes[1], 131072, 262144, 65536);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun:") == NULL);
+}
+
+TEST(without_sbs_debug_the_weapon_stays_as_the_game_builds_it)
+{
+    ft_begin();
+    set_sbs_debug(0);
+    CHECK(hook_plane_override(NULL, f_centre) == 0x5678);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(memcmp(f_eyes[0] + CAMERA_POSITION, f_centre + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0);
+    set_sbs_debug(1);
+}
+
+TEST(a_camera_without_eye_cameras_is_left_alone)
+{
+    ft_begin();
+    f_centre[CAMERA_FLAGS] = 0;
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    *(uint8_t **)(f_centre + CAMERA_RIGHT_EYE) = NULL;
+    f_rebuildMoves = 0; // the fake would follow the NULL
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    CHECK(hook_plane_override(NULL, NULL) == 0x5678);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_INT(f_builds, 0);
+}
+
+TEST(weapon_views_are_logged_first_and_then_once_a_minute)
+{
+    ft_begin();
+    hook_plane_override(NULL, f_centre);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 4);
+    CHECK(strstr(ft_log, "weapon views built") == NULL);
+    fg.gunCount.lastSummary = GetTickCount() - 61000;
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK(strstr(ft_log, "gun: 3 weapon views built with their own eye cameras (3 in the last minute)") != NULL);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }
