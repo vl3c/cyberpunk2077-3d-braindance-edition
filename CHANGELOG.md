@@ -11,11 +11,13 @@
   keeps the depth.
 - Switching 3D Mode on in the menu also turns off Depth of Field, Lens Flare, Motion Blur and Vignette, and turns on
   Remove HUD Visual Effects and Remove HUD Lens Distortion (tested in game). Why: they differ between the eyes in side
-  by side. Nothing is locked: turn one back on and it stays on until the next switch to 3D.
+  by side. Nothing is locked: you can change any back, though the game may switch them again when it next applies
+  3D Mode.
 - Upscaler jitter stays as the game has it. Why: matching it to each eye's half (found by the Cyberpunk VR port) made
   foliage and NPCs shimmer more in game.
-- Both new hooks run only while SBSDebug is on, check the game's code first, and turn themselves off if a game update
-  changed it. The log names every change they make.
+- Weapon depth and the effects switch work only while SBSDebug is on and check the game's code first: if a game
+  update changed it, that part turns itself off (the weapon stays flat, the effects stay as they are). The log names
+  every change they make.
 - README: which HUD and screen effects ghost in 3D, and the game settings that turn them off.
 - README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.

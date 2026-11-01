@@ -1884,7 +1884,7 @@ static void rt_on(int i)
     else *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 2; // Ultra
 }
 
-TEST(any_ray_tracing_keeps_the_weapon_flat)
+TEST(each_listed_ray_tracing_setting_keeps_the_weapon_flat)
 {
     for (int i = RT_PATH; i <= RT_LIGHTING; i++) {
         const char *name = i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting";
@@ -1903,8 +1903,7 @@ TEST(any_ray_tracing_keeps_the_weapon_flat)
 
 // The gun's log lines when the weapon gets its depth back, and when its eye gap goes to 0.
 #define LOG_GUN_DEPTH \
-    "gun: path tracing, RT Lighting, Sun Shadows and Local Shadows are off (or the ray tracing switch is): the weapon "\
-    "has depth"
+    "gun: no path tracing, RT Lighting or RT shadows: the weapon has depth"
 #define LOG_GAP_ZERO \
     "gun: path tracing or RT Lighting or Shadows on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)"
 

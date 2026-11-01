@@ -641,7 +641,7 @@ static const char *const RT_BOOLS[] = { "RayTracing", "RayTracedPathTracing", "R
 #define RT_LIGHTING RT_BOOL_COUNT // fg.rtVars: RT Lighting's var after the bools
 _Static_assert(sizeof(fg.rtVars) / sizeof(fg.rtVars[0]) == RT_BOOL_COUNT + 1, "fg.rtVars: RT_BOOLS and RT Lighting");
 #define RT_UNKNOWN 0    // fg.rtState: not looked at yet
-#define RT_OFF 1        //   all off: the weapon gets its depth
+#define RT_OFF 1        //   none on (RT Reflections may be): the weapon gets its depth
 #define RT_ON 2         //   one is on: the weapon stays flat
 #define RT_UNREADABLE 3 //   the settings weren't found: the weapon stays flat
 
@@ -707,8 +707,7 @@ static int gun_allowed(void)
             plugin_log(1, "gun: ray tracing is on (%s): the weapon stays flat, as in the game (its ray-traced light "
                           "and shadows would differ between the eyes)", on);
         else
-            plugin_log(1, "gun: path tracing, RT Lighting, Sun Shadows and Local Shadows are off (or the ray tracing "
-                          "switch is): the weapon has depth");
+            plugin_log(1, "gun: no path tracing, RT Lighting or RT shadows: the weapon has depth");
     }
     return state == RT_OFF;
 }
@@ -932,9 +931,9 @@ static void count_gun(const EyePlaces *kept)
 }
 
 // Weapon Depth as the view producer reads it each frame. While the gun hook keeps the weapon flat for ray tracing
-// (gun_allowed's settings on, or not found; in side by side) it answers 0, as if Weapon Depth were 0: the game's flat
-// weapon then sits at screen depth in both eyes, with no shift between them (above 0 the flat picture is only slid
-// apart, which looks wrong). The setting itself keeps its value, so once those are off the weapon gets its depth from
+// (gun_allowed's settings on, or not found yet; in side by side) it answers 0, as if Weapon Depth were 0: the game's
+// flat weapon then sits at screen depth in both eyes, with no shift between them (above 0 the flat picture is only
+// slid apart, which looks wrong). The setting itself keeps its value, so once those are off the weapon gets its depth from
 // it again.
 HOOK float hook_weapon_sep(void *settings)
 {

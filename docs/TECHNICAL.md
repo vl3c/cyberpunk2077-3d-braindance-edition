@@ -240,17 +240,17 @@ camera exists), with the game's bool lookup (the one the handler uses, found by 
 list lookup (found by the frame generation checks); the detour on the render threads only reads them. The lookups
 stop the game on a name they don't know, so only names the 2.5 game has are asked for. Until they're found, or if
 those checks failed at load, the weapon stays flat (logged at load). Each change is logged (`gun: ray tracing is on
-(...)` / `is off`).
+(...)` / `gun: no path tracing, RT Lighting or RT shadows`).
 
 The plugin also hooks the weapon separation getter (`RVA 0x22849D0`: under the stereo
 settings lock it returns the float at `+0x57C`, Weapon Depth already in metres, `0.017` per unit). The view producer
 reads it once a frame for the first-person plane: the eye cameras sit half of it left and right of the centre
 (`RVA 0x206EC30`), and the camera build's off-axis shift uses it too (`+0x3C0`). Above 0 the game's flat weapon is
 only slid apart between the eyes, which looks wrong, so while the weapon stays flat for ray tracing (one of the
-settings above on, or the settings not found) and SBSDebug is on, the hook answers 0, as if Weapon Depth were 0,
-without touching the setting: once those are off the slider works again. If the getter's check fails, the flat
-weapon keeps the game's Weapon Depth shift under ray tracing. If CDPR fixes the ray-traced first-person lighting in stereo, both
-the step-aside and this can go.
+settings above on, or the vars not found yet) and SBSDebug is on, the hook answers 0, as if Weapon Depth were 0,
+without touching the setting: once those are off the slider works again. If the getter's check fails, or the
+lookups weren't found at load (the getter isn't hooked then), the flat weapon keeps the game's Weapon Depth shift. If
+CDPR fixes the ray-traced first-person lighting in stereo, both the step-aside and this can go.
 
 ## Upscaler jitter in 3D
 
