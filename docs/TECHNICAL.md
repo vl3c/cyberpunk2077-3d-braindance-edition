@@ -200,13 +200,14 @@ tells DLSS, FSR or XeSS the offset; the upscaler builds a sharper picture from t
 frame, but each eye fills only half of it. So each eye's picture moves half a pixel sideways while the upscaler is told
 a whole one (vertical is right). The Cyberpunk VR port found and measured this
 ([docs/engine-stereo-plan.md](https://github.com/dariulone/cyberpunk-vr-port/blob/main/docs/engine-stereo-plan.md),
-"Lamp flicker with DLSS only").
+"Lamp flicker with DLSS only"). It fixed it on the DLSS side for its own per-eye DLSS; its test of this change with
+TAA and FSR 2.1 on still frames showed no gain (docs/engine-stereo-framegen-foveated-20261024.md).
 
 A fifth detour, on the camera build, hands an eye camera half that width for the build and then puts the descriptor's
-width back, so anything else that reads it sees the game's value. Widths under 2 (no jitter: the previous frame's
+width back, so anything that reads it after the build sees the game's value. Widths under 2 (no jitter: the previous frame's
 camera) and every other camera are left alone, and so is everything while `SBSDebug` is off. Before attaching, the
 plugin checks the build's start, its eye branch, the jitter call going to the jitter offset function (which must also
-be where its own hash resolves, double the jitter and divide by the size) and being its only call there. If anything
+be where its own hash resolves, and double the jitter and divide it by the size) and being its only call there. If anything
 doesn't match, only this detour stays off; it's its own group.
 
 ## Building and testing

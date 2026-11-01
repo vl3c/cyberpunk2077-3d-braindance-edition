@@ -2,10 +2,9 @@
 
 ## Unreleased
 
-- 3D with DLSS, FSR or XeSS: the game moved each eye's picture only half as far sideways as it told the upscaler
-  (the anti-aliasing jitter), which can make small lights flicker and fine detail shimmer. The RED4ext plugin now
-  gives each eye's camera its own width for the jitter (one more small hook on the camera build, checked first like
-  the others; the bug was found by the Cyberpunk VR port).
+- In 3D the game moved each eye's picture only half as far sideways as it told DLSS, FSR or XeSS (the anti-aliasing
+  jitter). The RED4ext plugin now gives each eye's camera its own width for the jitter, so the two match (one more
+  small hook on the camera build, checked first like the others; the mismatch was found by the Cyberpunk VR port).
 - README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
 
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.

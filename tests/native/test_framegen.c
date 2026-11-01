@@ -34,7 +34,7 @@ void plugin_log(int level, const char *fmt, ...)
 // A fake copy of the game's code and data, inside this exe's image (like the real targets are inside the game's).
 static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
-static uint8_t f_build[CAMERA_BUILD_SIZE], f_offset[64]; // the camera build and the jitter offset matrix
+static uint8_t f_build[CAMERA_BUILD_SIZE], f_offset[JITTER_OFFSET_SIZE]; // the camera build and the jitter offset matrix
 static uint64_t f_cnames[2];
 static const char *f_sbsVar[8];
 static int f_attachFails; // which Attach call fails (1-based), 0 = none
@@ -1519,6 +1519,18 @@ TEST(the_jitter_hook_attaches_on_its_own)
     CHECK_EQ_INT(fg.framegen, 0); // the frame generation group is apart
 }
 
+TEST(the_jitter_hook_attaches_when_the_frame_generation_hooks_cant)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    f_o3d[0] ^= 1; // the 3D Mode handler changed: nothing of the frame generation groups attaches
+    CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
+    CHECK_EQ_INT(f_attached, 0);
+    CHECK_EQ_INT(attach_jitter(NULL, &f_hooking, fake_resolve), 1);
+    CHECK_EQ_INT(f_attached, 1);
+    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar);
+}
+
 // A changed camera build or jitter matrix: nothing is attached and the log says what.
 static void expect_no_jitter_hook(const char *why)
 {
@@ -1551,12 +1563,15 @@ TEST(the_jitter_hook_isnt_attached_when_the_game_code_changed)
     f_offset[7] = 0x90; // doesn't double the jitter
     expect_no_jitter_hook("the jitter offset matrix doesn't match");
     ft_begin();
+    f_offset[JITTER_OFFSET_SIZE - 2] = 0x20; // stores another row
+    expect_no_jitter_hook("the jitter offset matrix doesn't match");
+    ft_begin();
     f_build[0x600] = 0xE8;
     put_rel32(f_build + 0x605, f_offset);
     expect_no_jitter_hook("calls the jitter offset matrix somewhere else too");
     ft_begin();
     f_sbsVar[VAR_NAME / 8] = "StereoEnabled";
-    expect_no_jitter_hook("isn't named [Odyssey3D] SBSDebug");
+    expect_no_jitter_hook("jitter: the SBSDebug config var isn't named [Odyssey3D] SBSDebug (game update?)");
 }
 
 TEST(a_failed_jitter_attach_is_logged)
