@@ -39,7 +39,8 @@
 // The handler hook also turns screen effects off when 3D Mode is switched on. On a switch in the menu the game's
 // handler already turns Chromatic Aberration and Film Grain off itself (its own rule for 3D Mode); in side by side
 // Depth of Field, Lens Flares, Motion Blur and Vignette ghost or blur too, so right after the handler, on the same
-// switch, the hook turns those off through the game's own setters, as the menu would. Nothing is greyed or locked: a
+// switch, the hook turns those off through the game's own setters, as the menu would, and turns on the Accessibility
+// settings that remove the HUD's visual effects and lens distortion (they ghost too). Nothing is greyed or locked: a
 // player who turns one back on keeps it until the game next runs its own effects off (a menu switch to 3D, or another
 // menu event the handler treats the same way). Only then (never at start-up), only while SBSDebug is on, and only if
 // its checks passed (check_effects): otherwise only the game's two go off.
@@ -475,6 +476,27 @@ static int32_t list_index(const uint8_t *var, const char *name)
     return -1;
 }
 
+// The HUD's own effects, which ghost in opposite directions in each eye: Accessibility > Interface "Remove HUD Visual
+// Effects" (its blur and glow) and "Remove HUD Lens Distortion", bools in /accessibility/interface (true = removed).
+static const char *const HUD_REMOVALS[] = { "PostProcessingReduction", "LensDistortionOverride" };
+#define HUD_REMOVAL_COUNT 2
+
+// Turns the HUD's effects off: both removals on, through the game's bool setter (as the menu would).
+static void hud_effects_off(void)
+{
+    uint64_t group = cname("/accessibility/interface");
+    for (int i = 0; i < HUD_REMOVAL_COUNT; i++) {
+        uint8_t *var = fg.boolVar(group, cname(HUD_REMOVALS[i]));
+        if (!readable(var, SETTING_SIZE)) {
+            plugin_log(1, "effects: couldn't find the %s setting, left as it is", HUD_REMOVALS[i]);
+            continue;
+        }
+        fg.boolSet(var, 1, SET_FROM_MENU);
+        plugin_log(1, "effects: %s on (the HUD's %s removed; can be turned back off)", HUD_REMOVALS[i],
+                   i ? "lens distortion" : "visual effects");
+    }
+}
+
 // Turns the effects off the way the game's handler turns its two off: the bools through its bool setter, Motion Blur
 // (a list: Off, Low, High) to Off through its list setter. Called right after the handler, on its thread.
 static void effects_off(void)
@@ -508,6 +530,7 @@ static void effects_off(void)
         snprintf(done + strlen(done), sizeof(done) - strlen(done), "%sMotionBlur", count++ ? ", " : "");
     }
     plugin_log(1, "effects: %d of 6 off (%s; each can be turned back on)", count, count ? done : "none");
+    hud_effects_off();
 }
 
 HOOK void hook_o3d_changed(uint8_t *event)
