@@ -32,9 +32,11 @@ void plugin_log(int level, const char *fmt, ...)
 }
 
 // A fake copy of the game's code and data, inside this exe's image (like the real targets are inside the game's).
-static uint8_t f_o3d[O3D_SIZE], f_setFg[64], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
+static uint8_t f_o3d[O3D_SIZE], f_setFg[SET_FG_SIZE], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
 static uint64_t f_cnames[2];
+static uint8_t f_boolVarCode[16], f_boolSetCode[16], f_listSetCode[16];
+static uint64_t f_effectSlots[4]; // the handler's CNames: its two settings and their group, twice
 static const char *f_sbsVar[8];
 static int f_attachFails; // which Attach call fails (1-based), 0 = none
 static int f_attached, f_detached;
@@ -60,6 +62,18 @@ static void fake_game(void)
     memset(end, 0, 4);
     put_rel32(end + 4, f_setFg); // the trailing E8's rel32
     put(f_o3d + 0x2FE, AOB_O3D_GREY);
+    uint8_t *v = f_o3d + 0xDF;
+    put(v, AOB_O3D_EFFECT_VARS);
+    put_rel32(v + EFFECT_VARS_NAME1 + 7, &f_effectSlots[0]);
+    put_rel32(v + EFFECT_VARS_GROUP1 + 7, &f_effectSlots[1]);
+    put_rel32(v + EFFECT_VARS_CALL1 + 5, f_boolVarCode);
+    put_rel32(v + EFFECT_VARS_NAME2 + 7, &f_effectSlots[2]);
+    put_rel32(v + EFFECT_VARS_GROUP2 + 7, &f_effectSlots[3]);
+    put_rel32(v + aob_len(AOB_O3D_EFFECT_VARS) + 4, f_boolVarCode);
+    uint8_t *o = f_o3d + 0x2D2;
+    put(o, AOB_O3D_EFFECTS_OFF);
+    put_rel32(o + EFFECTS_OFF_SET1 + 5, f_boolSetCode);
+    put_rel32(o + aob_len(AOB_O3D_EFFECTS_OFF) + 4, f_boolSetCode);
 
     put(f_setFg, AOB_SET_FG);
     put_rel32(f_setFg + SET_FG_ROOT + 5, f_lookup[0]);
@@ -67,6 +81,7 @@ static void fake_game(void)
     put_rel32(f_setFg + SET_FG_GROUP + 5, f_lookup[1]);
     put_rel32(f_setFg + SET_FG_NAME + 7, &f_cnames[1]);
     put_rel32(f_setFg + SET_FG_VAR + 5, f_lookup[2]);
+    put_rel32(put(f_setFg + 0x90, AOB_SET_FG_SET) + 4, f_listSetCode);
 
     put(f_flag, AOB_FLAG_COMPUTE);
     put(f_flag + 0x5BC, AOB_FLAG_DLSSG);
@@ -179,8 +194,80 @@ static void orig_o3d(uint8_t *event)
     if (readable(event, 2)) event[1] = 0;
 }
 
+// The screen effect settings: five bools and Motion Blur (a list: Off, Low, High), and what was set.
+static uint8_t f_bools[EFFECT_COUNT][SETTING_SIZE], f_blur[SETTING_SIZE], f_blurValues[3][CSTRING_SIZE];
+static int f_boolSets, f_listSets, f_missingBool = -1;
+static uint8_t *f_boolSetVar[8], f_boolSetValue[8], f_boolSetMode[8];
+static int32_t f_listSetIndex;
+static uint8_t f_listSetMode;
+static uint8_t *f_listSetVar;
+
+static uint8_t f_hud[HUD_REMOVAL_COUNT][SETTING_SIZE]; // the HUD removals in /accessibility/interface
+
+static uint8_t *fake_bool_var(uint64_t group, uint64_t name)
+{
+    if (group == cname("/accessibility/interface")) {
+        for (int i = 0; i < HUD_REMOVAL_COUNT; i++)
+            if (name == cname(HUD_REMOVALS[i])) return f_hud[i];
+        CHECK_MSG(0, "looked up an interface setting the 2.5 game doesn't have (the game would stop)");
+        return NULL;
+    }
+    if (group != cname("/graphics/basic")) return NULL;
+    for (int i = 0; i < EFFECT_COUNT; i++)
+        if (name == cname(EFFECTS[i])) return i == f_missingBool ? NULL : f_bools[i];
+    return NULL;
+}
+
+static void fake_bool_set(uint8_t *var, uint8_t value, uint8_t mode)
+{
+    if (f_boolSets < 8) {
+        f_boolSetVar[f_boolSets] = var;
+        f_boolSetValue[f_boolSets] = value;
+        f_boolSetMode[f_boolSets] = mode;
+    }
+    f_boolSets++;
+}
+
+static void fake_list_set(uint8_t *var, int32_t index, uint8_t mode)
+{
+    f_listSets++;
+    f_listSetVar = var;
+    f_listSetIndex = index;
+    f_listSetMode = mode;
+}
+
+static void fake_effects(void)
+{
+    static const char *const names[] = { "Off", "Low", "High" };
+    memset(f_bools, 0, sizeof(f_bools));
+    memset(f_blur, 0, sizeof(f_blur));
+    for (int i = 0; i < 3; i++) put_cstring(f_blurValues[i], names[i]);
+    *(uint32_t *)(f_blur + SETTING_FLAGS) = 0x8F; // as in the game: a fixed list, without FLAG_LIST_BUILT
+    *(uint8_t **)(f_blur + SETTING_VALUES) = &f_blurValues[0][0];
+    *(uint32_t *)(f_blur + SETTING_VALUES + 0xC) = 3;
+    f_effectSlots[0] = cname("ChromaticAberration");
+    f_effectSlots[1] = f_effectSlots[3] = cname("/graphics/basic");
+    f_effectSlots[2] = cname("FilmGrain");
+    f_boolSets = f_listSets = 0;
+    f_missingBool = -1;
+    f_listSetVar = NULL;
+    f_listSetIndex = -1;
+    fg.boolVar = fake_bool_var;
+    fg.boolSet = fake_bool_set;
+    fg.listSet = fake_list_set;
+    fg.gameOff[0] = &f_effectSlots[0];
+    fg.gameOff[1] = &f_effectSlots[2];
+    fg.effectsGroup = &f_effectSlots[1];
+}
+
+static uint8_t f_basicGroup[8];
 static void *fake_root(void) { return f_lookup; }
-static void *fake_find(void *parent, uint64_t cname) { return cname == f_cnames[1] ? (void *)f_var : (void *)f_lookup; }
+static void *fake_find(void *parent, uint64_t name)
+{
+    if (name == cname("/graphics/basic")) return f_basicGroup;
+    if (name == cname("MotionBlur")) return parent == f_basicGroup ? f_blur : NULL;
+    return name == f_cnames[1] ? (void *)f_var : (void *)f_lookup;
+}
 static void *fake_find_nothing(void *parent, uint64_t cname) { return NULL; }
 
 // Like the game's IsFsrFgEnabled: fsr[0x59] && !fsr[0x5A]. f_renderer's FSR object is f_fsr, its XeSS object f_xess.
@@ -247,6 +334,7 @@ static void ft_begin(void)
     fg.sbsVar = (const uint8_t *)f_sbsVar;
     f_flagsAfterOrig[0] = 0;
     f_flagsAfterOrig[1] = FEATURE_BIT(FEATURE_STEREO);
+    fake_effects();
 }
 
 static void set_sbs_debug(int on) { ((uint8_t *)f_sbsVar)[VAR_VALUE] = (uint8_t)on; }
@@ -1459,6 +1547,180 @@ TEST(attach_range_detaches_what_it_attached_when_one_fails)
 TEST(red4ext_resolver_needs_red4ext)
 {
     CHECK(red4ext_resolver() == NULL); // no RED4ext.dll in this process
+}
+
+// ===================================================================================== screen effects
+
+TEST(cname_is_the_engines_fnv1a_hash)
+{
+    // The CNames SetFrameGeneration looks up, and one seen as an immediate in the 2.5 exe.
+    CHECK(cname("/graphics/presets") == 0x1AF15AB3D7A612E0ull);
+    CHECK(cname("FrameGeneration") == 0x1ACE52F474ADA088ull);
+    CHECK(cname("MotionBlur") == 0x8F10615A2F8D4192ull);
+}
+
+TEST(check_effects_finds_the_games_lookup_and_setters)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 1);
+    CHECK(fg.boolVar == (BoolVarFn)(void *)f_boolVarCode);
+    CHECK(fg.boolSet == (BoolSetFn)(void *)f_boolSetCode);
+    CHECK(fg.listSet == (ListSetFn)(void *)f_listSetCode);
+    CHECK_EQ_PTR(fg.gameOff[0], &f_effectSlots[0]);
+    CHECK_EQ_PTR(fg.gameOff[1], &f_effectSlots[2]);
+    CHECK(strstr(ft_log, "effects: checked (the handler's lookup at +0xDF, its effects off at +0x2D2)") != NULL);
+}
+
+TEST(the_effects_off_isnt_set_up_when_the_game_code_changed)
+{
+    static const char *const logs[] = {
+        "the settings it turns off aren't looked up where expected",
+        "its own effects off isn't there",
+        "its effects off comes before the lookup",
+        "the list setter call isn't there",
+        "its two settings aren't looked up the same way",
+        "its two settings aren't turned off the same way",
+    };
+    for (int k = 0; k < 6; k++) {
+        ft_begin();
+        memset(&fg, 0, sizeof(fg));
+        switch (k) {
+        case 0: f_o3d[0xDF + 7] = 0x90; break;
+        case 1: f_o3d[0x2D2 + 14] = 0x90; break;
+        case 2:
+            memset(f_o3d + 0xDF, 0xCC, (size_t)aob_len(AOB_O3D_EFFECT_VARS) + 4);
+            put(f_o3d + 0x400, AOB_O3D_EFFECT_VARS);
+            break;
+        case 3: f_setFg[0x90 + 7] = 0x90; break;
+        case 4: put_rel32(f_o3d + 0xDF + aob_len(AOB_O3D_EFFECT_VARS) + 4, f_other); break;
+        case 5: put_rel32(f_o3d + 0x2D2 + aob_len(AOB_O3D_EFFECTS_OFF) + 4, f_other); break;
+        }
+        CHECK_MSG(attach_hooks(NULL, &f_hooking, fake_resolve) == 1, "case %d: frame generation should still attach", k);
+        CHECK_MSG(fg.boolVar == NULL && fg.boolSet == NULL && fg.listSet == NULL, "case %d set up", k);
+        CHECK_MSG(strstr(ft_log, logs[k]) != NULL, "case %d: no \"%s\" in:\n%s", k, logs[k], ft_log);
+        CHECK(strstr(ft_log, "effects: switching 3D Mode on turns off only what the game turns off") != NULL);
+    }
+}
+
+static void menu_switch(uint8_t ev0, uint8_t ev1)
+{
+    uint8_t event[8] = { ev0, ev1 };
+    hook_o3d_changed(event);
+}
+
+TEST(a_menu_switch_to_3d_turns_the_effects_off)
+{
+    ft_begin();
+    menu_switch(0, 1);
+    REQUIRE_EQ_INT(f_boolSets, EFFECT_COUNT + HUD_REMOVAL_COUNT);
+    for (int i = 0; i < HUD_REMOVAL_COUNT; i++) {
+        CHECK_MSG(f_boolSetVar[EFFECT_COUNT + i] == f_hud[i], "%s", HUD_REMOVALS[i]);
+        CHECK_EQ_INT(f_boolSetValue[EFFECT_COUNT + i], 1); // removed
+        CHECK_EQ_INT(f_boolSetMode[EFFECT_COUNT + i], SET_FROM_MENU);
+    }
+    CHECK(strstr(ft_log, "effects: PostProcessingReduction on (the HUD's visual effects removed") != NULL);
+    CHECK(strstr(ft_log, "effects: LensDistortionOverride on (the HUD's lens distortion removed") != NULL);
+    for (int i = 0; i < EFFECT_COUNT; i++) {
+        CHECK_MSG(f_boolSetVar[i] == f_bools[i], "%s", EFFECTS[i]);
+        CHECK_EQ_INT(f_boolSetValue[i], 0);
+        CHECK_EQ_INT(f_boolSetMode[i], SET_FROM_MENU);
+    }
+    CHECK_EQ_INT(f_listSets, 1);
+    CHECK_EQ_PTR(f_listSetVar, f_blur);
+    CHECK_EQ_INT(f_listSetIndex, 0); // Off
+    CHECK_EQ_INT(f_listSetMode, SET_FROM_MENU);
+    CHECK(strstr(ft_log, "the game turned off ChromaticAberration and FilmGrain, turning off the rest") != NULL);
+    CHECK(strstr(ft_log, "effects: 6 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares, Vignette, "
+                         "MotionBlur; each can be turned back on)") != NULL);
+    CHECK(strstr(ft_log, "isn't /graphics/basic") == NULL);
+}
+
+TEST(the_effects_use_the_group_the_game_uses)
+{
+    ft_begin();
+    f_effectSlots[1] = cname("/graphics/other"); // a game update moved them
+    menu_switch(0, 1);
+    CHECK(strstr(ft_log, "effects: the game's group for its two isn't /graphics/basic") != NULL);
+    CHECK_EQ_INT(f_boolSets, HUD_REMOVAL_COUNT); // the fake has the effects in /graphics/basic only
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "effects: 0 of 6 off (none; each can be turned back on)") != NULL);
+}
+
+TEST(the_effects_stay_as_they_are_otherwise)
+{
+    ft_begin();
+    menu_switch(0, 0); // start-up or a display change
+    menu_switch(1, 1); // the game's own condition wants [0] clear too
+    hook_o3d_changed(NULL);
+    f_o3dSetsFgOff = 0; // the handler took the 3D-off branch
+    menu_switch(0, 1);
+    f_o3dSetsFgOff = 1;
+    set_sbs_debug(0); // a real 3D monitor: the game's rule
+    menu_switch(0, 1);
+    set_sbs_debug(1);
+    fg.framegen = 0; // the frame generation checks failed (no SBSDebug var)
+    menu_switch(0, 1);
+    fg.framegen = 1;
+    fg.boolVar = NULL; // the effects checks failed
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_boolSets, 0);
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "effects:") == NULL);
+}
+
+TEST(a_setting_that_isnt_found_is_left_as_it_is)
+{
+    ft_begin();
+    f_missingBool = 4; // Vignette
+    *(uint32_t *)(f_blur + SETTING_VALUES + 0xC) = 0; // Motion Blur's list empty
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_boolSets, EFFECT_COUNT - 1 + HUD_REMOVAL_COUNT);
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "effects: couldn't find the Vignette setting, left as it is") != NULL);
+    CHECK(strstr(ft_log, "effects: couldn't find the Motion Blur setting or its Off, left as it is") != NULL);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 0 values, 0 read as text)") != NULL);
+    CHECK(strstr(ft_log, "effects: 4 of 6 off (ChromaticAberration, FilmGrain, DepthOfField, LensFlares; each can be "
+                         "turned back on)") != NULL);
+}
+
+TEST(motion_blurs_off_is_found_by_name)
+{
+    ft_begin();
+    static const char *const names[] = { "High", "Low", "Off" }; // another order: the index comes from the name
+    for (int i = 0; i < 3; i++) put_cstring(f_blurValues[i], names[i]);
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_listSets, 1);
+    CHECK_EQ_INT(f_listSetIndex, 2);
+}
+
+TEST(a_list_whose_values_arent_text_is_left_as_it_is)
+{
+    ft_begin();
+    static uint8_t notText[3][CSTRING_SIZE];
+    memset(notText, 0, sizeof(notText));
+    for (int i = 0; i < 3; i++) {
+        *(uint64_t *)notText[i] = 0x8F10615A2F8D4192ull + (uint64_t)i; // CName-like values
+        *(uint32_t *)(notText[i] + CSTRING_LEN_FLAGS) = 0xFFFFFFFFu;   // no sensible length
+    }
+    *(uint8_t **)(f_blur + SETTING_VALUES) = &notText[0][0];
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 3 values, 0 read as text; the first one's "
+                         "bytes: 92 41 8D 2F 5A 61 10 8F)") != NULL);
+    *(uint8_t **)(f_blur + SETTING_VALUES) = NULL; // or no values at all
+    menu_switch(0, 1);
+    CHECK_EQ_INT(f_listSets, 0);
+    CHECK(strstr(ft_log, "3 values, 0 read as text; the first one's bytes: unreadable)") != NULL);
+}
+
+TEST(unknown_settings_the_game_turns_off_are_named_so)
+{
+    ft_begin();
+    f_effectSlots[2] = 0x1234;
+    menu_switch(0, 1);
+    CHECK(strstr(ft_log, "the game turned off ChromaticAberration and a setting this doesn't know") != NULL);
+    CHECK_EQ_INT(f_boolSets, EFFECT_COUNT + HUD_REMOVAL_COUNT);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }

@@ -36,11 +36,21 @@
 // XeSS. With FSR at start the game presents through FidelityFX's frame generation swap chain, with XeSS through
 // Intel's (libxess_fg.dll).
 //
+// The handler hook also turns screen effects off when 3D Mode is switched on. On a switch in the menu the game's
+// handler already turns Chromatic Aberration and Film Grain off itself (its own rule for 3D Mode); in side by side
+// Depth of Field, Lens Flares, Motion Blur and Vignette ghost or blur too, so right after the handler, on the same
+// switch, the hook turns those off through the game's own setters, as the menu would, and turns on the Accessibility
+// settings that remove the HUD's visual effects and lens distortion (they ghost too). Nothing is greyed or locked: a
+// player who turns one back on keeps it until the game next runs its own effects off (a menu switch to 3D, or another
+// menu event the handler treats the same way). Only then (never at start-up), only while SBSDebug is on, and only if
+// its checks passed (check_effects): otherwise only the game's two go off.
+//
 // License: MIT (see LICENSE).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,10 +69,11 @@
 #define VAR_NAME 0x08            // config var: const char *name
 #define VAR_GROUP 0x10           // config var: const char *group
 #define VAR_VALUE 0x30           // config var: the bool value
-// Frame Generation's settings var (a list setting whose values the game fills in at run time).
+// A list setting's var: Frame Generation's (values filled in at run time), or a fixed list such as Motion Blur's.
 #define SETTING_FLAGS 0x44       // flags:
 #define FLAG_FROM_FILE 0x20u     //   SETTING_FILE_VALUE holds the value read from UserSettings.json (list not built yet)
-#define FLAG_LIST_BUILT 0x40u    //   SETTING_VALUES is filled, SETTING_PENDING indexes it
+#define FLAG_LIST_BUILT 0x40u    //   a run-time list is built: SETTING_VALUES is filled, SETTING_PENDING indexes it
+                                 //   (fixed lists, flags 0x8F, have their values without it)
 #define FLAG_GREYED 0x800u       //   shown greyed out
 #define SETTING_FILE_VALUE 0x58  // CString
 #define SETTING_APPLIED 0x78     // int32: applied index
@@ -81,6 +92,10 @@
 #define XESS_FG_ON 0xDD          //   its "frame generation on" flag (uint8_t), what FlagCompute reads
 #define FEATURE_STEREO 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
+#define SET_FG_SIZE 0xBE         // SetFrameGeneration's code (pdata 0x2075E60-0x2075F1E)
+#define EVENT_NO_MENU 0          // the handler's event: uint8 [0] must be 0 and
+#define EVENT_MENU 1             //   [1] 1 (a switch in the menu) for the game's own effects off
+#define SET_FROM_MENU 1          // the mode the handler passes the setters (as for SetFrameGeneration(0, 1))
 
 // Byte patterns, each found exactly once in the 2.5 exe ("??" = any byte).
 // Start of the 3D Mode handler.
@@ -91,6 +106,21 @@ static const char AOB_O3D_FG_OFF[] =
     "41 B4 01 E8 ?? ?? ?? ?? 0F B6 D8 E8 ?? ?? ?? ?? 41 0F B6 D4 44 0F B6 F0 33 C9 E8";
 // In it, the grey: mov eax,[r15+44h]; bts eax,0Bh.
 static const char AOB_O3D_GREY[] = "41 8B 47 44 0F BA E8 0B E9";
+// In it, the two settings it turns off on a menu switch to 3D: var = boolVar(*group, *name) (the E8s), twice, the
+// first kept at [rbp+77h] (the second is kept at [rbp+7Fh] right after the pattern).
+static const char AOB_O3D_EFFECT_VARS[] =
+    "48 8B 15 ?? ?? ?? ?? 48 8B F8 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? "
+    "48 89 45 77 E8";
+#define EFFECT_VARS_NAME1 0     // mov rdx,[CName of the first setting]
+#define EFFECT_VARS_GROUP1 10   // mov rcx,[CName of its group]
+#define EFFECT_VARS_CALL1 17    // call boolVar
+#define EFFECT_VARS_NAME2 22
+#define EFFECT_VARS_GROUP2 29
+// And where it turns them off: if event[1] && !event[0]: boolSet([rbp+77h], 0, 1); boolSet([rbp+7Fh], 0, 1).
+static const char AOB_O3D_EFFECTS_OFF[] =
+    "41 80 7D 01 00 74 25 41 80 7D 00 00 75 1E 48 8B 4D 77 45 0F B6 C4 33 D2 E8 ?? ?? ?? ?? "
+    "48 8B 4D 7F 45 0F B6 C4 33 D2 E8";
+#define EFFECTS_OFF_SET1 24     // the first call to boolSet (the second is the pattern's last E8)
 // Start of SetFrameGeneration: it finds its settings var as var(group(root(), "/graphics/presets"),
 // "FrameGeneration"), the three calls at SET_FG_ROOT, SET_FG_GROUP and SET_FG_VAR.
 static const char AOB_SET_FG[] =
@@ -101,6 +131,8 @@ static const char AOB_SET_FG[] =
 #define SET_FG_GROUP 35        // call group(root, name)
 #define SET_FG_NAME 40         // mov rdx,[CName "FrameGeneration"]
 #define SET_FG_VAR 50          // call var(group, name)
+// In SetFrameGeneration, the end: index = clamp(index, the values at var+90h); listSet(var, index, mode) (the last E8).
+static const char AOB_SET_FG_SET[] = "4C 8D 87 90 00 00 00 8B D3 E8 ?? ?? ?? ?? 8B D0 44 0F B6 C6 48 8B CF E8";
 // Start of FlagCompute.
 static const char AOB_FLAG_COMPUTE[] =
     "4C 89 4C 24 20 4C 89 44 24 18 48 89 4C 24 08 53 41 54 41 55 41 57 48 83 EC 68 0F 57 C0 4D 8B D1 0F 11 02";
@@ -132,6 +164,9 @@ typedef uint8_t (*DlssgEnabledFn)(uint8_t *sl);
 typedef uint8_t (*FsrFgEnabledFn)(const uint8_t *fsr);
 typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
+typedef uint8_t *(*BoolVarFn)(uint64_t group, uint64_t name);
+typedef void (*BoolSetFn)(uint8_t *var, uint8_t value, uint8_t mode);
+typedef void (*ListSetFn)(uint8_t *var, int32_t index, uint8_t mode);
 
 // Frames whose frame generation feature was put back, for the log.
 typedef struct {
@@ -157,6 +192,11 @@ static struct {
     int offAsked;                 // that handler call asked for Frame Generation Off (its 3D-on branch)
     uint32_t *keptFlags;          // and it was kept: Frame Generation's flags, NULL if not kept
     RestoreCount dlssgCount, fsrCount, xessCount;
+    BoolVarFn boolVar;            // the effects off (all set when its checks passed, else NULL): the game's lookup
+    BoolSetFn boolSet;            //   of a bool setting, its bool setter, its list setter, and the CNames of the two
+    ListSetFn listSet;            //   settings the game turns off itself (read when used: filled at run time)
+    const uint64_t *gameOff[2];
+    const uint64_t *effectsGroup; //   and the CName of their group ("/graphics/basic"), the group used for all six
 } fg;
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
@@ -401,11 +441,114 @@ static void run_handler(uint8_t *event, int *offAsked, uint32_t **kept)
     fg.handlerThread = outerThread;
 }
 
+// The CName of a name: the engine's hash, 64-bit FNV-1a.
+static uint64_t cname(const char *s)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    while (*s) h = (h ^ (uint8_t)*s++) * 0x100000001B3ull;
+    return h;
+}
+
+// The screen effects that ghost or blur in side by side, all in /graphics/basic. The game itself turns the first two
+// off; they're set again (to the value it just set) so the list doesn't depend on which two those are.
+static const char *const EFFECTS[] = { "ChromaticAberration", "FilmGrain", "DepthOfField", "LensFlares", "Vignette" };
+#define EFFECT_COUNT 5
+
+// The name of the setting with this CName, if it's one of ours.
+static const char *effect_name(uint64_t name)
+{
+    for (int i = 0; i < EFFECT_COUNT; i++)
+        if (cname(EFFECTS[i]) == name) return EFFECTS[i];
+    return name == cname("MotionBlur") ? "MotionBlur" : NULL;
+}
+
+// Where a list setting's list has this value, -1 if it doesn't (or is empty). Logs the list's state when it doesn't
+// find it. FLAG_LIST_BUILT isn't needed: only lists the game fills in at run time (Frame Generation's) have it; a fixed
+// list (Motion Blur's: flags 0x8F) has its values from the start.
+static int32_t list_index(const uint8_t *var, const char *name)
+{
+    uint32_t flags = *(const uint32_t *)(var + SETTING_FLAGS);
+    const uint8_t *values = *(const uint8_t *const *)(var + SETTING_VALUES);
+    uint32_t count = *(const uint32_t *)(var + SETTING_VALUES + 0xC);
+    char value[32];
+    int read = 0;
+    for (uint32_t i = 0; i < count && count <= 16; i++)
+        if (read_cstring(values + (size_t)i * CSTRING_SIZE, value, sizeof(value))) {
+            read++;
+            if (strcmp(value, name) == 0) return (int32_t)i;
+        }
+    // When no value could be read as text, the first one's bytes show what the list holds instead.
+    char bytes[3 * 8 + 1] = "unreadable";
+    if (count && !read && readable(values, 8))
+        for (int i = 0; i < 8; i++) snprintf(bytes + 3 * i, 4, i < 7 ? "%02X " : "%02X", values[i]);
+    plugin_log(1, "settings: no '%s' in the list (flags 0x%X, %u values, %d read as text%s%s)", name, (unsigned)flags,
+               (unsigned)count, read, count && !read ? "; the first one's bytes: " : "", count && !read ? bytes : "");
+    return -1;
+}
+
+// The HUD's own effects, which ghost in opposite directions in each eye: Accessibility > Interface "Remove HUD Visual
+// Effects" (its blur and glow) and "Remove HUD Lens Distortion", bools in /accessibility/interface (true = removed).
+static const char *const HUD_REMOVALS[] = { "PostProcessingReduction", "LensDistortionOverride" };
+#define HUD_REMOVAL_COUNT 2
+
+// Turns the HUD's effects off: both removals on, through the game's bool setter (as the menu would).
+static void hud_effects_off(void)
+{
+    uint64_t group = cname("/accessibility/interface");
+    for (int i = 0; i < HUD_REMOVAL_COUNT; i++) {
+        uint8_t *var = fg.boolVar(group, cname(HUD_REMOVALS[i]));
+        if (!readable(var, SETTING_SIZE)) {
+            plugin_log(1, "effects: couldn't find the %s setting, left as it is", HUD_REMOVALS[i]);
+            continue;
+        }
+        fg.boolSet(var, 1, SET_FROM_MENU);
+        plugin_log(1, "effects: %s on (the HUD's %s removed; can be turned back off)", HUD_REMOVALS[i],
+                   i ? "lens distortion" : "visual effects");
+    }
+}
+
+// Turns the effects off the way the game's handler turns its two off: the bools through its bool setter, Motion Blur
+// (a list: Off, Low, High) to Off through its list setter. Called right after the handler, on its thread.
+static void effects_off(void)
+{
+    uint64_t basic = *fg.effectsGroup;
+    if (basic != cname("/graphics/basic"))
+        plugin_log(1, "effects: the game's group for its two isn't /graphics/basic (0x%016llX), using it anyway",
+                   (unsigned long long)basic);
+    const char *a = effect_name(*fg.gameOff[0]), *b = effect_name(*fg.gameOff[1]);
+    plugin_log(1, "effects: 3D Mode switched on in the menu: the game turned off %s and %s, turning off the rest",
+               a ? a : "a setting this doesn't know", b ? b : "a setting this doesn't know");
+    char done[160] = "";
+    int count = 0;
+    for (int i = 0; i < EFFECT_COUNT; i++) {
+        uint8_t *var = fg.boolVar(basic, cname(EFFECTS[i]));
+        if (!readable(var, SETTING_SIZE)) {
+            plugin_log(1, "effects: couldn't find the %s setting, left as it is", EFFECTS[i]);
+            continue;
+        }
+        fg.boolSet(var, 0, SET_FROM_MENU);
+        plugin_log(2, "effects: %s off", EFFECTS[i]);
+        snprintf(done + strlen(done), sizeof(done) - strlen(done), "%s%s", count++ ? ", " : "", EFFECTS[i]);
+    }
+    uint8_t *blur = fg.var(fg.group(fg.root(), basic), cname("MotionBlur"));
+    int32_t off = readable(blur, SETTING_SIZE) ? list_index(blur, "Off") : -1;
+    if (off < 0)
+        plugin_log(1, "effects: couldn't find the Motion Blur setting or its Off, left as it is");
+    else {
+        fg.listSet(blur, off, SET_FROM_MENU);
+        plugin_log(2, "effects: MotionBlur off");
+        snprintf(done + strlen(done), sizeof(done) - strlen(done), "%sMotionBlur", count++ ? ", " : "");
+    }
+    plugin_log(1, "effects: %d of 6 off (%s; each can be turned back on)", count, count ? done : "none");
+    hud_effects_off();
+}
+
 HOOK void hook_o3d_changed(uint8_t *event)
 {
     // event[1] is 1 when 3D Mode was switched in the menu, 0 at start-up and on a display change. Read before the
     // handler runs: it clears it on the way out.
     int ev1 = readable(event, 2) ? event[1] : -1;
+    int ev0 = ev1 >= 0 ? event[0] : -1;
     int offAsked;
     uint32_t *flags;
     run_handler(event, &offAsked, &flags);
@@ -416,6 +559,9 @@ HOOK void hook_o3d_changed(uint8_t *event)
                offAsked ? "on" : "off", !fg.framegen ? "not checked" : sbs_debug() ? "on" : "off");
     menus_note_3d_mode(offAsked);
     if (flags) ungrey(flags);
+    // The game's own effects off ran under the same condition, in the branch that asked for Frame Generation Off.
+    if (offAsked && ev1 == EVENT_MENU && ev0 == EVENT_NO_MENU && fg.boolVar && fg.framegen && sbs_debug())
+        effects_off();
 }
 
 // Whether this SetFrameGeneration call is the 3D Mode handler's own "Off": (0, 1), on its thread, while it runs.
@@ -691,6 +837,55 @@ static int check_sbs_var(const uint8_t *sbs)
     return 1;
 }
 
+// The effects off: in the handler, its own effects off (the bool lookup, the CNames of its two settings and their
+// group, the bool setter), and SetFrameGeneration's list setter. Fills fg's effects fields when they all pass, else
+// logs which didn't and leaves them NULL: then only the game's two go off. Reads SetFrameGeneration's code, so it runs
+// before the hooks are attached.
+static void check_effects(const uint8_t *o3d, const uint8_t *setFg)
+{
+    long vars = aob_find_unique(o3d, O3D_SIZE, AOB_O3D_EFFECT_VARS);
+    long off = aob_find_unique(o3d, O3D_SIZE, AOB_O3D_EFFECTS_OFF);
+    long set = in_exe((uintptr_t)setFg, SET_FG_SIZE) ? aob_find_unique(setFg, SET_FG_SIZE, AOB_SET_FG_SET) : -1;
+    const char *why = NULL;
+    uintptr_t boolVar = 0, boolSet = 0, listSet = 0, slots[4] = { 0 };
+    if (vars < 0) why = "the 3D Mode handler: the settings it turns off aren't looked up where expected";
+    else if (off < 0) why = "the 3D Mode handler: its own effects off isn't there";
+    else if (off < vars) why = "the 3D Mode handler: its effects off comes before the lookup";
+    else if (set < 0) why = "SetFrameGeneration: the list setter call isn't there";
+    else {
+        const uint8_t *v = o3d + vars, *o = o3d + off;
+        boolVar = call_target(v + EFFECT_VARS_CALL1);
+        boolSet = call_target(o + EFFECTS_OFF_SET1);
+        listSet = call_target(setFg + set + aob_len(AOB_SET_FG_SET) - 1);
+        slots[0] = rip_operand(v + EFFECT_VARS_NAME1);
+        slots[1] = rip_operand(v + EFFECT_VARS_GROUP1);
+        slots[2] = rip_operand(v + EFFECT_VARS_NAME2);
+        slots[3] = rip_operand(v + EFFECT_VARS_GROUP2);
+        if (call_target(v + aob_len(AOB_O3D_EFFECT_VARS) - 1) != boolVar)
+            why = "the 3D Mode handler: its two settings aren't looked up the same way";
+        else if (call_target(o + aob_len(AOB_O3D_EFFECTS_OFF) - 1) != boolSet)
+            why = "the 3D Mode handler: its two settings aren't turned off the same way";
+        else if (!in_exe(boolVar, 16) || !in_exe(boolSet, 16) || !in_exe(listSet, 16))
+            why = "the settings lookup or setters point outside the exe";
+        else
+            for (int i = 0; i < 4 && !why; i++)
+                if (!in_exe(slots[i], 8)) why = "the 3D Mode handler: its settings' names point outside the exe";
+    }
+    if (why) {
+        plugin_log(1, "effects: %s (game update?)", why);
+        plugin_log(1, "effects: switching 3D Mode on turns off only what the game turns off (Chromatic Aberration and "
+                      "Film Grain)");
+        return;
+    }
+    fg.boolVar = (BoolVarFn)boolVar;
+    fg.boolSet = (BoolSetFn)boolSet;
+    fg.listSet = (ListSetFn)listSet;
+    fg.gameOff[0] = (const uint64_t *)slots[0];
+    fg.gameOff[1] = (const uint64_t *)slots[2];
+    fg.effectsGroup = (const uint64_t *)slots[1];
+    plugin_log(2, "effects: checked (the handler's lookup at +0x%lX, its effects off at +0x%lX)", vars, off);
+}
+
 // The rest that frame generation in 3D needs: the grey, the settings lookup, FlagCompute and the SBSDebug var. Fills
 // fg's lookup and SBSDebug fields when they all pass.
 static int check_framegen(ResolveFn resolve, uint8_t **t)
@@ -716,6 +911,7 @@ static int check_framegen(ResolveFn resolve, uint8_t **t)
     fg.sbsVar = sbs;
     fg.fsrEnabled = check_fsr(flagCompute);
     fg.xess = check_xess(flagCompute);
+    check_effects(o3d, setFg);
     return 1;
 }
 
