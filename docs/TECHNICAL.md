@@ -191,6 +191,64 @@ chain (`amd_fidelityfx_framegeneration_dx12.dll`), with XeSS through Intel's (`l
 patches the Present of whichever swap chain the game uses (tested with Streamline's and FidelityFX's). The game offers
 XESS only when `xefgSwapChainD3D12CreateContext` succeeded at start (in practice an Intel Arc GPU).
 
+## Weapon depth in 3D
+
+The arms and the gun are drawn from a camera of their own: the first-person plane (plane 2), with its own field of
+view and near/far, and the separation from **Weapon Depth** (`Odyssey3D_WeaponStrength`) converging at
+`WeaponConvergenceDistance` (0.5 m). In 3D the centre camera descriptor gets two eye clones (flag bit 0 at `+0x399`,
+the left eye's descriptor at `+0x3D0`, the right one's at `+0x3D8`), placed left and right of the centre. Then the
+view producer hands each plane with an override to the plane override (`RVA 0x422D2C`), which rebuilds the
+descriptor from it through the plane rebuild (`RVA 0x422AA4`). The rebuild copies the plane's settings into the
+centre and then into both eye clones, the centre's position among them (int x, y, z in 1/131072 m at `+0x0`, float
+at `+0x280`), and builds each with the camera build (`RVA 0x296EA0`). So both eyes saw the weapon from one point,
+with only the eyes' off-axis shift between them: a flat picture at the convergence distance. Found by the Cyberpunk
+VR port (dariulone/cyberpunk-vr-port, `src/Stereo/EngineStereo.cpp`).
+
+The plugin's detour on the plane override (`src/braindance3d_framegen.c`) notes the eye clones' positions, runs the
+game's override, then puts back each eye the rebuild moved and builds it again with the camera build. The rest of what
+the rebuild set (field of view, near/far, the shift) stays. An eye that didn't move (the plane already matched its
+override, or the eyes sit at the centre, as while aiming, when the game fades the separation out) is left alone. It
+changes nothing unless SBSDebug is on. The kept positions are this frame's: the view producer (`RVA 0x4240DC`) runs
+one pass per plane (four), and each pass assigns the plane's descriptor, its eyes placed, right before handing it to
+the plane override.
+
+Before attaching, the plugin checks the override's start and its one call to the rebuild, and in the rebuild: the left
+eye rebuilt by a call to itself, the right eye given the position at `+0x0`, the position in metres at `+0x280`
+followed by the camera build (whose address the detour calls), and the loop to the eyes on bit 0 of `+0x399`. If
+any of that doesn't match, only the weapon stays flat.
+
+### Ray tracing
+
+With ray tracing on, the weapon's light and shadows differed between the eyes (RT Lighting darkened it in one eye,
+RT Sun Shadows put its shadows at different angles), while with ray tracing off both eyes matched. The game's code
+hands the ray-traced passes each eye's own weapon camera: the view constants builder (`RVA 0x22A7690`, called by
+every ray-traced pass with an eye argument) reads plane 2's descriptor at view `+0x8A0` and takes the eye clone
+through `RVA 0x206EE80` (eye 1 `+0x3D0`, eye 2 `+0x3D8`), and the previous-frame view blocks per eye and plane
+(view `+0x1060` / `+0x16A0` / `+0x1CE0` plus plane × `0x190`) are filled from the eye clones at the start of the
+view producer. The sun shadow pass runs once per eye. So the mismatch is in the shaders, which in the game only ever
+see one weapon camera for both eyes (the Cyberpunk VR port patches shadow shaders for the first-person rows of the
+other eye). Shaders are out of scope for this mod, so the detour steps aside while ray tracing is on, read on every
+call from `/graphics/raytracing`: `RayTracedPathTracing` (a switch of its own, on even with the master off), or,
+with the master switch `RayTracing` on, any of `RayTracedSunShadows`, `RayTracedLocalShadows`,
+`RayTracedReflections` (bools: value at `+0x58`, what the game's getters read) or `RayTracedLighting` (a list: Off,
+Medium, Ultra, Psycho; applied index at `+0x78`, compared with Off's index, found by name).
+With the master off, the game greys those out but keeps their values, so they don't count then. The vars
+are found once, by the 3D Mode handler hook on the handler's thread right after it turned 3D Mode on (before any eye
+camera exists), with the game's bool lookup (the one the handler uses, found by the screen effects checks) and its
+list lookup (found by the frame generation checks); the detour on the render threads only reads them. The lookups
+stop the game on a name they don't know, so only names the 2.5 game has are asked for. Until they're found, or if
+those checks failed at load, the weapon stays flat (logged at load). Each change is logged (`gun: ray tracing is on
+(...)` / `is off`).
+
+The plugin also hooks the weapon separation getter (`RVA 0x22849D0`: under the stereo
+settings lock it returns the float at `+0x57C`, Weapon Depth already in metres, `0.017` per unit). The view producer
+reads it once a frame for the first-person plane: the eye cameras sit half of it left and right of the centre
+(`RVA 0x206EC30`), and the camera build's off-axis shift uses it too (`+0x3C0`). Above 0 the game's flat weapon is
+only slid apart between the eyes, which looks wrong, so while ray tracing is on (or its settings weren't found) and
+SBSDebug is on, the hook answers 0, as if Weapon Depth were 0, without touching the setting: with ray tracing off the slider works again. If the getter's check fails, the flat weapon keeps
+the game's Weapon Depth shift under ray tracing. If CDPR fixes the ray-traced first-person lighting in stereo, both
+the step-aside and this can go.
+
 ## Upscaler jitter in 3D
 
 Each frame the game moves the camera by a fraction of a pixel (the jitter, `+0x370` in the camera descriptor) and

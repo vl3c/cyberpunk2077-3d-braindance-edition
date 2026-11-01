@@ -35,6 +35,7 @@ void plugin_log(int level, const char *fmt, ...)
 static uint8_t f_o3d[O3D_SIZE], f_setFg[SET_FG_SIZE], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
 static uint64_t f_cnames[2];
+static uint8_t f_override[PLANE_OVERRIDE_SIZE], f_rebuild[PLANE_REBUILD_SIZE], f_buildCode[16], f_sep[WEAPON_SEP_SIZE];
 static uint8_t f_boolVarCode[16], f_boolSetCode[16], f_listSetCode[16];
 static uint64_t f_effectSlots[4]; // the handler's CNames: its two settings and their group, twice
 static const char *f_sbsVar[8];
@@ -94,6 +95,18 @@ static void fake_game(void)
     put(f_flag + 0x730, AOB_FLAG_CLEAR_XESS);
     put(f_fsrCode, AOB_FSR_ENABLED);
 
+    memset(f_override, 0xCC, sizeof(f_override));
+    memset(f_rebuild, 0xCC, sizeof(f_rebuild));
+    put(f_override, AOB_PLANE_OVERRIDE);
+    put_rel32(put(f_override + 0xCB, AOB_OVERRIDE_REBUILD) + 4, f_rebuild);
+    put(f_rebuild, AOB_PLANE_REBUILD);
+    put(f_rebuild + 0xE2, AOB_REBUILD_EYES);
+    put_rel32(f_rebuild + 0xE2 + REBUILD_EYES_CALL + 5, f_rebuild); // the left eye: the rebuild calls itself
+    put_rel32(put(f_rebuild + 0x19E, AOB_REBUILD_BUILD) + 4, f_buildCode);
+    put(f_rebuild + 0x201, AOB_REBUILD_LOOP);
+    memset(f_sep, 0xCC, sizeof(f_sep));
+    put(f_sep, AOB_WEAPON_SEP);
+
     f_sbsVar[VAR_NAME / 8] = "SBSDebug";
     f_sbsVar[VAR_GROUP / 8] = "Odyssey3D";
     ((uint8_t *)f_sbsVar)[VAR_VALUE] = 1;
@@ -107,6 +120,9 @@ static uintptr_t fake_resolve(uint32_t hash)
     case HASH_FLAG_COMPUTE: return (uintptr_t)f_flag;
     case HASH_DLSSG_ENABLED: return (uintptr_t)f_dlssg;
     case HASH_VAR_SBSDEBUG: return (uintptr_t)f_sbsVar;
+    case HASH_PLANE_OVERRIDE: return (uintptr_t)f_override;
+    case HASH_PLANE_REBUILD: return (uintptr_t)f_rebuild;
+    case HASH_WEAPON_SEP: return (uintptr_t)f_sep;
     }
     return 0;
 }
@@ -202,10 +218,20 @@ static int32_t f_listSetIndex;
 static uint8_t f_listSetMode;
 static uint8_t *f_listSetVar;
 
+// The ray tracing settings: RT_BOOLS, then RT Lighting (a list), and how often they were looked up.
+static uint8_t f_rtBools[RT_BOOL_COUNT][SETTING_SIZE], f_rtLighting[SETTING_SIZE], f_rtGroup[8];
+static int f_rtLookups;
 static uint8_t f_hud[HUD_REMOVAL_COUNT][SETTING_SIZE]; // the HUD removals in /accessibility/interface
 
 static uint8_t *fake_bool_var(uint64_t group, uint64_t name)
 {
+    if (group == cname("/graphics/raytracing")) {
+        f_rtLookups++;
+        for (int i = 0; i < RT_BOOL_COUNT; i++)
+            if (name == cname(RT_BOOLS[i])) return f_rtBools[i];
+        CHECK_MSG(0, "looked up a ray tracing setting the 2.5 game doesn't have (the game would stop)");
+        return NULL;
+    }
     if (group == cname("/accessibility/interface")) {
         for (int i = 0; i < HUD_REMOVAL_COUNT; i++)
             if (name == cname(HUD_REMOVALS[i])) return f_hud[i];
@@ -258,6 +284,18 @@ static void fake_effects(void)
     fg.gameOff[0] = &f_effectSlots[0];
     fg.gameOff[1] = &f_effectSlots[2];
     fg.effectsGroup = &f_effectSlots[1];
+    memset(f_rtBools, 0, sizeof(f_rtBools)); // all ray tracing off
+    static uint8_t lightingValues[4][CSTRING_SIZE];
+    static const char *const lighting[] = { "Off", "Medium", "Ultra", "Psycho" };
+    memset(f_rtLighting, 0, sizeof(f_rtLighting));
+    for (int i = 0; i < 4; i++) put_cstring(lightingValues[i], lighting[i]);
+    *(uint32_t *)(f_rtLighting + SETTING_FLAGS) = 0x8F; // a fixed list, as Motion Blur's
+    *(uint8_t **)(f_rtLighting + SETTING_VALUES) = &lightingValues[0][0];
+    *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 4;
+    f_rtLookups = 0;
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    fg.rtState = RT_UNKNOWN;
 }
 
 static uint8_t f_basicGroup[8];
@@ -265,6 +303,8 @@ static void *fake_root(void) { return f_lookup; }
 static void *fake_find(void *parent, uint64_t name)
 {
     if (name == cname("/graphics/basic")) return f_basicGroup;
+    if (name == cname("/graphics/raytracing")) return f_rtGroup;
+    if (name == cname("RayTracedLighting")) return parent == f_rtGroup ? f_rtLighting : NULL;
     if (name == cname("MotionBlur")) return parent == f_basicGroup ? f_blur : NULL;
     return name == f_cnames[1] ? (void *)f_var : (void *)f_lookup;
 }
@@ -294,6 +334,60 @@ static uint64_t *orig_flag_compute(uint8_t *renderer, uint64_t *flags, void *fra
     flags[0] = f_flagsAfterOrig[0];
     flags[1] = f_flagsAfterOrig[1];
     return flags; // the game's caller reads the bits through this
+}
+
+// A centre camera with two eye cameras, a plane override that moves them to the centre (like the game's rebuild), and
+// a camera build that notes what it was given.
+static _Alignas(16) uint8_t f_centre[0x400], f_eyes[2][0x400];
+static int f_overrideCalls, f_rebuildMoves, f_builds;
+static uint8_t *f_built[4];
+static int32_t f_builtAt[4][3]; // each built eye's position when it was built
+static float *f_overrideSeen;
+static uint8_t *f_cameraSeen;
+
+static void place(uint8_t *camera, int32_t x, int32_t y, int32_t z)
+{
+    int32_t *p = (int32_t *)(camera + CAMERA_POSITION);
+    float *w = (float *)(camera + CAMERA_WORLD);
+    p[0] = x, p[1] = y, p[2] = z;
+    w[0] = x / 131072.0f, w[1] = y / 131072.0f, w[2] = z / 131072.0f, w[3] = 1.0f;
+}
+
+static void fake_cameras(void)
+{
+    memset(f_centre, 0, sizeof(f_centre));
+    memset(f_eyes, 0, sizeof(f_eyes));
+    f_centre[CAMERA_FLAGS] = CAMERA_HAS_EYES;
+    *(uint8_t **)(f_centre + CAMERA_LEFT_EYE) = f_eyes[0];
+    *(uint8_t **)(f_centre + CAMERA_RIGHT_EYE) = f_eyes[1];
+    f_eyes[0][CAMERA_FLAGS] = f_eyes[1][CAMERA_FLAGS] = 0x02; // eye cameras
+    place(f_centre, 131072, 262144, 65536);
+    place(f_eyes[0], 131072 - 4194, 262144, 65536); // 32 mm left and right of the centre
+    place(f_eyes[1], 131072 + 4194, 262144, 65536);
+}
+
+static int64_t orig_plane_override(float *override, uint8_t *camera)
+{
+    f_overrideCalls++;
+    f_overrideSeen = override;
+    f_cameraSeen = camera;
+    if (f_rebuildMoves && camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES))
+        for (int e = 0; e < 2; e++) {
+            uint8_t *eye = *(uint8_t **)(camera + (e ? CAMERA_RIGHT_EYE : CAMERA_LEFT_EYE));
+            memcpy(eye + CAMERA_POSITION, camera + CAMERA_POSITION, CAMERA_POSITION_SIZE);
+            memcpy(eye + CAMERA_WORLD, camera + CAMERA_WORLD, CAMERA_WORLD_SIZE);
+        }
+    return 0x5678;
+}
+
+static int64_t fake_camera_build(uint8_t *camera)
+{
+    if (f_builds < 4) {
+        f_built[f_builds] = camera;
+        memcpy(f_builtAt[f_builds], camera + CAMERA_POSITION, CAMERA_POSITION_SIZE);
+    }
+    f_builds++;
+    return 0;
 }
 
 static void ft_begin(void)
@@ -334,10 +428,26 @@ static void ft_begin(void)
     fg.sbsVar = (const uint8_t *)f_sbsVar;
     f_flagsAfterOrig[0] = 0;
     f_flagsAfterOrig[1] = FEATURE_BIT(FEATURE_STEREO);
+    fake_cameras();
+    fg.planeOrig = orig_plane_override;
+    fg.cameraBuild = fake_camera_build;
+    f_overrideCalls = f_builds = 0;
+    f_rebuildMoves = 1;
+    f_overrideSeen = NULL;
+    f_cameraSeen = NULL;
     fake_effects();
+    find_rt_vars(); // as the handler hook does when 3D Mode goes on
+    f_rtLookups = 0;
 }
 
 static void set_sbs_debug(int on) { ((uint8_t *)f_sbsVar)[VAR_VALUE] = (uint8_t)on; }
+
+// The 3D Mode handler hook, called with this event (bytes [0] and [1]).
+static void menu_switch(uint8_t ev0, uint8_t ev1)
+{
+    uint8_t event[8] = { ev0, ev1 };
+    hook_o3d_changed(event);
+}
 
 // ===================================================================================== byte patterns
 
@@ -909,8 +1019,9 @@ TEST(thunks_have_unwind_info)
 {
     // Without it an exception thrown through a hook (or a crash dump's stack) can't get past the thunk.
     void *thunks[] = { (void *)bd3d_thunk_o3d_changed, (void *)bd3d_thunk_set_fg, (void *)bd3d_thunk_dlssg_enabled,
-                       (void *)bd3d_thunk_flag_compute };
-    for (int i = 0; i < 4; i++) {
+                       (void *)bd3d_thunk_flag_compute, (void *)bd3d_thunk_plane_override,
+                       (void *)bd3d_thunk_weapon_sep };
+    for (int i = 0; i < 6; i++) {
         DWORD64 base = 0;
         CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
     }
@@ -1095,8 +1206,10 @@ __asm__(".text\n.globl ft_call_thunk\nft_call_thunk:\n"
         "movq %xmm4, 88(%rdi)\nmovq %xmm5, 96(%rdi)\n"
         "add $0x20, %rsp\npop %rsi\npop %rbx\npop %rdi\nret\n");
 
+static float fake_weapon_sep(void *settings) { (void)settings; return 0.017f; } // Weapon Depth 1.0
+
 // Returns rax.
-static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
+static uint64_t check_thunk_registers(void *thunk, uint64_t rdxValue, uint64_t *xmm0)
 {
     uint64_t out[13] = { 0 };
     ft_call_thunk(thunk, out, rdxValue);
@@ -1105,8 +1218,25 @@ static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
                           0x8888888888888888ull, 0x9999999999999999ull, 0xAAAAAAAAAAAAAAAAull,
                           0xBBBBBBBBBBBBBBBBull, 0xCCCCCCCCCCCCCCCCull };
     for (int i = 0; i < 13; i++)
-        if (i != 6) CHECK_MSG(out[i] == want[i], "register %d changed to %llx", i, (unsigned long long)out[i]);
+        if (i != 6 && !(i == 7 && xmm0))
+            CHECK_MSG(out[i] == want[i], "register %d changed to %llx", i, (unsigned long long)out[i]);
+    if (xmm0) *xmm0 = out[7];
     return out[6];
+}
+
+static uint64_t check_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
+{
+    return check_thunk_registers(thunk, rdxValue, NULL);
+}
+
+// The same for a thunk whose hook returns a float: xmm0 (register 7) is its answer.
+static float check_float_thunk_keeps_registers(void *thunk, uint64_t rdxValue)
+{
+    uint64_t xmm0 = 0;
+    check_thunk_registers(thunk, rdxValue, &xmm0);
+    float f;
+    memcpy(&f, &xmm0, sizeof(f));
+    return f;
 }
 
 TEST(thunks_keep_the_callers_registers_and_return_the_result)
@@ -1131,6 +1261,12 @@ TEST(thunks_keep_the_callers_registers_and_return_the_result)
     check_thunk_keeps_registers((void *)bd3d_thunk_o3d_changed, 0x2222222222222222ull);
     CHECK_EQ_INT(f_setFgCalls, 1);
     CHECK(strstr(ft_log, "kept and choosable") != NULL);
+    // The plane override (rcx is a test value: the fake original doesn't read the override): the eyes are put back.
+    CHECK(check_thunk_keeps_registers((void *)bd3d_thunk_plane_override, (uint64_t)(uintptr_t)f_centre) == 0x5678);
+    CHECK_EQ_INT(f_builds, 2);
+    // The weapon separation getter (rcx is a test value: the fake original doesn't read it).
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(check_float_thunk_keeps_registers((void *)bd3d_thunk_weapon_sep, 0x2222222222222222ull) == 0.017f);
 }
 
 // ===================================================================================== one function at a time
@@ -1549,6 +1685,431 @@ TEST(red4ext_resolver_needs_red4ext)
     CHECK(red4ext_resolver() == NULL); // no RED4ext.dll in this process
 }
 
+// ===================================================================================== the gun
+
+TEST(check_gun_finds_the_plane_override_and_the_camera_build)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    CHECK_EQ_PTR(check_gun(fake_resolve), f_override);
+    CHECK_EQ_PTR((void *)fg.cameraBuild, f_buildCode);
+    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar);
+    CHECK(strstr(ft_log, "gun: plane override checked (rebuild call at +0xD2") != NULL);
+}
+
+TEST(the_gun_hook_attaches_on_its_own)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    fg.boolVar = fake_bool_var; // the settings lookups (found by the other checks)
+    fg.var = fake_find;
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK(fg.planeOrig == (PlaneOverrideFn)(void *)f_override);
+    CHECK_EQ_INT(f_override[0], 0xE9);
+    CHECK(strstr(ft_log, "gun: hook attached") != NULL);
+    CHECK_EQ_INT(f_attached, 2);
+    CHECK(fg.sepOrig == (WeaponSepFn)(void *)f_sep);
+    CHECK(strstr(ft_log, "gun: weapon separation hooked") != NULL);
+}
+
+TEST(the_gun_hook_attaches_without_the_weapon_separation)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    fg.boolVar = fake_bool_var;
+    fg.var = fake_find;
+    f_sep[0] = 0x90; // a game update changed the getter
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK_EQ_INT(f_attached, 1);
+    CHECK(fg.sepOrig == NULL);
+    CHECK(strstr(ft_log, "gun: the weapon separation getter doesn't match (game update?)") != NULL);
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    fg.boolVar = fake_bool_var;
+    fg.var = fake_find;
+    f_attachFails = 2;
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK(fg.sepOrig == NULL);
+    CHECK(strstr(ft_log, "gun: couldn't hook the weapon separation getter") != NULL);
+}
+
+TEST(the_gun_hook_attaches_when_the_frame_generation_hooks_cant)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    f_o3d[0] = 0x90;
+    CHECK_EQ_INT(attach_hooks(NULL, &f_hooking, fake_resolve), 0);
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 1);
+    CHECK_EQ_INT(f_attached, 1);
+}
+
+static uintptr_t resolve_without_the_rebuild(uint32_t hash) { return hash == HASH_PLANE_REBUILD ? 0 : fake_resolve(hash); }
+
+TEST(the_gun_hook_isnt_attached_when_the_game_code_changed)
+{
+    static const char *const logs[] = {
+        "didn't resolve into the game exe",
+        "the plane override: start doesn't match",
+        "the plane override: the rebuild call isn't there",
+        "the rebuild call doesn't go to the plane rebuild",
+        "the plane override calls the plane rebuild somewhere else too",
+        "the plane rebuild: start doesn't match",
+        "the eye cameras aren't given the position where expected",
+        "the left eye camera isn't rebuilt by the rebuild",
+        "the camera build after the position isn't there",
+        "the camera build call points outside the exe",
+        "the plane rebuild calls the camera build somewhere else too",
+        "the loop to the eye cameras isn't there",
+        "isn't named [Odyssey3D] SBSDebug",
+    };
+    for (int k = 0; k < 13; k++) {
+        ft_begin();
+        memset(&fg, 0, sizeof(fg));
+        ResolveFn resolve = fake_resolve;
+        switch (k) {
+        case 0: resolve = resolve_without_the_rebuild; break;
+        case 1: f_override[0] = 0x90; break;
+        case 2: f_override[0xCB] = 0x90; break;
+        case 3: put_rel32(f_override + 0xCB + aob_len(AOB_OVERRIDE_REBUILD) + 4, f_other); break;
+        case 4: f_override[0x60] = 0xE8, put_rel32(f_override + 0x65, f_rebuild); break;
+        case 5: f_rebuild[0] = 0x90; break;
+        case 6: f_rebuild[0xE2 + 50] = 0x13; break; // [rbx] -> [rbx+...]: not the position
+        case 7: put_rel32(f_rebuild + 0xE2 + REBUILD_EYES_CALL + 5, f_other); break;
+        case 8: f_rebuild[0x19E + 4] = 0x8B; break; // the position in metres goes elsewhere
+        case 9: *(int32_t *)(f_rebuild + 0x19E + aob_len(AOB_REBUILD_BUILD)) = 0x7FFFFFF0; break;
+        case 10: f_rebuild[0x60] = 0xE8, put_rel32(f_rebuild + 0x65, f_buildCode); break;
+        case 11: f_rebuild[0x201 + 6] = 0x02; break; // tests another flag
+        case 12: f_sbsVar[VAR_NAME / 8] = "StereoEnabled"; break;
+        }
+        CHECK_MSG(attach_gun(NULL, &f_hooking, resolve) == 0, "case %d attached", k);
+        CHECK_EQ_INT(f_attached, 0);
+        CHECK_MSG(strstr(ft_log, logs[k]) != NULL, "case %d: no \"%s\" in:\n%s", k, logs[k], ft_log);
+        CHECK(strstr(ft_log, "gun: not hooked: in 3D the weapon stays flat, as in the game") != NULL);
+    }
+}
+
+TEST(a_failed_gun_attach_is_logged)
+{
+    ft_begin();
+    memset(&fg, 0, sizeof(fg));
+    f_attachFails = 1;
+    CHECK_EQ_INT(attach_gun(NULL, &f_hooking, fake_resolve), 0);
+    CHECK(strstr(ft_log, "gun: couldn't hook the plane override") != NULL);
+}
+
+TEST(the_weapons_eye_cameras_are_put_back_and_built_again)
+{
+    ft_begin();
+    uint8_t want[2][0x400];
+    memcpy(want, f_eyes, sizeof(want));
+    float override[8] = { 0 };
+    CHECK(hook_plane_override(override, f_centre) == 0x5678);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_PTR(f_overrideSeen, override);
+    CHECK_EQ_PTR(f_cameraSeen, f_centre);
+    for (int e = 0; e < 2; e++) {
+        CHECK_MSG(memcmp(f_eyes[e] + CAMERA_POSITION, want[e] + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0, "eye %d", e);
+        CHECK_MSG(memcmp(f_eyes[e] + CAMERA_WORLD, want[e] + CAMERA_WORLD, CAMERA_WORLD_SIZE) == 0, "eye %d", e);
+    }
+    REQUIRE_EQ_INT(f_builds, 2);
+    CHECK_EQ_PTR(f_built[0], f_eyes[0]);
+    CHECK_EQ_PTR(f_built[1], f_eyes[1]);
+    CHECK_EQ_INT(f_builtAt[0][0], 131072 - 4194); // built at its own place, not at the centre
+    CHECK_EQ_INT(f_builtAt[1][0], 131072 + 4194);
+    CHECK(strstr(ft_log, "gun: first weapon view built with its own eye cameras (right eye 64.0, 0.0, 0.0 mm from the "
+                         "left)") != NULL);
+}
+
+TEST(eye_cameras_the_rebuild_didnt_move_arent_built_again)
+{
+    ft_begin();
+    f_rebuildMoves = 0; // the plane matched its override: nothing rebuilt
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    place(f_eyes[0], 131072, 262144, 65536); // aiming: the eyes sit at the centre
+    place(f_eyes[1], 131072, 262144, 65536);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "weapon view") == NULL);
+}
+
+TEST(without_sbs_debug_the_weapon_stays_as_the_game_builds_it)
+{
+    ft_begin();
+    set_sbs_debug(0);
+    CHECK(hook_plane_override(NULL, f_centre) == 0x5678);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(memcmp(f_eyes[0] + CAMERA_POSITION, f_centre + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0);
+    set_sbs_debug(1);
+}
+
+TEST(a_camera_without_eye_cameras_is_left_alone)
+{
+    ft_begin();
+    f_centre[CAMERA_FLAGS] = 0;
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    *(uint8_t **)(f_centre + CAMERA_RIGHT_EYE) = NULL;
+    f_rebuildMoves = 0; // the fake would follow the NULL
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    CHECK(hook_plane_override(NULL, NULL) == 0x5678);
+    CHECK_EQ_INT(f_overrideCalls, 1);
+    CHECK_EQ_INT(f_builds, 0);
+}
+
+TEST(weapon_views_are_logged_first_and_then_once_a_minute)
+{
+    ft_begin();
+    hook_plane_override(NULL, f_centre);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 4);
+    CHECK(strstr(ft_log, "weapon views built") == NULL);
+    fg.gunCount.lastSummary = GetTickCount() - 61000;
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK(strstr(ft_log, "gun: 3 weapon views built with their own eye cameras (3 in the last minute)") != NULL);
+}
+
+// Turns one ray tracing setting on: RT_BOOLS[i], or RT Lighting for RT_LIGHTING.
+static void rt_on(int i)
+{
+    if (i < RT_BOOL_COUNT) f_rtBools[i][BOOL_SETTING_VALUE] = 1;
+    else *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 2; // Ultra
+}
+
+TEST(any_ray_tracing_keeps_the_weapon_flat)
+{
+    for (int i = RT_PATH; i <= RT_LIGHTING; i++) {
+        const char *name = i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting";
+        ft_begin();
+        f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1;
+        rt_on(i);
+        CHECK(hook_plane_override(NULL, f_centre) == 0x5678);
+        CHECK_EQ_INT(f_overrideCalls, 1);
+        CHECK_MSG(f_builds == 0, "%s", name);
+        CHECK(memcmp(f_eyes[0] + CAMERA_POSITION, f_centre + CAMERA_POSITION, CAMERA_POSITION_SIZE) == 0);
+        char want[96];
+        snprintf(want, sizeof(want), "gun: ray tracing is on (%s): the weapon stays flat", name);
+        CHECK_MSG(strstr(ft_log, want) != NULL, "%s", want);
+    }
+}
+
+TEST(with_the_ray_tracing_switch_off_only_path_tracing_counts)
+{
+    // The game keeps the other settings' values while its Ray Tracing switch is off (greyed out), and doesn't use them.
+    for (int i = RT_PATH + 1; i <= RT_LIGHTING; i++) {
+        ft_begin();
+        rt_on(i);
+        hook_plane_override(NULL, f_centre);
+        CHECK_MSG(f_builds == 2, "%s", i < RT_BOOL_COUNT ? RT_BOOLS[i] : "RayTracedLighting");
+    }
+    ft_begin();
+    rt_on(RT_PATH); // path tracing has a switch of its own
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun: ray tracing is on (RayTracedPathTracing)") != NULL);
+}
+
+TEST(the_weapon_follows_the_ray_tracing_settings_as_they_change)
+{
+    ft_begin();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    rt_on(RT_PATH); // path tracing turned on in game
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    f_rtBools[RT_PATH][BOOL_SETTING_VALUE] = 0; // and off again
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 4);
+    CHECK_EQ_INT(f_rtLookups, 0); // the render threads only read what the handler hook found
+    const char *on = strstr(ft_log, "gun: ray tracing is on (RayTracedPathTracing)");
+    REQUIRE(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL && on != NULL);
+    CHECK(strstr(on, "gun: ray tracing is off: the weapon has depth") != NULL); // off, on, off again
+    CHECK(strstr(on + 10, "gun: ray tracing is on") == NULL); // each change logged once
+}
+
+TEST(the_ray_tracing_settings_are_found_when_3d_mode_goes_on)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0; // not found yet
+    hook_plane_override(NULL, f_centre);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK_EQ_INT(f_rtLookups, 0);
+    const char *log = strstr(ft_log, "gun: the ray tracing settings weren't found: the weapon stays flat");
+    REQUIRE(log != NULL);
+    CHECK(strstr(log + 45, "weren't found") == NULL);
+    f_o3dSetsFgOff = 0; // the handler took the 3D-off branch: nothing looked up
+    menu_switch(0, 0);
+    f_o3dSetsFgOff = 1;
+    CHECK_EQ_INT(f_rtLookups, 0);
+    menu_switch(0, 0); // 3D Mode on at start-up
+    CHECK_EQ_INT(f_rtLookups, RT_BOOL_COUNT);
+    menu_switch(0, 1); // and in the menu: found once
+    CHECK_EQ_INT(f_rtLookups, RT_BOOL_COUNT);
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    CHECK(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL);
+}
+
+TEST(without_the_games_lookups_the_weapon_stays_flat)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    fg.boolVar = NULL; // the screen effects checks failed
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_rtLookups, 0);
+    CHECK_EQ_INT(f_builds, 0);
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    fg.var = fake_find_nothing; // RT Lighting not found
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun: couldn't find the RayTracedLighting setting: the weapon stays flat") != NULL);
+    CHECK(fg.rtVars[0] == NULL); // nothing half set
+}
+
+TEST(rt_lightings_off_is_found_by_name)
+{
+    static uint8_t values[4][CSTRING_SIZE];
+    static const char *const names[] = { "Psycho", "Off", "Medium", "Ultra" }; // a made-up order
+    ft_begin();
+    for (int i = 0; i < 4; i++) put_cstring(values[i], names[i]);
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    *(uint8_t **)(f_rtLighting + SETTING_VALUES) = &values[0][0];
+    *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 4;
+    *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 1; // Off
+    f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1;
+    menu_switch(0, 0);
+    CHECK_EQ_INT(fg.rtLightingOff, 1);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    *(int32_t *)(f_rtLighting + SETTING_APPLIED) = 0; // Psycho
+    fake_cameras();
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    CHECK(strstr(ft_log, "gun: ray tracing is on (RayTracedLighting)") != NULL);
+}
+
+TEST(rt_lighting_without_off_keeps_the_weapon_flat)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    *(uint32_t *)(f_rtLighting + SETTING_VALUES + 0xC) = 0; // an empty list
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "gun: RayTracedLighting has no Off: the weapon stays flat") != NULL);
+    size_t logged = strlen(ft_log);
+    menu_switch(0, 0); // the next switch doesn't look (or log) again
+    CHECK(strstr(ft_log + logged, "RayTracedLighting") == NULL);
+}
+
+TEST(rt_lighting_with_other_values_but_no_off_keeps_the_weapon_flat)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    uint8_t *values = *(uint8_t **)(f_rtLighting + SETTING_VALUES);
+    put_cstring(values, "None"); // a game update renamed it
+    menu_switch(0, 0);
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 0);
+    CHECK(strstr(ft_log, "settings: no 'Off' in the list (flags 0x8F, 4 values, 4 read as text)") != NULL);
+    CHECK(strstr(ft_log, "gun: RayTracedLighting has no Off: the weapon stays flat") != NULL);
+}
+
+TEST(without_eye_cameras_or_sbs_debug_the_settings_arent_read)
+{
+    ft_begin();
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0;
+    set_sbs_debug(0);
+    hook_plane_override(NULL, f_centre);
+    set_sbs_debug(1);
+    f_centre[CAMERA_FLAGS] = 0;
+    hook_plane_override(NULL, f_centre);
+    CHECK(strstr(ft_log, "gun: the ray tracing settings") == NULL);
+}
+
+
+TEST(with_ray_tracing_on_the_weapon_separation_is_0)
+{
+    ft_begin();
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(hook_weapon_sep(NULL) == 0.017f); // ray tracing off: the game's value
+    f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1;
+    rt_on(2); // Sun Shadows
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+    set_sbs_debug(0); // a real 3D monitor: the game's rule
+    CHECK(hook_weapon_sep(NULL) == 0.017f);
+    set_sbs_debug(1);
+    f_rtBools[2][BOOL_SETTING_VALUE] = 0;
+    CHECK(hook_weapon_sep(NULL) == 0.017f);
+    const char *on = strstr(ft_log, "gun: ray tracing is on (or unknown): the weapon's eye gap is 0 (as Weapon Depth 0)");
+    REQUIRE(on != NULL);
+    CHECK(strstr(on + 10, "gun: ray tracing is on: the weapon's eye gap") == NULL); // each change logged once
+    CHECK(strstr(ft_log, "gun: the weapon's eye gap follows Weapon Depth again") != NULL);
+    memset((void *)fg.rtVars, 0, sizeof(fg.rtVars));
+    fg.rtSearched = 0; // settings not found: the weapon is flat, so at screen depth
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+}
+
+TEST(the_eye_gap_is_logged_as_a_distance_when_it_changes)
+{
+    ft_begin();
+    fg.gapTenths = 0; // nothing logged yet
+    EyePlaces kept;
+    memset(&kept, 0, sizeof(kept));
+    float *l = (float *)kept.world[0], *r = (float *)kept.world[1];
+    r[0] = 0.017f; // 17 mm along x
+    log_gun_gap(&kept);
+    const char *after = strstr(ft_log, "gun: the weapon's eye cameras are now 17.0 mm apart");
+    REQUIRE(after != NULL);
+    after += strlen("gun: the weapon's eye cameras are now 17.0 mm apart");
+    r[0] = 0.0f, r[1] = 0.017f; // turned 90 degrees: the same gap, nothing logged
+    log_gun_gap(&kept);
+    l[0] = 0.0001f; // 0.1 mm: under the threshold
+    log_gun_gap(&kept);
+    CHECK(strstr(after, "eye cameras are now") == NULL);
+    r[1] = 0.005f; // Weapon Depth changed, but within a second of the last line
+    log_gun_gap(&kept);
+    CHECK(strstr(after, "eye cameras are now") == NULL);
+    fg.gapTick = GetTickCount() - 1500; // a second and a half later
+    log_gun_gap(&kept);
+    CHECK(strstr(after, "gun: the weapon's eye cameras are now 5.0 mm apart") != NULL);
+}
+
+TEST(the_weapon_separation_thunk_returns_the_hooks_answer)
+{
+    ft_begin();
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(bd3d_thunk_weapon_sep(NULL) == 0.017f);
+    rt_on(RT_PATH);
+    CHECK(bd3d_thunk_weapon_sep(NULL) == 0.0f);
+}
+
 // ===================================================================================== screen effects
 
 TEST(cname_is_the_engines_fnv1a_hash)
@@ -1603,11 +2164,6 @@ TEST(the_effects_off_isnt_set_up_when_the_game_code_changed)
     }
 }
 
-static void menu_switch(uint8_t ev0, uint8_t ev1)
-{
-    uint8_t event[8] = { ev0, ev1 };
-    hook_o3d_changed(event);
-}
 
 TEST(a_menu_switch_to_3d_turns_the_effects_off)
 {

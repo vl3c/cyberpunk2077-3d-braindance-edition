@@ -12,8 +12,8 @@ Download: [Nexus Mods](https://www.nexusmods.com/cyberpunk2077/mods/36323) or
 
 ## What it does
 
-Patch 2.5's 3D Mode, built for a glasses-free 3D monitor, gives the world, HUD and weapon real depth, but needs
-that monitor's software. This mod:
+Patch 2.5's 3D Mode, built for a glasses-free 3D monitor, gives the world and HUD real depth, but needs that
+monitor's software. This mod:
 
 1. Provides a small stand-in for that software (its 3D SDK), unlocking **3D Mode** on a normal monitor.
 2. Enables a hidden engine option (`SBSDebug`) to draw the eyes **side by side**, not interlaced for the
@@ -22,15 +22,19 @@ that monitor's software. This mod:
    the eyes; the mod squeezes it into each half.
 4. Lets the game's own **DLSS, FSR and XeSS Frame Generation** run in 3D Mode (the game turns it off there, because
    Samsung's monitor can't use it). FSR4 and XeSS are untested.
+5. Gives the **weapon real depth** with ray tracing off. The game draws your arms and gun from one point for both
+   eyes, so they look flat; the mod gives each eye its own view of them, as far apart as **Weapon Depth** sets. With
+   any ray tracing or path tracing on, the weapon stays flat as in the game, at screen depth (Weapon Depth is ignored
+   then, as if it were 0): the game's ray-traced light and shadows would differ between the eyes on it.
 
-No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix and frame
-generation hook a few game functions through RED4ext.
+No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
+generation and weapon depth hook a few game functions through RED4ext.
 
 ## Requirements
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
-  ([No RED4ext](#no-red4ext)), which leaves menus split and frame generation off in 3D.
+  ([No RED4ext](#no-red4ext)), which leaves menus split, frame generation off and the weapon flat in 3D.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
