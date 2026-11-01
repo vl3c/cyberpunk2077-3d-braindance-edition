@@ -5,6 +5,7 @@
 - In 3D the game moved each eye's picture only half as far sideways as it told DLSS, FSR or XeSS (the anti-aliasing
   jitter). The RED4ext plugin now gives each eye's camera its own width for the jitter, so the two match (one more
   small hook on the camera build, checked first like the others; the mismatch was found by the Cyberpunk VR port).
+- README: which HUD and screen effects ghost in 3D, and the game settings that turn them off.
 - README: on an RX 9000, pick FSR4 and restart the game. Changelog 0.3.1: FSR 3.1 was tested on an NVIDIA card only.
 
 - Nexus page: the intro names FSR frame generation too, and "Good to know" is a heading like the other sections.

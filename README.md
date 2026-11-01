@@ -92,6 +92,11 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 7. **Field of View:** a flat image looks natural only when the game's FOV matches how much of your view the screen
    fills. Too wide, and everything looks small and far away and swells at the edges. With a large Virtual Desktop
    cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
+8. **Effects that ghost in 3D:** some effects are drawn around each eye's own centre, so the two eyes don't match.
+   - The HUD's lens bend and colour fringes ghost in opposite directions in each eye: turn on Remove HUD Visual
+     Effects and Remove HUD Lens Distortion (Settings > Accessibility > Interface).
+   - Chromatic Aberration, Depth of Field, Lens Flares, Motion Blur, Film Grain and Vignette move pixels differently
+     in each eye; turn off the ones that bother you (Settings > Graphics).
 
 ## Troubleshooting
 
