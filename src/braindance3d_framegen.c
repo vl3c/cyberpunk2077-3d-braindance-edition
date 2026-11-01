@@ -1023,8 +1023,10 @@ HOOK int64_t hook_camera_build(uint8_t *camera)
     if (aspect) {
         *aspect = full;
         if (!fg.fullSbsLogged && !InterlockedExchange(&fg.fullSbsLogged, 1))
-            plugin_log(1, "fullsbs: first eye camera built with half the aspect (%s eye, %.4f -> %.4f)",
-                       camera[CAMERA_EYE_KIND] == 1 ? "left" : "right", full, full * 0.5f);
+            plugin_log(1, "fullsbs: first eye camera built with half the aspect (%s eye, %.4f -> %.4f; +0x20 %.4f, "
+                          "+0x24 %.4f, +0x2C %.4f)",
+                       camera[CAMERA_EYE_KIND] == 1 ? "left" : "right", full, full * 0.5f,
+                       ((const float *)camera)[8], ((const float *)camera)[9], ((const float *)camera)[11]);
     }
     return r;
 }
