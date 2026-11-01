@@ -1901,6 +1901,21 @@ TEST(any_ray_tracing_keeps_the_weapon_flat)
     }
 }
 
+TEST(rt_local_shadows_and_reflections_keep_the_weapons_depth)
+{
+    // Only the settings seen to break the weapon are checked: the others aren't even looked up (the fake lookup fails
+    // a test on any name it doesn't know).
+    for (int i = 0; i < RT_BOOL_COUNT; i++)
+        CHECK_MSG(strcmp(RT_BOOLS[i], "RayTracedLocalShadows") != 0 &&
+                      strcmp(RT_BOOLS[i], "RayTracedReflections") != 0,
+                  "%s", RT_BOOLS[i]);
+    ft_begin();
+    f_rtBools[RT_MASTER][BOOL_SETTING_VALUE] = 1; // ray tracing on, with only those two (not looked at)
+    hook_plane_override(NULL, f_centre);
+    CHECK_EQ_INT(f_builds, 2);
+    CHECK(strstr(ft_log, "gun: ray tracing is off: the weapon has depth") != NULL);
+}
+
 TEST(with_the_ray_tracing_switch_off_only_path_tracing_counts)
 {
     // The game keeps the other settings' values while its Ray Tracing switch is off (greyed out), and doesn't use them.

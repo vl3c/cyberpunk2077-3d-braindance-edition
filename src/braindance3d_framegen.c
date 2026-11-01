@@ -259,7 +259,7 @@ static struct {
     volatile LONG sepZeroed;      //   it last answered 0 for ray tracing (for the log)
     volatile LONG gapTenths;      // the eye gap last logged, in 0.1 mm, plus 1 (0: none yet)
     volatile DWORD gapTick;       //   and when
-    uint8_t *volatile rtVars[6];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
+    uint8_t *volatile rtVars[4];  // the ray tracing settings (RT_BOOLS, then RT Lighting), found when 3D Mode goes on
     int32_t rtLightingOff;        //   RT Lighting's index of Off
     int rtSearched;               //   looked for once (the settings exist from start-up, so a miss stays a miss)
     volatile LONG rtState;        // RT_* (what the gun hook last saw, for the log)
@@ -628,15 +628,16 @@ static void effects_off(void)
     hud_effects_off();
 }
 
-// The ray tracing settings that light or shadow the weapon, all in /graphics/raytracing: the master switch, path
-// tracing (on its own: it can be on with the master off), three more bools under the master, and RT Lighting (a list:
-// Off, Medium, Ultra, Psycho), also under the master.
-static const char *const RT_BOOLS[] = { "RayTracing", "RayTracedPathTracing", "RayTracedSunShadows",
-                                        "RayTracedLocalShadows", "RayTracedReflections" };
+// The ray tracing settings that make the weapon's light or shadows differ between the eyes (seen in game), all in
+// /graphics/raytracing: the master switch, path tracing (on its own: it can be on with the master off), Sun Shadows
+// under the master, and RT Lighting (a list: Off, Medium, Ultra, Psycho), also under the master. Local Shadows and
+// Reflections aren't here: the weapon keeps its depth with them (not seen to break it).
+static const char *const RT_BOOLS[] = { "RayTracing", "RayTracedPathTracing", "RayTracedSunShadows" };
 #define RT_MASTER 0
 #define RT_PATH 1
-#define RT_BOOL_COUNT 5
+#define RT_BOOL_COUNT 3
 #define RT_LIGHTING RT_BOOL_COUNT // fg.rtVars: RT Lighting's var after the bools
+_Static_assert(sizeof(fg.rtVars) / sizeof(fg.rtVars[0]) == RT_BOOL_COUNT + 1, "fg.rtVars: RT_BOOLS and RT Lighting");
 #define RT_UNKNOWN 0    // fg.rtState: not looked at yet
 #define RT_OFF 1        //   all off: the weapon gets its depth
 #define RT_ON 2         //   one is on: the weapon stays flat
@@ -691,7 +692,7 @@ static const char *ray_tracing_on(int *found)
                ? "RayTracedLighting" : NULL;
 }
 
-// Whether the weapon gets its depth now (all ray tracing off). Logs each change.
+// Whether the weapon gets its depth now (none of those ray tracing settings on). Logs each change.
 static int gun_allowed(void)
 {
     int found;
