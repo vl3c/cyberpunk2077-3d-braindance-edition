@@ -61,10 +61,33 @@
 // menu event the handler treats the same way). Only then (never at start-up), only while SBSDebug is on, and only if
 // its checks passed (check_effects): otherwise only the game's two go off.
 //
+// Fixed 3D, for viewers on a virtual screen. The camera build reads the world's eye separation and convergence through
+// two renderer vtable thunks, and nothing else uses those thunks (the depth analysis calls the getters behind them
+// directly). With Fixed 3D on (and SBSDebug on) hooks on them return fixed values: the player's IPD scaled by the game's
+// Depth setting through its own curve, so Immersive (s = 1) is true scale, and the distance of the virtual screen. The
+// world keeps one scale instead of being re-aimed each frame. The game's comfort limits work on its own values, upstream
+// of the hooks, so they no longer apply. The game still fades the separation to 0 while aiming, and that fade is kept.
+// The weapon follows: raster, it gets the same convergence and a part of the separation (FIXED_REAL_WEAPON), scaled by
+// Weapon Depth; flat under ray tracing, its eyes are at the centre, so the separation only slides the picture, and a
+// negative one slides it to the [Stereo] WeaponDistance, again scaled by Weapon Depth. A stub on the per-frame stereo
+// update notes the tangent of half the horizontal field of view for the log (level 2, once a second, prefix "fixed:").
+//
+// Fixed 3D, the IPD and the screen size are on Mod Settings' page (r6\scripts\Braindance3D\FixedStereo.reds), which saves
+// them to its own file on Apply. That file and Braindance3D-Settings.ini are read again whenever they change, so a
+// change applies with the game running. Without Mod Settings, Fixed 3D starts off with the defaults here. The screen is
+// a size, not a distance, because that's what a player sees: stereo_distance turns it into metres. Close distances
+// aren't offered: with a convergence of about 1 m, reflections in water stopped lining up with what they reflect in one
+// eye (raster, tested in game), and the error grew with the shift between the eyes. At 7.5 m and over they line up.
+// For true scale the image should fill the same width on the screen as the view is wide at that distance, so infinity
+// has a parallax of exactly the eye gap. With a wider screen infinity needs the eyes to diverge.
+// Ctrl+F8 turns Fixed 3D on and off for a direct comparison, until either file next changes, and the picture says which
+// for two seconds (menus_notice).
+//
 // License: MIT (see LICENSE).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -214,6 +237,66 @@ static const char AOB_WEAPON_SEP[] =
     "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 83 C1 38 E8 ?? ?? ?? ?? F3 0F 10 87 7C 05 00 00 48 8D 4F 38 "
     "48 8B 5C 24 30 48 83 C4 20 5F E9";
 
+// Fixed 3D. The camera build reads these two through renderer vtable +0x440 and +0x450
+// (metres; the eye cameras sit half the separation left and right of the centre, and the convergence is the distance
+// with no parallax between the eyes). Each is a thunk: renderer global -> Odyssey object -> getter.
+#define HASH_CAMERA_SEP 3240627021u    // eye separation: float (renderer)
+#define HASH_CAMERA_CONV 3494908426u   // convergence: float (renderer)
+#define HASH_SEP_GETTER 3375172446u    // what the first thunk jumps to
+#define HASH_CONV_GETTER 1202392816u   // and the second
+#define HASH_RENDERER 1931610229u      // the global renderer pointer
+#define HASH_STEREO_UPDATE 2570332869u // the per-frame stereo update (its stack holds the tangent, see the stub)
+#define HASH_STEREO_BODY 2112236195u   // what it calls: the fade is at the end
+#define HASH_VAR_WEAPON_CONV 1141905368u // the [Odyssey3D] WeaponConvergenceDistance config var (float at VAR_VALUE)
+#define CAMERA_THUNK_SIZE 19
+#define CAMERA_THUNK_JMP 14            // the thunk's jmp to the getter
+#define STEREO_GETTER_SIZE 0x31
+#define STEREO_UPDATE_SIZE 0x97        // pdata 0x22866F0-0x2286787
+#define STEREO_BODY_SIZE 0xC86         // pdata 0x2285780-0x2286406
+#define RENDERER_ODYSSEY 0x4680        // the renderer's Odyssey object. In it, under its lock (read without: a log):
+#define OD_DEPTH 0x6C                  //   float s, the Depth slider through its curve (0..2, 1 at Depth 0.7)
+#define OD_NEAR 0x74                   //   float: 5th percentile of the depth histogram, metres
+#define OD_FAR 0x78                    //   float: 95th percentile
+#define OD_VALID 0x84                  //   uint8: the histogram is valid
+#define OD_FAR_PIXELS 0x528            //   uint32: pixels counted for the far limit (it applies from 100)
+#define OD_CONV 0x56C                  //   float: the convergence the getter returns
+#define OD_SEP 0x570                   //   float: the separation the getter returns, faded while aiming
+#define OD_WEAPON_SEP 0x57C            //   float: the weapon's, faded the same way (the 0.4.0 hook's getter reads it)
+#define OD_WEAPON_BASE 0x580           //   float: the weapon's before the fade: Weapon Depth * WEAPON_DEPTH_METRES
+#define WEAPON_DEPTH_METRES 0.017f
+#define FIXED_REAL_WEAPON 0.5f         // The real weapon's share of the fixed separation at Weapon Depth 1: closer to the
+                                       // game's look, about 10 mm at Immersive's 0.3 (V in the headset, 2026-11-02)
+#define OD_SEP_TARGET 0x588            //   float: what the separation moves to (S+0x548)
+#define OD_CONV_TARGET 0x58C           //   float: what the convergence moves to
+#define OD_AIM 0x5B0                   //   uint8: 1 while aiming, when the game fades both separations to 0
+#define OD_SIZE 0x640
+#define FIXED_SEP_DEFAULT 0.065f       // The eye gap, metres
+#define FIXED_SIZE_DEFAULT 50.0f       // The display size, percent. The page's defaults are the same.
+// How far away Virtual Desktop's cinema screen feels, by V in the headset on 2026-11-02, smallest and largest size
+// (V first said 5 or 10 m, then chose 5).
+#define SCREEN_SMALLEST 30.0f
+#define SCREEN_LARGEST 5.0f
+#define FIXED_WEAPON_DEFAULT 1.0f      // [Stereo] WeaponDistance, metres
+#define MOD_SETTINGS_SECTION L"BraindanceFixedStereo" // the class in FixedStereo.reds, its section in Mod Settings' file
+// A thunk: mov rax,[renderer global]; mov rcx,[rax+4680h]; jmp getter. Matches three thunks, so the jmp is checked too.
+static const char AOB_CAMERA_THUNK[] = "48 8B 05 ?? ?? ?? ?? 48 8B 88 80 46 00 00 E9";
+// The getters, like the weapon's: under the lock, return the float at +0x570 or +0x56C.
+static const char AOB_SEP_GETTER[] =
+    "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 83 C1 38 E8 ?? ?? ?? ?? F3 0F 10 87 70 05 00 00 48 8D 4F 38 "
+    "48 8B 5C 24 30 48 83 C4 20 5F E9";
+static const char AOB_CONV_GETTER[] =
+    "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 83 C1 38 E8 ?? ?? ?? ?? F3 0F 10 87 6C 05 00 00 48 8D 4F 38 "
+    "48 8B 5C 24 30 48 83 C4 20 5F E9";
+// The stereo update's start, through its stack arguments: byte [rsp+98h] and the float at [rsp+90h], which is 1 over
+// the camera's projection M00 (its caller divides by [camera+270h]), so tan(hfov / 2).
+static const char AOB_STEREO_UPDATE[] =
+    "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B F9 0F 29 74 24 40 48 83 C1 38 49 8B F1 "
+    "49 8B E8 0F 28 F1 E8 ?? ?? ?? ?? 0F B6 84 24 98 00 00 00 48 8D 4F 40 F3 0F 10 84 24 90 00 00 00";
+
+// The end of the fade while aiming: weapon = x * its base; separation = x * itself. So x is the weapon's over its base.
+static const char AOB_STEREO_FADE[] =
+    "F3 0F 59 B7 40 05 00 00 F3 0F 59 87 30 05 00 00 F3 0F 11 B7 3C 05 00 00 F3 0F 11 87 30 05 00 00";
+
 typedef uintptr_t (*ResolveFn)(uint32_t hash);
 typedef void (*O3dChangedFn)(uint8_t *event);
 typedef uint8_t (*SetFgFn)(int32_t index, uint8_t mode);
@@ -225,6 +308,7 @@ typedef void *(*FindFn)(void *parent, uint64_t cname);
 typedef int64_t (*PlaneOverrideFn)(float *override, uint8_t *camera);
 typedef int64_t (*CameraBuildFn)(uint8_t *camera);
 typedef float (*WeaponSepFn)(void *settings);
+typedef float (*CameraFloatFn)(void *renderer);
 typedef uint8_t *(*BoolVarFn)(uint64_t group, uint64_t name);
 typedef void (*BoolSetFn)(uint8_t *var, uint8_t value, uint8_t mode);
 typedef void (*ListSetFn)(uint8_t *var, int32_t index, uint8_t mode);
@@ -270,6 +354,31 @@ static struct {
     const uint64_t *gameOff[2];
     const uint64_t *effectsGroup; //   and the CName of their group ("/graphics/basic"), the group used for all six
 } fg;
+
+// Fixed 3D.
+static struct {
+    CameraFloatFn sepOrig, convOrig;
+    uint8_t *const *renderer;  // the global renderer pointer
+    volatile LONG calls;       // separation reads since the last log line
+    volatile LONG logTick;     // GetTickCount of the last log line
+    int fadeChecked;           // the weapon's fields are the fade's (else only "faded right out" is seen)
+    wchar_t ini[MAX_PATH];     // Braindance3D-Settings.ini ("" without a folder)
+    FILETIME iniTime;          // when it was last read
+    wchar_t modIni[MAX_PATH];  // Mod Settings' user.ini ("" without a folder)
+    FILETIME modIniTime;       // when it was last read
+    volatile LONG fixed;       // fixed mode is on
+    volatile float sep, conv, weaponDistance; // the eye gap, the distance from the screen, [Stereo] WeaponDistance
+    uint8_t *weaponConvVar;    // the WeaponConvergenceDistance config var (NULL: the weapon keeps the game's)
+    float weaponConvGame;      // its value while ours is written
+    int weaponConvWritten;
+    int wasActive;             // for the log
+    volatile LONG keyTick;     // GetTickCount of the last look at the keys
+    int keyDown;               // Ctrl+F8 was down then
+} stereo;
+
+// Read by name from bd3d_stub_stereo_update.
+__attribute__((used)) volatile float bd3d_stereo_tan;   // tan(hfov / 2) of the last stereo update, 0: none yet
+__attribute__((used)) void *bd3d_stereo_update_orig;
 
 // Per-thread state in fg.tls (a TLS slot, not __thread, which would need libwinpthread with some MinGW builds).
 // TS_OUTSIDE: not inside FlagCompute; TS_NOT_ASKED: inside, and the view didn't pass the frame generation checks (so
@@ -935,6 +1044,9 @@ static void count_gun(const EyePlaces *kept)
 // flat weapon then sits at screen depth in both eyes, with no shift between them (above 0 the flat picture is only
 // slid apart, which looks wrong). The setting itself keeps its value, so once those are off the weapon gets its depth from
 // it again.
+static int stereo_active(void);
+static float stereo_weapon_sep(int flat);
+
 HOOK float hook_weapon_sep(void *settings)
 {
     int found = 0;
@@ -948,7 +1060,8 @@ HOOK float hook_weapon_sep(void *settings)
         plugin_log(1, zero ? "gun: path tracing or RT Lighting or Shadows on (or unknown): the weapon's eye gap is 0 "
                              "(as Weapon Depth 0)"
                            : "gun: the weapon's eye gap follows Weapon Depth again");
-    return zero ? 0.0f : fg.sepOrig(settings);
+    float sep = zero ? 0.0f : fg.sepOrig(settings);
+    return stereo.sepOrig && stereo_active() ? stereo_weapon_sep(zero) : sep;
 }
 
 // The square root of x >= 0, without the C library's (a few Newton steps from a power of two: plenty for a log).
@@ -991,6 +1104,260 @@ HOOK int64_t hook_plane_override(float *override, uint8_t *camera)
     return r;
 }
 
+// A float from an ini file, or fallback (logged) if it's missing, malformed or outside lo..hi.
+static float stereo_float(const wchar_t *file, const wchar_t *section, const wchar_t *key, float fallback, float lo,
+                          float hi)
+{
+    wchar_t v[64], *end;
+    GetPrivateProfileStringW(section, key, L"", v, 64, file);
+    double d = wcstod(v, &end);
+    if (end == v || !(d >= lo && d <= hi)) {
+        plugin_log(1, "fixed: [%ls] %ls = '%ls' isn't a number from %.3f to %.3f: using %.3f", section, key, v, lo, hi,
+                   fallback);
+        return fallback;
+    }
+    return (float)d;
+}
+
+// The distance from the screen, metres: from the smallest to the largest display size (size 0 to 100), in equal ratios,
+// as sliders for size feel even.
+static float stereo_distance(float size)
+{
+    return SCREEN_SMALLEST * (float)pow(SCREEN_LARGEST / SCREEN_SMALLEST, size / 100.0f);
+}
+
+static void stereo_read_settings(void)
+{
+    wchar_t v[64];
+    int fixed = 0;
+    float sep = FIXED_SEP_DEFAULT, size = FIXED_SIZE_DEFAULT;
+    float weapon = stereo_float(stereo.ini, L"Stereo", L"WeaponDistance", FIXED_WEAPON_DEFAULT, 0.1f, 1000.0f);
+    // Mod Settings' file has nothing of ours until the first Apply, and the page shows these same defaults till then.
+    int applied = stereo.modIni[0] && GetPrivateProfileStringW(MOD_SETTINGS_SECTION, L"Fixed", L"", v, 64, stereo.modIni);
+    if (applied) {
+        fixed = _wcsicmp(v, L"true") == 0;
+        sep = 0.001f * stereo_float(stereo.modIni, MOD_SETTINGS_SECTION, L"EyeGapMm", 1000.0f * sep, 0.0f, 300.0f);
+        size = stereo_float(stereo.modIni, MOD_SETTINGS_SECTION, L"DisplaySize", size, 0.0f, 100.0f);
+    }
+    float conv = stereo_distance(size);
+    stereo.sep = sep;
+    stereo.conv = conv;
+    stereo.weaponDistance = weapon;
+    stereo.fixed = fixed;
+    plugin_log(1, "fixed: settings read: Fixed = %s, eye gap %.1f mm, display size %.0f: distance %.2f m%s, "
+                  "WeaponDistance = %.2f m",
+               fixed ? "on" : "off", 1000.0f * sep, size, conv, applied ? "" : " (nothing applied on the page yet)", weapon);
+}
+
+// Whether the file's time isn't the one noted in *seen, which then becomes its time. A missing file has time 0.
+static int stereo_file_changed(const wchar_t *path, FILETIME *seen)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    FILETIME now = { 0, 0 };
+    if (path[0] && GetFileAttributesExW(path, GetFileExInfoStandard, &a)) now = a.ftLastWriteTime;
+    if (CompareFileTime(&now, seen) == 0) return 0;
+    *seen = now;
+    return 1;
+}
+
+// Reads the settings again if either file changed.
+static void stereo_reload(void)
+{
+    int changed = stereo_file_changed(stereo.ini, &stereo.iniTime);
+    changed |= stereo_file_changed(stereo.modIni, &stereo.modIniTime);
+    if (changed) stereo_read_settings();
+}
+
+void stereo_settings_load(const wchar_t *installDir)
+{
+    stereo.ini[0] = 0;
+    if (_snwprintf(stereo.ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", installDir) < 0) {
+        stereo.ini[0] = 0;
+        return;
+    }
+    stereo.ini[MAX_PATH - 1] = 0;
+    // The folder is bin\\x64\\Braindance3D, three levels under the game.
+    if (_snwprintf(stereo.modIni, MAX_PATH, L"%ls\\..\\..\\..\\red4ext\\plugins\\mod_settings\\user.ini", installDir) < 0)
+        stereo.modIni[0] = 0;
+    stereo.modIni[MAX_PATH - 1] = 0;
+    stereo_reload();
+}
+
+// Fixed values are in use: [Stereo] Fixed on, and side by side (a real 3D monitor keeps the game's stereo).
+static int stereo_active(void) { return stereo.fixed && sbs_debug(); }
+
+// The Odyssey object, or NULL. (While the game's in the thunks, it's there: the thunks read it the same way.)
+static const uint8_t *stereo_object(void)
+{
+    const uint8_t *renderer = *stereo.renderer;
+    return renderer ? *(const uint8_t *const *)(renderer + RENDERER_ODYSSEY) : NULL;
+}
+
+// The game's fade while aiming, 1 (none) to 0. With Weapon Depth at 0 the weapon's fields can't show it, nor if their
+// check failed: then only "the game's separation is 0" counts.
+static float stereo_fade(void)
+{
+    const uint8_t *od = stereo_object();
+    if (!od) return 1.0f;
+    float base = stereo.fadeChecked ? *(const volatile float *)(od + OD_WEAPON_BASE) : 0.0f;
+    if (base <= 0.0f) return *(const volatile float *)(od + OD_SEP) > 0.0f ? 1.0f : 0.0f;
+    float x = *(const volatile float *)(od + OD_WEAPON_SEP) / base;
+    return x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x;
+}
+
+// The game's Depth setting through its curve: 1 at Immersive, 0 to 2 (1 if the object's fields can't be trusted).
+static float stereo_depth(void)
+{
+    const uint8_t *od = stereo_object();
+    if (!od || !stereo.fadeChecked) return 1.0f;
+    float s = *(const volatile float *)(od + OD_DEPTH);
+    return s < 0.0f ? 0.0f : s > 2.0f ? 2.0f : s;
+}
+
+// The eye separation in fixed mode: the IPD, scaled by Depth, faded while aiming.
+static float stereo_separation(void) { return stereo.sep * stereo_depth() * stereo_fade(); }
+
+// The Weapon Depth slider, 0 to 1 (1 if its field's check failed).
+static float stereo_weapon_depth(void)
+{
+    const uint8_t *od = stereo_object();
+    if (!od || !stereo.fadeChecked) return 1.0f;
+    float depth = *(const volatile float *)(od + OD_WEAPON_BASE) / WEAPON_DEPTH_METRES;
+    return depth < 0.0f ? 0.0f : depth > 1.0f ? 1.0f : depth;
+}
+
+// The weapon's separation in fixed mode, scaled by the Weapon Depth slider. Flat (ray tracing, stereo_active only): its
+// eye cameras stay at the centre, so the separation only slides the two pictures. A slide of sep * (1 - conv / distance)
+// is the parallax of something at that distance, in front of the screen for the negative values it gives. (The game's
+// only use of the sign is the cull camera's pull-back, which has a small positive floor.)
+static float stereo_weapon_sep(int flat)
+{
+    float sep = stereo_separation() * stereo_weapon_depth(), conv = stereo.conv;
+    return flat ? sep * (1.0f - conv / stereo.weaponDistance) : sep * FIXED_REAL_WEAPON;
+}
+
+// The weapon's convergence is a config var the camera build reads each frame: ours while fixed, the game's again after.
+static void stereo_weapon_conv(int active)
+{
+    if (!stereo.weaponConvVar) return;
+    volatile float *value = (volatile float *)(stereo.weaponConvVar + VAR_VALUE);
+    if (active) {
+        if (!stereo.weaponConvWritten) {
+            stereo.weaponConvGame = *value;
+            stereo.weaponConvWritten = 1;
+            plugin_log(1, "fixed: WeaponConvergenceDistance %.2f m from now follows the distance", stereo.weaponConvGame);
+        }
+        *value = stereo.conv;
+    } else if (stereo.weaponConvWritten) {
+        *value = stereo.weaponConvGame;
+        stereo.weaponConvWritten = 0;
+        plugin_log(1, "fixed: WeaponConvergenceDistance back at the game's %.2f m", stereo.weaponConvGame);
+    }
+}
+
+// On-screen parallax at depth z as a fraction of the image width, the game's own expression (0x142285E8B):
+// sep * (1 - conv / z) / (2 * conv * tan(hfov / 2)). Positive behind the screen, negative in front. 0 if unknown.
+static float stereo_parallax(float sep, float conv, float tan2, float z)
+{
+    float width = 2.0f * conv * tan2; // the width of the view at the convergence distance
+    return width > 0.0f && z > 0.0f ? sep * (1.0f - conv / z) / width : 0.0f;
+}
+
+// Once a second: picks up settings changes, keeps the weapon's convergence and logs (level 2) the game's stereo state
+// and what the hooks return. Reads floats without the object's lock: at worst a line mixes two frames.
+static void stereo_tick(float gameSep)
+{
+    LONG calls = InterlockedIncrement(&stereo.calls);
+    LONG now = (LONG)GetTickCount(), last = stereo.logTick;
+    if ((DWORD)(now - last) < 1000 || InterlockedCompareExchange(&stereo.logTick, now, last) != last) return;
+    InterlockedExchange(&stereo.calls, 0);
+    DWORD err = GetLastError(); // the game's code around the hooks may use it
+    stereo_reload();
+    int active = stereo_active();
+    if (active != stereo.wasActive) {
+        stereo.wasActive = active;
+        plugin_log(1, active ? "fixed: on: the world's eye separation and convergence are the fixed values"
+                             : "fixed: off: the game's own stereo");
+    }
+    stereo_weapon_conv(active);
+    const uint8_t *renderer = *stereo.renderer;
+    const uint8_t *od = renderer ? *(const uint8_t *const *)(renderer + RENDERER_ODYSSEY) : NULL;
+    if (!readable(od, OD_SIZE)) {
+        plugin_log(1, "fixed: the Odyssey object isn't readable (%p)", (const void *)od);
+        SetLastError(err);
+        return;
+    }
+#define OD_FLOAT(field) (*(const volatile float *)(od + (field)))
+    float conv = OD_FLOAT(OD_CONV), nearZ = OD_FLOAT(OD_NEAR), farZ = OD_FLOAT(OD_FAR), tan2 = bd3d_stereo_tan;
+    float farParallax = stereo_parallax(gameSep, conv, tan2, farZ), nearParallax = stereo_parallax(gameSep, conv, tan2, nearZ);
+    plugin_log(2, "fixed: game sep %.1f mm (target %.1f) conv %.2f m (target %.2f) near %.2f far %.2f s %.2f valid %d "
+                  "far pixels %u | parallax near %.2f%% far %.2f%% | weapon %.1f of %.1f mm aim %d | tan %.4f hfov "
+                  "%.1f | %ld reads",
+               1000.0f * gameSep, 1000.0f * OD_FLOAT(OD_SEP_TARGET), conv, OD_FLOAT(OD_CONV_TARGET), nearZ, farZ,
+               OD_FLOAT(OD_DEPTH), od[OD_VALID], (unsigned)*(const volatile uint32_t *)(od + OD_FAR_PIXELS),
+               100.0f * nearParallax, 100.0f * farParallax, 1000.0f * OD_FLOAT(OD_WEAPON_SEP),
+               1000.0f * OD_FLOAT(OD_WEAPON_BASE), od[OD_AIM], tan2, 2.0 * atan(tan2) * 57.29578, (long)calls);
+#undef OD_FLOAT
+    if (active) {
+        float sep = stereo_separation(), fixedConv = stereo.conv, fixedWidth = 2.0f * fixedConv * tan2;
+        plugin_log(2, "fixed: returning sep %.1f mm conv %.2f m | parallax near %.2f%% far %.2f%% infinity %.2f%% | image "
+                      "%.2f m wide at that distance | Weapon Depth %.2f, flat weapon toward %.2f m gets sep %.1f mm",
+                   1000.0f * sep, fixedConv,
+                   100.0f * stereo_parallax(sep, fixedConv, tan2, nearZ), 100.0f * stereo_parallax(sep, fixedConv, tan2, farZ),
+                   fixedWidth > 0.0f ? 100.0f * sep / fixedWidth : 0.0f, fixedWidth, stereo_weapon_depth(),
+                   stereo.weaponDistance,
+                   1000.0f * stereo_weapon_sep(1));
+    }
+    SetLastError(err);
+}
+
+// A change of the keys: pressing them turns fixed mode over, at once (the next read logs it and sets the weapon).
+static void stereo_key(int down)
+{
+    if (down == stereo.keyDown) return;
+    stereo.keyDown = down;
+    if (!down) return;
+    LONG fixed = !stereo.fixed;
+    stereo.fixed = fixed;
+    stereo.logTick = (LONG)GetTickCount() - 2000;
+    plugin_log(1, "fixed: Ctrl+F8: Fixed = %s", fixed ? "on" : "off");
+}
+
+// Whether the game has the keyboard: the same keys in another window aren't for it.
+static int game_in_front(void)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+
+// Looks at the keys about 30 times a second (the separation is read about 1000 times).
+static void stereo_hotkey(void)
+{
+    LONG now = (LONG)GetTickCount(), last = stereo.keyTick;
+    if ((DWORD)(now - last) < 30 || InterlockedCompareExchange(&stereo.keyTick, now, last) != last) return;
+    DWORD err = GetLastError();
+    int down = (GetAsyncKeyState(VK_F8) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
+    LONG fixed = stereo.fixed;
+    stereo_key(down && game_in_front());
+    if (stereo.fixed != fixed) menus_notice(stereo.fixed);
+    SetLastError(err);
+}
+
+HOOK float hook_camera_sep(void *renderer)
+{
+    float sep = stereo.sepOrig(renderer);
+    stereo_hotkey();
+    stereo_tick(sep);
+    return stereo_active() ? stereo_separation() : sep;
+}
+
+HOOK float hook_camera_conv(void *renderer)
+{
+    float conv = stereo.convOrig(renderer);
+    return stereo_active() ? stereo.conv : conv;
+}
+
 REGISTER_KEEPING_THUNK(bd3d_thunk_o3d_changed, hook_o3d_changed);
 REGISTER_KEEPING_THUNK(bd3d_thunk_set_fg, hook_set_fg);
 REGISTER_KEEPING_THUNK(bd3d_thunk_dlssg_enabled, hook_dlssg_enabled);
@@ -1003,6 +1370,20 @@ REGISTER_KEEPING_THUNK(bd3d_thunk_plane_override, hook_plane_override);
 int64_t bd3d_thunk_plane_override(float *override, uint8_t *camera);
 REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_weapon_sep, hook_weapon_sep);
 float bd3d_thunk_weapon_sep(void *settings);
+REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_camera_sep, hook_camera_sep);
+float bd3d_thunk_camera_sep(void *renderer);
+REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_camera_conv, hook_camera_conv);
+float bd3d_thunk_camera_conv(void *renderer);
+
+// On entry to the stereo update: notes its tan(hfov / 2) argument (on the stack, 0x38 above the return address)
+// and goes on to the original. No C and no other register touched: the update's caller is the kind of code
+// REGISTER_KEEPING_THUNK is for, and that thunk can't pass stack arguments on.
+__asm__(".text\n.p2align 4\n.globl bd3d_stub_stereo_update\n"
+        ".def bd3d_stub_stereo_update; .scl 2; .type 32; .endef\n"
+        "bd3d_stub_stereo_update:\n"
+        "push %rax\nmov 0x40(%rsp), %eax\nmov %eax, bd3d_stereo_tan(%rip)\npop %rax\n"
+        "jmp *bd3d_stereo_update_orig(%rip)\n");
+void bd3d_stub_stereo_update(void);
 
 // ---------------------------------------------------------------- set-up
 
@@ -1356,6 +1737,76 @@ static ResolveFn red4ext_resolver(void)
     return r4e ? (ResolveFn)(void *)GetProcAddress(r4e, "RED4ext_ResolveAddress") : NULL;
 }
 
+// A camera thunk and the getter behind it: the renderer global, the Odyssey object and the field they read.
+static int check_camera_thunk(const uint8_t *thunk, const uint8_t *getter, const char *getterAob, uintptr_t renderer)
+{
+    return in_exe((uintptr_t)thunk, CAMERA_THUNK_SIZE) && in_exe((uintptr_t)getter, STEREO_GETTER_SIZE) &&
+           aob_find_unique(thunk, CAMERA_THUNK_SIZE, AOB_CAMERA_THUNK) == 0 && rip_operand(thunk) == renderer &&
+           call_target(thunk + CAMERA_THUNK_JMP) == (uintptr_t)getter &&
+           aob_find_unique(getter, STEREO_GETTER_SIZE, getterAob) == 0;
+}
+
+// What the fixed mode reads or writes besides the thunks: the fade's fields and the weapon's convergence. If one fails,
+// only that part is lost (logged).
+static void check_stereo_extras(ResolveFn resolve)
+{
+    uint8_t *body = (uint8_t *)resolve(HASH_STEREO_BODY);
+    uint8_t *var = (uint8_t *)resolve(HASH_VAR_WEAPON_CONV);
+    stereo.fadeChecked = in_exe((uintptr_t)body, STEREO_BODY_SIZE) &&
+                         aob_find_unique(body, STEREO_BODY_SIZE, AOB_STEREO_FADE) >= 0;
+    if (!stereo.fadeChecked) plugin_log(1, "fixed: the fade while aiming doesn't match: only its end is seen");
+    const char *const *names = (const char *const *)var;
+    if (in_exe((uintptr_t)var, VAR_VALUE + 4) && text_is(names[VAR_NAME / 8], "WeaponConvergenceDistance") &&
+        text_is(names[VAR_GROUP / 8], "Odyssey3D"))
+        stereo.weaponConvVar = var;
+    else
+        plugin_log(1, "fixed: the WeaponConvergenceDistance var doesn't match: the weapon keeps the game's convergence");
+}
+
+// The field of view for the log. If it fails, only the log loses it.
+static void attach_stereo_update(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
+{
+    uint8_t *update = (uint8_t *)resolve(HASH_STEREO_UPDATE);
+    if (!in_exe((uintptr_t)update, STEREO_UPDATE_SIZE) ||
+        aob_find_unique(update, STEREO_UPDATE_SIZE, AOB_STEREO_UPDATE) != 0)
+        plugin_log(1, "fixed: the stereo update doesn't match (game update?): no field of view in the log");
+    else if (!h->Attach(pluginHandle, update, (void *)bd3d_stub_stereo_update, &bd3d_stereo_update_orig))
+        plugin_log(1, "fixed: couldn't hook the stereo update: no field of view in the log");
+    else
+        plugin_log(1, "fixed: stereo update hooked %p", (void *)update);
+}
+
+// The camera's two thunks, checked, then attached as a group of their own. Needs fg.sbsVar: call after attach_gun.
+static int attach_stereo(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
+{
+    uint8_t *sep = (uint8_t *)resolve(HASH_CAMERA_SEP), *conv = (uint8_t *)resolve(HASH_CAMERA_CONV);
+    uint8_t *sepGetter = (uint8_t *)resolve(HASH_SEP_GETTER), *convGetter = (uint8_t *)resolve(HASH_CONV_GETTER);
+    uintptr_t renderer = resolve(HASH_RENDERER);
+    plugin_log(1, "fixed: resolved thunks %p %p, getters %p %p, renderer %p", (void *)sep, (void *)conv,
+               (void *)sepGetter, (void *)convGetter, (void *)renderer);
+    const char *why = NULL;
+    if (!fg.sbsVar) why = "the SBSDebug var wasn't found";
+    else if (!in_exe(renderer, 8)) why = "the renderer global didn't resolve into the game exe";
+    else if (!check_camera_thunk(sep, sepGetter, AOB_SEP_GETTER, renderer)) why = "the separation thunk doesn't match";
+    else if (!check_camera_thunk(conv, convGetter, AOB_CONV_GETTER, renderer)) why = "the convergence thunk doesn't match";
+    else if (!h->Attach(pluginHandle, sep, (void *)bd3d_thunk_camera_sep, (void **)&stereo.sepOrig))
+        why = "couldn't hook the separation thunk";
+    else if (!h->Attach(pluginHandle, conv, (void *)bd3d_thunk_camera_conv, (void **)&stereo.convOrig)) {
+        h->Detach(pluginHandle, sep);
+        why = "couldn't hook the convergence thunk";
+    }
+    if (why) {
+        stereo.sepOrig = stereo.convOrig = NULL;
+        plugin_log(1, "fixed: %s (game update?): not hooked, stereo stays as the game sets it", why);
+        return 0;
+    }
+    stereo.renderer = (uint8_t *const *)renderer;
+    plugin_log(1, "fixed: camera separation and convergence hooked");
+    check_stereo_extras(resolve);
+    attach_stereo_update(pluginHandle, h, resolve);
+    return 1;
+}
+
 int framegen_load(void *pluginHandle, const R4eSdk *sdk)
 {
     if (!sdk || !sdk->hooking || !sdk->hooking->Attach || !sdk->hooking->Detach)
@@ -1364,5 +1815,6 @@ int framegen_load(void *pluginHandle, const R4eSdk *sdk)
     if (!resolve) return fail("RED4ext.dll has no RED4ext_ResolveAddress");
     int attached = attach_hooks(pluginHandle, sdk->hooking, resolve);
     attach_gun(pluginHandle, sdk->hooking, resolve);
+    attach_stereo(pluginHandle, sdk->hooking, resolve);
     return attached;
 }

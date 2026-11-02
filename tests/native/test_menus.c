@@ -1590,6 +1590,79 @@ static void squeeze_and_check(ID3D12Resource *bb)
     check_squeezed(before, after, (UINT)d.Width, d.Height);
 }
 
+TEST(the_notice_is_in_the_same_place_in_each_half_and_stays_there)
+{
+    static D3D12_RECT dots[NOTICE_RECTS];
+    D3D12_RECT panel[2];
+    struct { UINT w, h; } sizes[] = { { 3840, 2160 }, { 2560, 1440 }, { 64, 24 } };
+    for (int k = 0; k < 3; k++) {
+        UINT w = sizes[k].w, h = sizes[k].h;
+        int n = notice_rects("FIXED 3D OFF", w, h, panel, dots, NOTICE_RECTS);
+        REQUIRE_MSG(n > 0 && n % 2 == 0, "%d dots at %ux%u", n, w, h);
+        CHECK(panel[1].left - panel[0].left == (LONG)w / 2);
+        CHECK(panel[0].right <= (LONG)w / 2 && panel[1].right <= (LONG)w);
+        CHECK(panel[0].left >= 0 && panel[0].top >= 0 && panel[0].bottom <= (LONG)h);
+        for (int i = 0; i < n / 2; i++) {
+            CHECK_EQ_INT(dots[n / 2 + i].left - dots[i].left, (LONG)w / 2);
+            CHECK_EQ_INT(dots[n / 2 + i].top, dots[i].top);
+            CHECK(dots[i].right <= (LONG)w / 2 && dots[n / 2 + i].right <= (LONG)w);
+        }
+    }
+    int all = notice_rects("FIXED 3D OFF", 3840, 2160, panel, dots, NOTICE_RECTS);
+    CHECK(all <= NOTICE_RECTS);
+    CHECK_EQ_INT(all, 2 * (14 + 11 + 13 + 18 + 18 + 14 + 18 + 16 + 14 + 14)); // F, I, X, E, D, 3, D, O, F, F's dots, per eye
+}
+
+TEST(a_dot_is_twice_as_high_as_wide_for_the_stretch_in_the_headset)
+{
+    static D3D12_RECT dots[NOTICE_RECTS];
+    D3D12_RECT panel[2];
+    notice_rects("I", 3840, 2160, panel, dots, NOTICE_RECTS);
+    CHECK_EQ_INT(dots[0].bottom - dots[0].top, 4);
+    CHECK_EQ_INT(dots[0].right - dots[0].left, 2);
+}
+
+TEST(the_notice_shows_for_two_seconds)
+{
+    mt_begin();
+    CHECK_EQ_INT(notice_showing(), 0);
+    menus_notice(1);
+    CHECK_EQ_INT(notice_showing(), 1);
+    CHECK_EQ_INT((int)g.noticeOn, 1);
+    g.noticeUntil = (LONG)(GetTickCount() - 1) | 1;
+    if ((LONG)((DWORD)g.noticeUntil - GetTickCount()) > 0) g.noticeUntil = (LONG)(GetTickCount() - 3) | 1;
+    CHECK_EQ_INT(notice_showing(), 0);
+    CHECK_EQ_INT((int)g.noticeUntil, 0);
+}
+
+TEST(the_notice_is_drawn_into_both_halves_and_nothing_else_changes)
+{
+    mt_begin();
+    log_to_file();
+    gpu_open();
+    squeeze_ready();
+    ID3D12Resource *bb = back_buffer_texture(64, 24, DXGI_FORMAT_R8G8B8A8_UNORM);
+    uint32_t before[64 * 24], after[64 * 24];
+    paint_pairs(bb);
+    read_texels(bb, before);
+    REQUIRE_EQ_INT(draw_notice(bb, 1), 1);
+    read_texels(bb, after);
+    static D3D12_RECT dots[NOTICE_RECTS];
+    D3D12_RECT panel[2];
+    int n = notice_rects("FIXED 3D ON", 64, 24, panel, dots, NOTICE_RECTS);
+    REQUIRE(n > 0);
+    const uint32_t green = after[dots[0].top * 64 + dots[0].left];
+    CHECK_MSG((green & 0xFF00) == 0xFF00 && (green & 0xFF) < 0x80, "the first dot is 0x%08x", green);
+    for (int i = 0; i < n; i++) CHECK(after[dots[i].top * 64 + dots[i].left] == green);
+    for (int y = 0; y < 24; y++)
+        for (int x = 0; x < 64; x++) {
+            int inPanel = 0;
+            for (int e = 0; e < 2; e++)
+                inPanel |= x >= panel[e].left && x < panel[e].right && y >= panel[e].top && y < panel[e].bottom;
+            if (!inPanel) CHECK_MSG(after[y * 64 + x] == before[y * 64 + x], "texel (%d, %d) changed", x, y);
+        }
+}
+
 TEST(init_d3d_on_sets_up_everything_the_squeeze_records_with)
 {
     mt_begin();

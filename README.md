@@ -27,9 +27,11 @@ monitor's software. This mod:
    RT Reflections keeps the depth.
 6. Turns off the **effects that ghost in 3D** (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens
    bend) when you switch 3D Mode on in the menu. Change any back if you like.
+7. Adds **[Fixed 3D](#fixed-3d)**, off by default: one real eye gap and one screen distance instead of stereo that
+   re-aims every frame, so the world keeps its scale. On a headset it's much closer to VR.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
-generation, weapon depth and effects switch hook a few game functions through RED4ext.
+generation, weapon depth, effects switch and Fixed 3D hook a few game functions through RED4ext.
 
 ## Requirements
 
@@ -38,6 +40,8 @@ generation, weapon depth and effects switch hook a few game functions through RE
   ([No RED4ext](#no-red4ext)): then only 3D Mode and side by side work.
 - A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
   Desktop.
+- For Fixed 3D's settings page: [Mod Settings](https://www.nexusmods.com/cyberpunk2077/mods/4885), which also needs
+  redscript. Optional: without it, Ctrl+F8 still switches Fixed 3D, with the default settings.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
   or FSR3 on any GPU (2x), tested on an NVIDIA card. FSR4 (RX 9000) and XeSS (Intel Arc) are untested.
 - **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
@@ -45,7 +49,7 @@ generation, weapon depth and effects switch hook a few game functions through RE
 
 ## Install
 
-1. Install RED4ext, then this mod (Vortex, or extract into the game folder with `bin`, `engine` and `red4ext`).
+1. Install RED4ext, then this mod (Vortex, or extract into the game folder with `bin`, `engine`, `red4ext` and `r6`).
 2. Turn on **3D Mode** in the video settings. The screen shows two images side by side.
 3. In your headset, view the PC screen as **half side-by-side** 3D (Virtual Desktop: the desktop screen's 3D
    mode, Half SBS). The game must run on the monitor the headset shows.
@@ -58,10 +62,37 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 - **More 3D depth:** lower the game's **Field of View** (Graphics settings), e.g. 90 to 80 (step 7 of the
   recommended setup).
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
-  multi-monitor PCs) and menu fix (`[Menus] Squeeze = auto` or `off`).
+  multi-monitor PCs), menu fix (`[Menus] Squeeze = auto` or `off`) and where Fixed 3D's flat weapon sits
+  (`[Stereo] WeaponDistance`).
 - Each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice lowers
   the frame rate versus 2D.
 - Stereo 3D can strain your eyes: take breaks or lower Depth.
+
+## Fixed 3D
+
+The game re-aims its stereo every frame, for a 3D monitor on a desk, so the world's scale changes from scene to scene.
+Fixed 3D keeps one real eye gap and one distance to the screen, the way VR does. Made for a large virtual screen; tested
+on a Quest 3 with Virtual Desktop. Off by default.
+
+- **Turn it on:** Mod Settings, **3D Braindance Edition**, **Fixed 3D**, then Apply. Works with the game running.
+- **Compare:** **Ctrl+F8** switches it on and off in game, and the picture shows FIXED 3D ON or OFF for two seconds. It
+  lasts until you press Apply or restart; the page keeps the saved setting.
+- **Your IPD:** the real distance between your eyes, 65 mm for most people.
+- **Depth** (or the Preset) scales your IPD: Comfort 0.43x, Balanced 0.71x, Immersive 1x (true scale), Extreme 1.67x,
+  Depth 1.0 2x. More stretches the 3D depth around the screen.
+- **Screen size:** where Virtual Desktop's size slider is. 0% feels like the back row at the 3D cinema (30 m), 100% like
+  the front row (5 m). It slides the two pictures and doesn't change the depth between things.
+- **Field of View:** 90 looked most natural on a large curved screen filling the headset's view; for true scale, match
+  it to how much of your view the screen fills. Your choice: the mod never changes it.
+- **Weapon Depth** still sets the weapon's depth. Motion Comfort does nothing in Fixed 3D.
+
+**No comfort limits.** The game's own mode holds distant things to about 0.6% of the picture and close things to about
+0.7%; Fixed 3D doesn't, so that the scale can stay true. Close things separate much more, and a high Depth on a large
+screen makes distant things need your eyes to turn outward. If your eyes ache, lower Depth or Screen size, or take a
+break. On a 3D TV or a small screen the world comes far out of the screen: Fixed 3D isn't made for those.
+
+While aiming, the game fades to flat, as it does without Fixed 3D. The HUD stays at the screen's depth, so close things
+come in front of it.
 
 ## Recommended setup (Quest 3 + Virtual Desktop)
 
@@ -91,7 +122,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
    the frame rate low afterwards; restart the game if it doesn't recover.
 7. **Field of View:** a flat image looks natural only when the game's FOV matches how much of your view the screen
    fills. Too wide, and everything looks small and far away and swells at the edges. With a large Virtual Desktop
-   cinema screen, 80 looks much better than 90; go lower on a smaller or more distant screen.
+   cinema screen, 80 looks much better than 90 in the game's own 3D; go lower on a smaller or more distant screen.
+   With [Fixed 3D](#fixed-3d), 90 looked most natural on a screen filling the view.
 8. **Effects that ghost in 3D** differ between the eyes. When you switch 3D Mode on in the menu, the game turns off
    Chromatic Aberration and Film Grain, and the mod turns off Depth of Field, Lens Flare, Motion Blur and Vignette
    (Graphics) and turns on Remove HUD Visual Effects and Remove HUD Lens Distortion (Accessibility, Interface). Change
@@ -112,6 +144,9 @@ Logs: `braindance3d.log`, `Braindance3D-autosetup.log` and `Braindance3D-hooks.l
 - **No DLSS in the game's Frame Generation list with OptiScaler:** set `FGInput = nofg` and `FGOutput = nofg` in
   `OptiScaler.ini`.
 - **Depth inside out:** use your viewer's swap-eyes option.
+- **Fixed 3D strains your eyes:** lower Depth or Screen size, see [Fixed 3D](#fixed-3d).
+- **No 3D Braindance Edition page in Mod Settings:** check that `r6\scripts\Braindance3D\FixedStereo.reds` is in the game
+  folder and redscript is installed.
 
 **Bugs:** report via [GitHub issues](https://github.com/vl3c/cyberpunk2077-3d-braindance-edition/issues) or the
 Nexus Bugs tab with game version and store, GPU, how you view the 3D, and logs at `Level = 2` (settings ini).

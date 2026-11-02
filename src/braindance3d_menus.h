@@ -24,6 +24,9 @@ int menus_load(void *pluginHandle, const R4eSdk *sdk, const wchar_t *installDir)
 // Tells the menu squeeze which way the game's 3D Mode handler just set 3D Mode (from braindance3d_framegen.c).
 void menus_note_3d_mode(int on);
 
+// Shows FIXED 3D ON or FIXED 3D OFF on the picture for two seconds, in both eyes.
+void menus_notice(int on);
+
 // Writes a line to Braindance3D-hooks.log when [Log] Level is at least level (1 normal, 2 verbose).
 void plugin_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
@@ -31,3 +34,6 @@ void plugin_log(int level, const char *fmt, ...) __attribute__((format(printf, 2
 // from Main on Load, after menus_load. Returns 1 when the frame generation hooks are attached, 0 when not (the reason
 // is logged). Never stops the game.
 int framegen_load(void *pluginHandle, const R4eSdk *sdk);
+
+// Reads the Fixed 3D settings from installDir and Mod Settings' file. Call before framegen_load.
+void stereo_settings_load(const wchar_t *installDir);

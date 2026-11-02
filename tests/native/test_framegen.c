@@ -19,6 +19,7 @@ static char ft_log[8192];
 static int f_noted3d = -1; // what the menu squeeze was last told
 
 void menus_note_3d_mode(int on) { f_noted3d = on; }
+void menus_notice(int on) { (void)on; }
 
 void plugin_log(int level, const char *fmt, ...)
 {
@@ -2300,6 +2301,610 @@ TEST(unknown_settings_the_game_turns_off_are_named_so)
     menu_switch(0, 1);
     CHECK(strstr(ft_log, "the game turned off ChromaticAberration and a setting this doesn't know") != NULL);
     CHECK_EQ_INT(f_boolSets, EFFECT_COUNT + HUD_REMOVAL_COUNT);
+}
+
+// ===================================================================================== the fixed stereo experiment
+
+static uint8_t f_od[OD_SIZE], f_stereoRenderer[RENDERER_ODYSSEY + 8], *f_rendererVar;
+static uint8_t f_sepThunk[CAMERA_THUNK_SIZE], f_convThunk[CAMERA_THUNK_SIZE];
+static uint8_t f_sepGetter[STEREO_GETTER_SIZE], f_convGetter[STEREO_GETTER_SIZE];
+static uint8_t f_update[STEREO_UPDATE_SIZE], f_body[STEREO_BODY_SIZE];
+static const char *f_weaponConv[8];
+
+static float fake_camera_sep(void *renderer) { (void)renderer; return 0.05f; }
+static float fake_camera_conv(void *renderer) { (void)renderer; return 3.0f; }
+
+#define OD_SET(field, value) (*(float *)(f_od + (field)) = (value))
+#define WEAPON_CONV_VALUE (*(float *)((uint8_t *)f_weaponConv + VAR_VALUE))
+
+// Hooks attached by hand, Fixed off, Weapon Depth 1, no fade.
+static void stereo_begin(void)
+{
+    ft_begin();
+    memset(&stereo, 0, sizeof(stereo));
+    memset(f_od, 0, sizeof(f_od));
+    fg.sbsVar = (const uint8_t *)f_sbsVar;
+    stereo.sepOrig = fake_camera_sep;
+    stereo.convOrig = fake_camera_conv;
+    stereo.renderer = &f_rendererVar;
+    f_rendererVar = f_stereoRenderer;
+    *(uint8_t **)(f_stereoRenderer + RENDERER_ODYSSEY) = f_od;
+    stereo.fadeChecked = 1;
+    OD_SET(OD_DEPTH, 1.0f); // Immersive
+    stereo.sep = 0.065f;
+    stereo.conv = 20.0f;
+    stereo.weaponDistance = 1.0f;
+    OD_SET(OD_WEAPON_BASE, WEAPON_DEPTH_METRES);
+    OD_SET(OD_WEAPON_SEP, WEAPON_DEPTH_METRES);
+    OD_SET(OD_SEP, 0.05f);
+    OD_SET(OD_CONV, 3.0f);
+    f_weaponConv[VAR_NAME / 8] = "WeaponConvergenceDistance";
+    f_weaponConv[VAR_GROUP / 8] = "Odyssey3D";
+    WEAPON_CONV_VALUE = 0.5f;
+    bd3d_stereo_tan = 0.7673f;
+}
+
+static void put_camera_thunk(uint8_t *thunk, uint8_t *getter, const char *getterAob)
+{
+    memset(thunk, 0xCC, CAMERA_THUNK_SIZE);
+    put(thunk, AOB_CAMERA_THUNK);
+    put_rel32(thunk + 7, &f_rendererVar);
+    put_rel32(thunk + CAMERA_THUNK_JMP + 5, getter);
+    put(getter, getterAob);
+}
+
+static void fake_stereo_game(void)
+{
+    put_camera_thunk(f_sepThunk, f_sepGetter, AOB_SEP_GETTER);
+    put_camera_thunk(f_convThunk, f_convGetter, AOB_CONV_GETTER);
+    memset(f_update, 0xCC, sizeof(f_update));
+    put(f_update, AOB_STEREO_UPDATE);
+    memset(f_body, 0xCC, sizeof(f_body));
+    put(f_body + 0xC3A, AOB_STEREO_FADE);
+}
+
+static uintptr_t stereo_resolve(uint32_t hash)
+{
+    switch (hash) {
+    case HASH_CAMERA_SEP: return (uintptr_t)f_sepThunk;
+    case HASH_CAMERA_CONV: return (uintptr_t)f_convThunk;
+    case HASH_SEP_GETTER: return (uintptr_t)f_sepGetter;
+    case HASH_CONV_GETTER: return (uintptr_t)f_convGetter;
+    case HASH_RENDERER: return (uintptr_t)&f_rendererVar;
+    case HASH_STEREO_UPDATE: return (uintptr_t)f_update;
+    case HASH_STEREO_BODY: return (uintptr_t)f_body;
+    case HASH_VAR_WEAPON_CONV: return (uintptr_t)f_weaponConv;
+    }
+    return 0;
+}
+
+static void force_tick(void) { stereo.logTick = (LONG)GetTickCount() - 2000; }
+
+static int near_float(float a, float b) { return a - b < 0.0001f && b - a < 0.0001f; }
+
+TEST(with_fixed_off_the_hooks_return_the_games_values_and_log_them)
+{
+    stereo_begin();
+    force_tick();
+    CHECK(hook_camera_sep(NULL) == 0.05f);
+    CHECK(hook_camera_conv(NULL) == 3.0f);
+    CHECK(strstr(ft_log, "fixed: game sep 50.0 mm") != NULL);
+    CHECK(strstr(ft_log, "hfov 75.0") != NULL);
+    CHECK(strstr(ft_log, "fixed: returning") == NULL);
+    CHECK_EQ_INT(stereo_active(), 0);
+}
+
+TEST(the_game_values_are_logged_once_a_second)
+{
+    stereo_begin();
+    force_tick();
+    hook_camera_sep(NULL);
+    REQUIRE(strstr(ft_log, "fixed: game sep") != NULL);
+    ft_log[0] = 0;
+    hook_camera_sep(NULL);
+    hook_camera_sep(NULL);
+    CHECK(ft_log[0] == 0);
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(strstr(ft_log, "| 3 reads") != NULL);
+}
+
+TEST(with_fixed_on_the_hooks_return_the_fixed_values_only_in_side_by_side)
+{
+    stereo_begin();
+    stereo.fixed = 1;
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+    CHECK(hook_camera_conv(NULL) == 20.0f);
+    CHECK(near_float(bd3d_thunk_camera_sep(NULL), 0.065f));
+    CHECK(bd3d_thunk_camera_conv(NULL) == 20.0f);
+    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 0; // a real 3D monitor
+    CHECK(hook_camera_sep(NULL) == 0.05f);
+    CHECK(hook_camera_conv(NULL) == 3.0f);
+}
+
+TEST(the_games_fade_while_aiming_is_kept)
+{
+    stereo_begin();
+    stereo.fixed = 1;
+    OD_SET(OD_WEAPON_SEP, WEAPON_DEPTH_METRES / 2.0f); // halfway
+    CHECK(near_float(hook_camera_sep(NULL), 0.0325f));
+    OD_SET(OD_WEAPON_SEP, 0.0f);     // faded out
+    CHECK(hook_camera_sep(NULL) == 0.0f);
+    CHECK(hook_camera_conv(NULL) == 20.0f);
+    OD_SET(OD_WEAPON_BASE, 0.0f);    // Weapon Depth 0: only the game's separation shows it
+    OD_SET(OD_SEP, 0.04f);
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+    OD_SET(OD_SEP, 0.0f);
+    CHECK(hook_camera_sep(NULL) == 0.0f);
+}
+
+TEST(the_weapon_gets_the_fixed_separation_raster_and_a_slide_when_flat)
+{
+    stereo_begin();
+    fg.sepOrig = fake_weapon_sep;
+    CHECK(hook_weapon_sep(NULL) == 0.017f); // Fixed off: the game's
+    stereo.fixed = 1;
+    CHECK(near_float(hook_weapon_sep(NULL), 0.065f * FIXED_REAL_WEAPON));
+    rt_on(RT_PATH);
+    CHECK(near_float(hook_weapon_sep(NULL), 0.065f * (1.0f - 20.0f / 1.0f))); // in front of the screen, at 1 m
+    OD_SET(OD_WEAPON_SEP, 0.0f); // aiming: flat at the screen, like the world
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+    stereo.fixed = 0;
+    CHECK(hook_weapon_sep(NULL) == 0.0f); // the game's rule under ray tracing again
+}
+
+TEST(the_weapon_depth_slider_scales_the_weapons_parallax)
+{
+    stereo_begin();
+    fg.sepOrig = fake_weapon_sep;
+    stereo.fixed = 1;
+    OD_SET(OD_WEAPON_BASE, 0.5f * WEAPON_DEPTH_METRES);
+    OD_SET(OD_WEAPON_SEP, 0.5f * WEAPON_DEPTH_METRES);
+    CHECK(near_float(hook_weapon_sep(NULL), 0.0325f * FIXED_REAL_WEAPON));
+    rt_on(RT_PATH);
+    CHECK(near_float(hook_weapon_sep(NULL), 0.0325f * (1.0f - 20.0f / 1.0f)));
+    OD_SET(OD_WEAPON_BASE, 0.0f); // Weapon Depth 0: at the screen, and the world keeps its separation
+    OD_SET(OD_WEAPON_SEP, 0.0f);
+    CHECK(hook_weapon_sep(NULL) == 0.0f);
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+    stereo.fadeChecked = 0; // the slider's field can't be trusted: all of it
+    CHECK(near_float(hook_weapon_sep(NULL), 0.065f * (1.0f - 20.0f / 1.0f)));
+}
+
+TEST(the_weapon_convergence_follows_while_fixed_and_goes_back)
+{
+    stereo_begin();
+    stereo.weaponConvVar = (uint8_t *)f_weaponConv;
+    stereo.fixed = 1;
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(WEAPON_CONV_VALUE == 20.0f);
+    stereo.conv = 15.0f;
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(WEAPON_CONV_VALUE == 15.0f);
+    stereo.fixed = 0;
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(WEAPON_CONV_VALUE == 0.5f);
+    CHECK(strstr(ft_log, "fixed: on:") != NULL);
+    CHECK(strstr(ft_log, "fixed: off:") != NULL);
+}
+
+static void write_stereo_ini(const wchar_t *path, const char *text)
+{
+    FILE *f = _wfopen(path, L"wb");
+    REQUIRE(f != NULL);
+    fputs(text, f);
+    fclose(f);
+}
+
+// Makes the file look changed: the clock may not have moved since the last write.
+static void touch_later(const wchar_t *path, const FILETIME *seen)
+{
+    HANDLE h = CreateFileW(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    FILETIME later = *seen;
+    later.dwLowDateTime += 10000000;
+    later.dwHighDateTime += later.dwLowDateTime < 10000000;
+    SetFileTime(h, NULL, NULL, &later);
+    CloseHandle(h);
+}
+
+TEST(the_page_sets_fixed_mode_the_eye_gap_and_the_distance)
+{
+    stereo_begin();
+    wchar_t dir[MAX_PATH], ini[MAX_PATH], mod[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    wcscat(dir, L"bd3d-stereo-mod-test");
+    CreateDirectoryW(dir, NULL);
+    _snwprintf(ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", dir);
+    _snwprintf(mod, MAX_PATH, L"%ls\\user.ini", dir);
+    DeleteFileW(mod);
+    write_stereo_ini(ini, "[Stereo]\r\nWeaponDistance = 2\r\n");
+    stereo_settings_load(dir);
+    wcscpy(stereo.modIni, mod);
+    stereo.iniTime.dwLowDateTime = 0; // read again, with the test's file
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK_EQ_INT(stereo.fixed, 0);    // nothing applied yet: the same defaults as the page
+    CHECK(near_float(stereo.sep, FIXED_SEP_DEFAULT));
+    CHECK(near_float(stereo.conv, 12.24745f));
+    CHECK(stereo.weaponDistance == 2.0f);
+    CHECK(strstr(ft_log, "nothing applied on the page yet") != NULL);
+    write_stereo_ini(mod, "[SomeOtherMod]\r\nFixed = true\r\n[BraindanceFixedStereo]\r\nFixed = true\r\n"
+                          "EyeGapMm = 80.000000\r\nDisplaySize = 100.000000\r\n");
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK_EQ_INT(stereo.fixed, 1);
+    CHECK(near_float(stereo.sep, 0.08f));
+    CHECK(near_float(stereo.conv, SCREEN_LARGEST));
+    CHECK(stereo.weaponDistance == 2.0f); // not on the page
+    force_tick();
+    ft_log[0] = 0;
+    hook_camera_sep(NULL);                // nothing changed: not read again
+    CHECK(strstr(ft_log, "settings read") == NULL);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nFixed = false\r\nEyeGapMm = 9999\r\nDisplaySize = x\r\n");
+    touch_later(mod, &stereo.modIniTime);
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK_EQ_INT(stereo.fixed, 0);
+    CHECK(near_float(stereo.sep, FIXED_SEP_DEFAULT)); // a bad value: the default
+    CHECK(near_float(stereo.conv, 12.24745f));
+    CHECK(strstr(ft_log, "[BraindanceFixedStereo] EyeGapMm = '9999'") != NULL);
+    write_stereo_ini(ini, "[Stereo]\r\nWeaponDistance = x\r\n");
+    touch_later(ini, &stereo.iniTime);
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(stereo.weaponDistance == FIXED_WEAPON_DEFAULT);
+    DeleteFileW(ini);
+    DeleteFileW(mod);
+    RemoveDirectoryW(dir);
+}
+
+TEST(the_display_size_covers_v_s_distances)
+{
+    CHECK(near_float(stereo_distance(0.0f), 30.0f));
+    CHECK(near_float(stereo_distance(100.0f), 5.0f));
+    CHECK(near_float(stereo_distance(50.0f), 12.24745f)); // the middle of a ratio
+}
+
+// ------------------------------------------------- the geometry. The numbers are the values these claims rest on.
+// A viewer with eye gap e looks at a screen W wide, D away. A point with parallax p (physical, on the screen) is seen
+// where the two sight lines cross: D * e / (e - p). Parallax here is the fraction stereo_parallax gives.
+
+#define TAN_FOV_80 0.8481f // tan(hfov / 2) logged in play at the game's FOV 80
+#define NO_DEPTH 1e9f      // as good as infinity
+
+static float seen_at(float eye, float screenDistance, float screenWidth, float parallax)
+{
+    return screenDistance * eye / (eye - parallax * screenWidth);
+}
+
+static int close_to(float a, float b, float tolerance) { return a - b < tolerance && b - a < tolerance; }
+
+// What the hooks really return, with fixed mode on at this eye gap and distance.
+static void fixed_at(float sep, float conv)
+{
+    stereo_begin();
+    stereo.fixed = 1;
+    stereo.sep = sep;
+    stereo.conv = conv;
+}
+
+TEST(what_is_at_the_convergence_distance_sits_on_the_screen)
+{
+    fixed_at(0.065f, 12.0f);
+    float sep = hook_camera_sep(NULL), conv = hook_camera_conv(NULL);
+    CHECK(stereo_parallax(sep, conv, TAN_FOV_80, 12.0f) == 0.0f);
+    CHECK(stereo_parallax(sep, conv, TAN_FOV_80, 3.0f) < 0.0f);  // nearer: in front of the screen
+    CHECK(stereo_parallax(sep, conv, TAN_FOV_80, 50.0f) > 0.0f); // farther: behind it
+}
+
+TEST(on_a_matched_screen_everything_is_seen_at_its_true_distance)
+{
+    // The view is as wide at the convergence as the screen, and the convergence is its real distance.
+    float eye = 0.065f, distance = 10.0f, width = 2.0f * distance * TAN_FOV_80;
+    fixed_at(eye, distance);
+    float sep = hook_camera_sep(NULL), conv = hook_camera_conv(NULL);
+    float depths[] = { 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f, 100.0f, 1000.0f };
+    for (int i = 0; i < 8; i++) {
+        float seen = seen_at(eye, distance, width, stereo_parallax(sep, conv, TAN_FOV_80, depths[i]));
+        CHECK_MSG(close_to(seen / depths[i], 1.0f, 0.001f), "%.2f m is seen at %.3f m", depths[i], seen);
+    }
+}
+
+TEST(infinity_is_the_eye_gap_when_the_view_is_as_wide_as_the_screen)
+{
+    float widths[] = { 10.0f, 17.0f, 25.0f, 60.0f };
+    for (int i = 0; i < 4; i++) {
+        float conv = widths[i] / (2.0f * TAN_FOV_80); // screen width / 1.7 at FOV 80
+        fixed_at(0.065f, conv);
+        float metres = widths[i] * stereo_parallax(hook_camera_sep(NULL), hook_camera_conv(NULL), TAN_FOV_80, NO_DEPTH);
+        CHECK_MSG(close_to(metres, 0.065f, 0.0001f), "%.0f m screen: infinity %.4f m apart", widths[i], metres);
+    }
+}
+
+TEST(a_screen_wider_than_the_view_needs_the_eyes_to_diverge)
+{
+    // The table given to V: a 25 m screen at FOV 80.
+    struct { float conv, millimetres; } rows[] = { { 30.0f, 32.0f }, { 15.0f, 64.0f }, { 7.5f, 128.0f } };
+    for (int i = 0; i < 3; i++) {
+        float apart = 25.0f * stereo_parallax(0.065f, rows[i].conv, TAN_FOV_80, NO_DEPTH);
+        CHECK_MSG(close_to(1000.0f * apart, rows[i].millimetres, 0.5f), "%.1f m: %.1f mm", rows[i].conv, 1000.0f * apart);
+    }
+    CHECK(25.0f * stereo_parallax(0.065f, 5.0f, TAN_FOV_80, NO_DEPTH) > 0.065f); // the front row, on that screen
+    CHECK(25.0f * stereo_parallax(0.065f, 30.0f, TAN_FOV_80, NO_DEPTH) < 0.065f); // the back row
+}
+
+TEST(screen_size_slides_the_pictures_and_keeps_the_depth)
+{
+    // The depth between two things is the difference of their parallaxes: the same at every Screen size.
+    float gap = -1.0f;
+    for (float size = 0.0f; size <= 100.0f; size += 25.0f) {
+        float conv = stereo_distance(size);
+        float here = stereo_parallax(0.065f, conv, TAN_FOV_80, 3.0f) - stereo_parallax(0.065f, conv, TAN_FOV_80, 40.0f);
+        if (gap < 0.0f) gap = -here;
+        CHECK_MSG(close_to(-here, gap, 0.00001f), "size %.0f: %.5f, not %.5f", size, -here, gap);
+    }
+    // The slide itself: the same thing moves on the screen.
+    CHECK(stereo_parallax(0.065f, stereo_distance(0.0f), TAN_FOV_80, 40.0f) <
+          stereo_parallax(0.065f, stereo_distance(100.0f), TAN_FOV_80, 40.0f));
+}
+
+TEST(eye_gap_stretches_the_depth_both_ways_around_the_screen)
+{
+    float conv = 15.0f;
+    float nearOne = stereo_parallax(0.065f, conv, TAN_FOV_80, 3.0f), farOne = stereo_parallax(0.065f, conv, TAN_FOV_80, 60.0f);
+    float nearMore = stereo_parallax(0.08f, conv, TAN_FOV_80, 3.0f), farMore = stereo_parallax(0.08f, conv, TAN_FOV_80, 60.0f);
+    CHECK(close_to(nearMore / nearOne, 0.08f / 0.065f, 0.0001f)); // parallax is in proportion to the eye gap
+    CHECK(close_to(farMore / farOne, 0.08f / 0.065f, 0.0001f));
+    // Seen on a matched screen: what's in front comes closer, what's behind goes farther (the page's words).
+    float width = 2.0f * conv * TAN_FOV_80, eye = 0.065f;
+    CHECK(seen_at(eye, conv, width, nearMore) < seen_at(eye, conv, width, nearOne));
+    CHECK(seen_at(eye, conv, width, farMore) > seen_at(eye, conv, width, farOne));
+}
+
+TEST(too_much_eye_gap_makes_far_things_need_diverging_eyes)
+{
+    // On a matched screen, sight lines stop crossing once the parallax on the screen passes the viewer's eyes: "behind
+    // the screen goes farther" holds only up to there. A negative distance here means they don't cross.
+    float conv = 15.0f, width = 2.0f * conv * TAN_FOV_80, eye = 0.065f;
+    CHECK(seen_at(eye, conv, width, stereo_parallax(0.13f, conv, TAN_FOV_80, 60.0f)) < 0.0f); // twice the gap, at 60 m
+    CHECK(seen_at(eye, conv, width, stereo_parallax(0.13f, conv, TAN_FOV_80, 25.0f)) > 0.0f); // still fine at 25 m
+    // On a screen narrower than the view there's that much room: at half the width, twice the gap just reaches infinity.
+    CHECK(close_to(0.5f * width * stereo_parallax(0.13f, conv, TAN_FOV_80, NO_DEPTH), eye, 0.0001f));
+}
+
+TEST(the_flat_weapon_gets_the_parallax_of_something_at_its_distance)
+{
+    float distances[] = { 0.7f, 1.0f, 2.0f, 5.0f, 30.0f };
+    for (int i = 0; i < 5; i++) {
+        fixed_at(0.065f, 15.0f);
+        stereo.weaponDistance = distances[i];
+        fg.sepOrig = fake_weapon_sep;
+        rt_on(RT_PATH);
+        float flat = hook_weapon_sep(NULL); // flat: the slide is the whole of its parallax, sep / (2 * conv * tan)
+        float slide = flat / (2.0f * 15.0f * TAN_FOV_80);
+        float wanted = stereo_parallax(0.065f, 15.0f, TAN_FOV_80, distances[i]);
+        CHECK_MSG(close_to(slide, wanted, 0.00001f), "%.1f m: %.5f, not %.5f", distances[i], slide, wanted);
+    }
+}
+
+TEST(the_flat_weapon_at_the_screen_distance_doesnt_move)
+{
+    fixed_at(0.065f, 15.0f);
+    stereo.weaponDistance = 15.0f;
+    fg.sepOrig = fake_weapon_sep;
+    rt_on(RT_PATH);
+    CHECK(close_to(hook_weapon_sep(NULL), 0.0f, 0.00001f));
+}
+
+TEST(weapon_depth_moves_the_flat_weapon_from_the_screen_to_its_distance)
+{
+    float sep[5];
+    for (int i = 0; i <= 4; i++) {
+        fixed_at(0.065f, 15.0f);
+        fg.sepOrig = fake_weapon_sep;
+        rt_on(RT_PATH);
+        float depth = (float)i / 4.0f;
+        OD_SET(OD_WEAPON_BASE, depth * WEAPON_DEPTH_METRES);
+        OD_SET(OD_WEAPON_SEP, depth * WEAPON_DEPTH_METRES);
+        sep[i] = hook_weapon_sep(NULL);
+    }
+    CHECK(sep[0] == 0.0f);
+    CHECK(close_to(sep[4], 0.065f * (1.0f - 15.0f / 1.0f), 0.0001f)); // all of it at 1
+    for (int i = 1; i < 4; i++) CHECK(close_to(sep[i], sep[4] * (float)i / 4.0f, 0.0001f)); // in proportion between
+}
+
+TEST(the_depth_setting_scales_the_ipd_with_immersive_at_true_scale)
+{
+    // The strengths in the game's preset table, and Depth 1.0.
+    struct { float s, millimetres; } presets[] = { { 0.4286f, 27.9f }, { 0.7143f, 46.4f }, { 1.0f, 65.0f },
+                                                   { 1.6667f, 108.3f }, { 2.0f, 130.0f } };
+    for (int i = 0; i < 5; i++) {
+        fixed_at(0.065f, 15.0f);
+        OD_SET(OD_DEPTH, presets[i].s);
+        float sep = 1000.0f * hook_camera_sep(NULL);
+        CHECK_MSG(close_to(sep, presets[i].millimetres, 0.05f), "strength %.4f: %.1f mm", presets[i].s, sep);
+    }
+}
+
+TEST(depth_changes_the_weapon_with_the_world_and_keeps_the_ipd)
+{
+    fixed_at(0.065f, 15.0f);
+    fg.sepOrig = fake_weapon_sep;
+    OD_SET(OD_DEPTH, 0.5f);
+    CHECK(near_float(hook_weapon_sep(NULL), 0.0325f * FIXED_REAL_WEAPON));
+    CHECK(stereo.sep == 0.065f);
+    OD_SET(OD_DEPTH, 0.0f);
+    CHECK(hook_camera_sep(NULL) == 0.0f);
+    OD_SET(OD_DEPTH, 9.0f); // nonsense stays in the slider's range
+    CHECK(near_float(hook_camera_sep(NULL), 0.13f));
+    stereo.fadeChecked = 0; // the fields can't be trusted: the IPD as it is
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+}
+
+TEST(immersive_at_fov_100_and_50_percent_is_true_on_a_screen_filling_the_quest_3)
+{
+    // The setup V tests: the game's FOV 100 logs as tan(100.6 / 2), and a flat 110 degree screen 10 m away.
+    float tan2 = 1.2045f, width = 2.0f * 10.0f * 1.4281f, conv = stereo_distance(50.0f);
+    float apart = width * stereo_parallax(0.065f, conv, tan2, NO_DEPTH);
+    CHECK_MSG(close_to(1000.0f * apart, 63.0f, 1.0f), "infinity %.1f mm apart", 1000.0f * apart);
+}
+
+TEST(the_real_weapon_gets_about_10_mm_at_immersive)
+{
+    fixed_at(0.065f, 15.0f);
+    fg.sepOrig = fake_weapon_sep;
+    OD_SET(OD_WEAPON_BASE, 0.3f * WEAPON_DEPTH_METRES);
+    OD_SET(OD_WEAPON_SEP, 0.3f * WEAPON_DEPTH_METRES);
+    CHECK(close_to(1000.0f * hook_weapon_sep(NULL), 9.75f, 0.05f));
+}
+
+TEST(the_parallax_is_0_when_nothing_is_known)
+{
+    CHECK(stereo_parallax(0.065f, 15.0f, 0.0f, 3.0f) == 0.0f); // no field of view yet
+    CHECK(stereo_parallax(0.065f, 15.0f, TAN_FOV_80, 0.0f) == 0.0f); // no depth yet
+}
+
+TEST(what_the_log_shows_for_fixed_mode_is_right)
+{
+    fixed_at(0.065f, 15.0f);
+    bd3d_stereo_tan = 0.8481f;
+    OD_SET(OD_NEAR, 3.0f);
+    OD_SET(OD_FAR, 60.0f);
+    force_tick();
+    hook_camera_sep(NULL);
+    // 0.065 * (1 - 15 / 3) / (2 * 15 * 0.8481) = -1.02%, at 60 m 0.19%, at infinity 0.26%, 25.44 m wide
+    CHECK(strstr(ft_log, "parallax near -1.02% far 0.19% infinity 0.26% | image 25.44 m wide") != NULL);
+}
+
+TEST(the_mod_settings_file_is_three_levels_up)
+{
+    stereo_begin();
+    stereo_settings_load(L"Z:\\game\\bin\\x64\\Braindance3D");
+    CHECK(wcscmp(stereo.modIni, L"Z:\\game\\bin\\x64\\Braindance3D\\..\\..\\..\\red4ext\\plugins\\mod_settings\\user.ini") == 0);
+}
+
+TEST(ctrl_f8_turns_fixed_over_once_a_press)
+{
+    stereo_begin();
+    stereo_key(1);
+    CHECK_EQ_INT(stereo.fixed, 1);
+    CHECK(strstr(ft_log, "fixed: Ctrl+F8: Fixed = on") != NULL);
+    stereo_key(1); // held
+    CHECK_EQ_INT(stereo.fixed, 1);
+    stereo_key(0);
+    CHECK_EQ_INT(stereo.fixed, 1);
+    stereo_key(1);
+    CHECK_EQ_INT(stereo.fixed, 0);
+    CHECK(strstr(ft_log, "fixed: Ctrl+F8: Fixed = off") != NULL);
+}
+
+TEST(ctrl_f8_shows_at_once)
+{
+    stereo_begin();
+    stereo.weaponConvVar = (uint8_t *)f_weaponConv;
+    hook_camera_sep(NULL); // the once-a-second work is done for now
+    stereo_key(1);
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+    CHECK(WEAPON_CONV_VALUE == 20.0f);
+    CHECK(strstr(ft_log, "fixed: on:") != NULL);
+}
+
+TEST(the_keys_are_looked_at_about_30_times_a_second)
+{
+    stereo_begin();
+    stereo.keyTick = (LONG)GetTickCount();
+    LONG tick = stereo.keyTick;
+    stereo_hotkey();
+    CHECK_EQ_INT(stereo.keyTick, tick);
+    stereo.keyTick = tick - 100;
+    stereo_hotkey();
+    CHECK(stereo.keyTick != tick - 100);
+}
+
+TEST(without_the_settings_file_fixed_stays_off)
+{
+    stereo_begin();
+    stereo_settings_load(L"Z:\\no\\such\\folder");
+    CHECK_EQ_INT(stereo.fixed, 0);
+}
+
+TEST(the_camera_hooks_attach_after_their_checks)
+{
+    stereo_begin();
+    memset(&stereo, 0, sizeof(stereo));
+    fake_stereo_game();
+    CHECK_EQ_INT(attach_stereo(NULL, &f_hooking, stereo_resolve), 1);
+    CHECK_EQ_INT(f_attached, 3);
+    CHECK_EQ_INT(stereo.fadeChecked, 1);
+    CHECK_EQ_PTR(stereo.weaponConvVar, (uint8_t *)f_weaponConv);
+    CHECK_EQ_PTR(stereo.renderer, &f_rendererVar);
+    CHECK(strstr(ft_log, "fixed: stereo update hooked") != NULL);
+}
+
+TEST(a_changed_thunk_or_getter_attaches_nothing)
+{
+    for (int k = 0; k < 4; k++) {
+        stereo_begin();
+        memset(&stereo, 0, sizeof(stereo));
+        fake_stereo_game();
+        switch (k) {
+        case 0: f_sepThunk[0] = 0x90; break;
+        case 1: f_convGetter[22] = 0x90; break;
+        case 2: put_rel32(f_convThunk + 7, f_od); break;                       // another global
+        case 3: put_rel32(f_sepThunk + CAMERA_THUNK_JMP + 5, f_convGetter); break; // another getter
+        }
+        CHECK_MSG(attach_stereo(NULL, &f_hooking, stereo_resolve) == 0, "case %d attached", k);
+        CHECK_EQ_INT(f_attached, 0);
+        CHECK(stereo.sepOrig == NULL);
+        CHECK(strstr(ft_log, "not hooked, stereo stays as the game sets it") != NULL);
+    }
+}
+
+TEST(a_failed_second_attach_detaches_the_first)
+{
+    stereo_begin();
+    memset(&stereo, 0, sizeof(stereo));
+    fake_stereo_game();
+    f_attachFails = 2;
+    CHECK_EQ_INT(attach_stereo(NULL, &f_hooking, stereo_resolve), 0);
+    CHECK_EQ_INT(f_detached, 1);
+    CHECK(stereo.sepOrig == NULL && stereo.convOrig == NULL);
+}
+
+TEST(the_extras_are_lost_one_at_a_time)
+{
+    stereo_begin();
+    memset(&stereo, 0, sizeof(stereo));
+    fake_stereo_game();
+    f_update[0] = 0x90;
+    f_body[0xC3A] = 0x90;
+    f_weaponConv[VAR_NAME / 8] = "SomethingElse";
+    CHECK_EQ_INT(attach_stereo(NULL, &f_hooking, stereo_resolve), 1);
+    CHECK_EQ_INT(f_attached, 2);
+    CHECK_EQ_INT(stereo.fadeChecked, 0);
+    CHECK(stereo.weaponConvVar == NULL);
+    CHECK(strstr(ft_log, "no field of view in the log") != NULL);
+}
+
+// Called the way the game does: the stub notes the tangent from the stack and jumps on, every register as it was.
+extern void bd3d_stub_test_call(float tan2);
+__asm__(".text\n.globl bd3d_stub_test_call\nbd3d_stub_test_call:\n"
+        "sub $0x48, %rsp\nmovss %xmm0, 0x30(%rsp)\nmov $0x1234, %rax\ncall bd3d_stub_stereo_update\nadd $0x48, %rsp\nret\n");
+static volatile uint64_t f_rax;
+__asm__(".text\nbd3d_fake_update:\nmov %rax, f_rax(%rip)\nret\n");
+extern char bd3d_fake_update[];
+
+TEST(the_stub_notes_the_tangent_and_goes_on)
+{
+    stereo_begin();
+    bd3d_stereo_tan = 0.0f;
+    bd3d_stereo_update_orig = bd3d_fake_update;
+    bd3d_stub_test_call(0.75f);
+    CHECK(bd3d_stereo_tan == 0.75f);
+    CHECK(f_rax == 0x1234);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }

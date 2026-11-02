@@ -57,6 +57,7 @@ if [[ "${1:-}" == "dist" ]]; then
         bin/x64/Braindance3D/Uninstall-Braindance3D.bat
         engine/config/platform/pc/braindance3d.ini
         red4ext/plugins/Braindance3D/Braindance3D.dll
+        r6/scripts/Braindance3D/FixedStereo.reds
         fomod/info.xml
         fomod/ModuleConfig.xml
     )
