@@ -5,3 +5,4 @@
 *.dll binary
 *.png binary
 *.sh text eol=lf
+*.reds text eol=lf

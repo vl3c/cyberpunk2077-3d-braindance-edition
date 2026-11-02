@@ -276,7 +276,7 @@ On-screen parallax at depth z, as a fraction of the image width, is the game's o
   this against a model of the viewer (`seen_at` in `tests/native/test_framegen.c`).
 
 `hfov` comes from a stub on the per-frame stereo update (`RVA 0x22866F0`), which takes `tan(hfov / 2)` on the stack (one
-over the camera's `+0x270`); the stub only writes it to a global, for the log. FOV 75 logs 75.6° in play.
+over the camera's `+0x270`); the stub only writes it to a global, for the log. FOV 75 logs 75.6 degrees in play.
 
 The separation is the IPD, times `s` (Depth through the game's curve, object `+0x6C`: 1 at Depth 0.7, 2 at 1.0), times
 the game's aim fade. The fade multiplies both separations from 1 to 0 while aiming (`0x2286399`), so it's read as the
@@ -293,14 +293,19 @@ one eye, more so the closer it was; at 7.5 m and over they did, and 5 m is less 
 allowing for a large off-axis shift are the likely cause; not confirmed.
 
 Ctrl+F8 flips the setting in memory only (polled about 30 times a second, on the render threads, only with the game in
-front). The notice is drawn on the back buffer just before Present, as `ClearRenderTargetView` rectangles, in the same
+front, and only while the world is rendered, so not in menus). The notice goes through the menu squeeze's Present hook,
+so with `[Menus] Squeeze = off` there's none. It is drawn on the back buffer just before Present, as `ClearRenderTargetView` rectangles, in the same
 place in each half. One rectangle a call: NVIDIA's driver copies them to a fixed buffer on the stack, and over 200 in one
 call ended the process with a stack cookie failure in `nvwgf2umx.dll` (no report, no event log entry).
 
 Before attaching, the plugin checks both thunks (renderer global, Odyssey object, jmp target) and both getters. If any
 doesn't match, nothing is hooked and stereo stays as the game sets it. The fade's fields, the weapon's convergence var
 and the stereo update are checked separately: losing one only loses that part. The settings are read at start and
-whenever `Braindance3D-Settings.ini` or Mod Settings' `user.ini` changes, checked once a second.
+whenever `Braindance3D-Settings.ini` or Mod Settings' `user.ini` changes, checked once a second while the world is
+rendered.
+
+The game's own limits, which Fixed 3D leaves behind, are in its stereo update (`0x142285780`): far
+parallax about 0.6% of the image width (the log shows 0.60 in play), near about 0.7%.
 
 ## Upscaler jitter in 3D
 

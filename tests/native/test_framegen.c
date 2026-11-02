@@ -146,6 +146,8 @@ static bool fake_detach(void *handle, void *target)
     return true;
 }
 
+static bool fake_detach_fails(void *handle, void *target) { return false; }
+
 static R4eHooking f_hooking = { fake_attach, fake_detach };
 
 // Fake originals and game functions for the hook tests.
@@ -2829,6 +2831,46 @@ TEST(without_the_settings_file_fixed_stays_off)
     stereo_begin();
     stereo_settings_load(L"Z:\\no\\such\\folder");
     CHECK_EQ_INT(stereo.fixed, 0);
+    CHECK(near_float(stereo.sep, FIXED_SEP_DEFAULT)); // Ctrl+F8 still has sane values to work with
+    CHECK(near_float(stereo.conv, 12.24745f));
+    CHECK(stereo.weaponDistance == FIXED_WEAPON_DEFAULT);
+    stereo_key(1);
+    CHECK(near_float(hook_camera_conv(NULL), 12.24745f));
+}
+
+TEST(a_thread_in_the_tick_keeps_others_out)
+{
+    stereo_begin();
+    stereo.busy = 1;
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(strstr(ft_log, "fixed: game sep") == NULL);
+    CHECK_EQ_INT(stereo.busy, 1);
+    stereo.busy = 0;
+    force_tick();
+    hook_camera_sep(NULL);
+    CHECK(strstr(ft_log, "fixed: game sep") != NULL);
+    CHECK_EQ_INT(stereo.busy, 0);
+}
+
+TEST(a_depth_field_that_isnt_a_number_counts_as_1)
+{
+    fixed_at(0.065f, 15.0f);
+    *(uint32_t *)(f_od + OD_DEPTH) = 0x7FC00000u;
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+}
+
+TEST(a_detach_that_fails_keeps_the_separation_hook_working)
+{
+    stereo_begin();
+    memset(&stereo, 0, sizeof(stereo));
+    fake_stereo_game();
+    f_attachFails = 2;
+    R4eHooking stuck = { fake_attach, fake_detach_fails };
+    CHECK_EQ_INT(attach_stereo(NULL, &stuck, stereo_resolve), 0);
+    CHECK(stereo.sepOrig != NULL && stereo.convOrig == NULL && stereo.renderer != NULL);
+    stereo.fixed = 1;
+    CHECK_EQ_INT(stereo_active(), 0); // and it never answers fixed values
 }
 
 TEST(the_camera_hooks_attach_after_their_checks)

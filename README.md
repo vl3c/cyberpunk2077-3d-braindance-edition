@@ -76,13 +76,15 @@ Fixed 3D keeps one real eye gap and one distance to the screen, the way VR does.
 3D depth enthusiasts**: anyone viewing a large virtual screen. Tested on a Quest 3 with Virtual Desktop. Off by default.
 
 - **Turn it on:** Mod Settings, **3D Braindance Edition**, **Fixed 3D**, then Apply. Works with the game running.
-- **Compare:** **Ctrl+F8** switches it on and off in game, and the picture shows FIXED 3D ON or OFF for two seconds. It
-  lasts until you press Apply or restart; the page keeps the saved setting.
+- **Compare:** **Ctrl+F8** switches it on and off in game, not in menus, and the picture shows FIXED 3D ON or OFF for two
+  seconds (not with `Squeeze = off`). It lasts until you press Apply, save the settings ini or restart; the page keeps
+  the saved setting.
 - **Your IPD:** the real distance between your eyes, 65 mm for most people.
 - **Depth** (or the Preset) scales your IPD: Comfort 0.43x, Balanced 0.71x, Immersive 1x (true scale), Extreme 1.67x,
   Depth 1.0 2x. More stretches the 3D depth around the screen.
 - **Screen size:** where Virtual Desktop's size slider is. 0% feels like the back row at the 3D cinema (30 m), 100% like
-  the front row (5 m). It slides the two pictures and doesn't change the depth between things.
+  the front row (5 m). It slides the two pictures and doesn't change the depth between things. Water reflections were
+  checked down to 7.5 m (about 75%).
 - **Field of View:** 90 looked most natural on a large curved screen filling the headset's view; for true scale, match
   it to how much of your view the screen fills. Your choice: the mod never changes it.
 - **Weapon Depth** still sets the weapon's depth. Motion Comfort does nothing in Fixed 3D.

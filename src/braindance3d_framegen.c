@@ -361,6 +361,7 @@ static struct {
     uint8_t *const *renderer;  // the global renderer pointer
     volatile LONG calls;       // separation reads since the last log line
     volatile LONG logTick;     // GetTickCount of the last log line
+    volatile LONG busy;        // a thread is in the tick or the keys (they share what's below with no lock)
     int fadeChecked;           // the weapon's fields are the fade's (else only "faded right out" is seen)
     wchar_t ini[MAX_PATH];     // Braindance3D-Settings.ini ("" without a folder)
     FILETIME iniTime;          // when it was last read
@@ -1131,7 +1132,7 @@ static void stereo_read_settings(void)
     wchar_t v[64];
     int fixed = 0;
     float sep = FIXED_SEP_DEFAULT, size = FIXED_SIZE_DEFAULT;
-    float weapon = stereo_float(stereo.ini, L"Stereo", L"WeaponDistance", FIXED_WEAPON_DEFAULT, 0.1f, 1000.0f);
+    float weapon = stereo_float(stereo.ini, L"Stereo", L"WeaponDistance", FIXED_WEAPON_DEFAULT, 0.09f, 1000.0f);
     // Mod Settings' file has nothing of ours until the first Apply, and the page shows these same defaults till then.
     int applied = stereo.modIni[0] && GetPrivateProfileStringW(MOD_SETTINGS_SECTION, L"Fixed", L"", v, 64, stereo.modIni);
     if (applied) {
@@ -1171,20 +1172,19 @@ static void stereo_reload(void)
 void stereo_settings_load(const wchar_t *installDir)
 {
     stereo.ini[0] = 0;
-    if (_snwprintf(stereo.ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", installDir) < 0) {
-        stereo.ini[0] = 0;
-        return;
-    }
+    if (_snwprintf(stereo.ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", installDir) < 0) stereo.ini[0] = 0;
     stereo.ini[MAX_PATH - 1] = 0;
     // The folder is bin\\x64\\Braindance3D, three levels under the game.
     if (_snwprintf(stereo.modIni, MAX_PATH, L"%ls\\..\\..\\..\\red4ext\\plugins\\mod_settings\\user.ini", installDir) < 0)
         stereo.modIni[0] = 0;
     stereo.modIni[MAX_PATH - 1] = 0;
-    stereo_reload();
+    stereo_file_changed(stereo.ini, &stereo.iniTime);
+    stereo_file_changed(stereo.modIni, &stereo.modIniTime);
+    stereo_read_settings(); // even with neither file there: the defaults
 }
 
 // Fixed values are in use: [Stereo] Fixed on, and side by side (a real 3D monitor keeps the game's stereo).
-static int stereo_active(void) { return stereo.fixed && sbs_debug(); }
+static int stereo_active(void) { return stereo.fixed && stereo.convOrig && sbs_debug(); }
 
 // The Odyssey object, or NULL. (While the game's in the thunks, it's there: the thunks read it the same way.)
 static const uint8_t *stereo_object(void)
@@ -1211,6 +1211,7 @@ static float stereo_depth(void)
     const uint8_t *od = stereo_object();
     if (!od || !stereo.fadeChecked) return 1.0f;
     float s = *(const volatile float *)(od + OD_DEPTH);
+    if (s != s) return 1.0f; // not a number: not the field it should be
     return s < 0.0f ? 0.0f : s > 2.0f ? 2.0f : s;
 }
 
@@ -1270,6 +1271,7 @@ static void stereo_tick(float gameSep)
     LONG calls = InterlockedIncrement(&stereo.calls);
     LONG now = (LONG)GetTickCount(), last = stereo.logTick;
     if ((DWORD)(now - last) < 1000 || InterlockedCompareExchange(&stereo.logTick, now, last) != last) return;
+    if (InterlockedCompareExchange(&stereo.busy, 1, 0) != 0) return;
     InterlockedExchange(&stereo.calls, 0);
     DWORD err = GetLastError(); // the game's code around the hooks may use it
     stereo_reload();
@@ -1284,6 +1286,7 @@ static void stereo_tick(float gameSep)
     const uint8_t *od = renderer ? *(const uint8_t *const *)(renderer + RENDERER_ODYSSEY) : NULL;
     if (!readable(od, OD_SIZE)) {
         plugin_log(1, "fixed: the Odyssey object isn't readable (%p)", (const void *)od);
+        stereo.busy = 0;
         SetLastError(err);
         return;
     }
@@ -1308,6 +1311,7 @@ static void stereo_tick(float gameSep)
                    stereo.weaponDistance,
                    1000.0f * stereo_weapon_sep(1));
     }
+    stereo.busy = 0;
     SetLastError(err);
 }
 
@@ -1336,11 +1340,13 @@ static void stereo_hotkey(void)
 {
     LONG now = (LONG)GetTickCount(), last = stereo.keyTick;
     if ((DWORD)(now - last) < 30 || InterlockedCompareExchange(&stereo.keyTick, now, last) != last) return;
+    if (InterlockedCompareExchange(&stereo.busy, 1, 0) != 0) return;
     DWORD err = GetLastError();
     int down = (GetAsyncKeyState(VK_F8) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
     LONG fixed = stereo.fixed;
     stereo_key(down && game_in_front());
     if (stereo.fixed != fixed) menus_notice(stereo.fixed);
+    stereo.busy = 0;
     SetLastError(err);
 }
 
@@ -1791,16 +1797,19 @@ static int attach_stereo(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     else if (!check_camera_thunk(conv, convGetter, AOB_CONV_GETTER, renderer)) why = "the convergence thunk doesn't match";
     else if (!h->Attach(pluginHandle, sep, (void *)bd3d_thunk_camera_sep, (void **)&stereo.sepOrig))
         why = "couldn't hook the separation thunk";
-    else if (!h->Attach(pluginHandle, conv, (void *)bd3d_thunk_camera_conv, (void **)&stereo.convOrig)) {
-        h->Detach(pluginHandle, sep);
-        why = "couldn't hook the convergence thunk";
+    else {
+        stereo.renderer = (uint8_t *const *)renderer; // the separation hook reads it from its first call
+        if (!h->Attach(pluginHandle, conv, (void *)bd3d_thunk_camera_conv, (void **)&stereo.convOrig)) {
+            why = "couldn't hook the convergence thunk";
+            // If it stays attached it still needs its original; Ctrl+F8 stays off with no convergence hook.
+            if (h->Detach(pluginHandle, sep)) stereo.sepOrig = NULL;
+            stereo.convOrig = NULL;
+        }
     }
     if (why) {
-        stereo.sepOrig = stereo.convOrig = NULL;
         plugin_log(1, "fixed: %s (game update?): not hooked, stereo stays as the game sets it", why);
         return 0;
     }
-    stereo.renderer = (uint8_t *const *)renderer;
     plugin_log(1, "fixed: camera separation and convergence hooked");
     check_stereo_extras(resolve);
     attach_stereo_update(pluginHandle, h, resolve);

@@ -73,7 +73,7 @@ check_zip() { # zip, kind (full or nexus)
 
     # A mod manager installs through the FOMOD: it must copy every top-level game folder in the zip.
     if [[ -f "$WORK/x/fomod/ModuleConfig.xml" ]]; then
-        for d in bin engine red4ext; do
+        for d in bin engine red4ext r6; do
             if grep -q "<folder source=\"$d\" destination=\"$d\"" "$WORK/x/fomod/ModuleConfig.xml"; then
                 ok "fomod/ModuleConfig.xml installs $d/"
             else
