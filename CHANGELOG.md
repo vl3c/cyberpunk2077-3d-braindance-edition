@@ -13,7 +13,7 @@
 - Fixed 3D has none of the game's comfort limits. Things up close separate much more than in the game's own mode, and
   a high Depth on a large screen makes distant things need your eyes to turn outward. It's made for a large virtual
   screen: on a 3D TV the world comes far out of the screen. If your eyes ache, lower Depth or Screen size.
-- Needs RED4ext, and redscript with Mod Settings for its page: without them, Ctrl+F8 still switches it, with the
+- Needs RED4ext. Its settings page needs Mod Settings and redscript; without those, Ctrl+F8 still switches it, with the
   default settings.
 - New file: `r6\scripts\Braindance3D\FixedStereo.reds`. A manual install also needs the `r6` folder.
 - README and Nexus page: shorter.
