@@ -3,9 +3,8 @@
 ## Unreleased
 
 - README and Nexus page: shorter.
-- New name: **Cyberpunk 2077 3D: Braindance Edition**, **3DBD** for short (was 3D Braindance Edition). Only the
-  name in the docs and the installer changes: the files, folders and settings keep their names, so updating over an
-  older version works as before.
+- New name: **Cyberpunk 2077 3D: Braindance Edition** (**3DBD**), was 3D Braindance Edition. File, folder and
+  setting names stay the same, so updating over an older version works as before.
 
 ## 0.4.0 (2026-11-01)
 

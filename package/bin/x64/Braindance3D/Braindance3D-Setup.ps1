@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Cyberpunk 2077 3D: Braindance Edition (3DBD): registers or unregisters the Odyssey 3D SDK stand-in.
+    3DBD: registers or unregisters the Odyssey 3D SDK stand-in.
 
 .DESCRIPTION
     Cyberpunk 2077 looks for Samsung's Odyssey 3D SDK through the per-user registry value
