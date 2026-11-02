@@ -112,6 +112,9 @@ static struct {
     int scIndex;             // the game's swap chain: entry in the device data (device index - 1)
     volatile LONG busy;      // a squeeze is being recorded (guards against re-entry from wrappers)
     LONG64 lastSqueezeFrame; // game frame of the last squeeze (one per frame at most)
+    volatile LONG noticeUntil; // GetTickCount until which the notice shows, 0: none (Fixed 3D)
+    volatile LONG noticeOn;    //   and what it says: FIXED ON, or FIXED OFF
+    LONG64 lastNoticeFrame;    //   game frame it was last drawn on
     LONG64 gameFrames;
     int lastSqueeze;  // for logging changes
     LONG64 frames, squeezed;
@@ -691,6 +694,116 @@ static void squeeze(IDXGISwapChain *sc)
     ID3D12Resource_Release(bb);
 }
 
+// ---------------------------------------------------------------- a notice on the picture (Fixed 3D)
+
+#define NOTICE_MS 2000
+#define NOTICE_RECTS 840         // two eyes, twelve characters, up to 35 dots each
+#define GLYPH_COLUMNS 5
+#define GLYPH_ROWS 7
+
+// A letter of the notice, one byte a row, bit 4 the left column. NULL for a space.
+static const uint8_t *notice_glyph(char c)
+{
+    static const uint8_t f[] = { 31, 16, 16, 30, 16, 16, 16 }, i[] = { 14, 4, 4, 4, 4, 4, 14 };
+    static const uint8_t x[] = { 17, 17, 10, 4, 10, 17, 17 }, e[] = { 31, 16, 16, 30, 16, 16, 31 };
+    static const uint8_t d[] = { 30, 17, 17, 17, 17, 17, 30 }, o[] = { 14, 17, 17, 17, 17, 17, 14 };
+    static const uint8_t n[] = { 17, 25, 21, 19, 17, 17, 17 }, three[] = { 14, 17, 1, 6, 1, 17, 14 };
+    switch (c) {
+    case 'F': return f;
+    case 'I': return i;
+    case 'X': return x;
+    case 'E': return e;
+    case 'D': return d;
+    case 'O': return o;
+    case 'N': return n;
+    case '3': return three;
+    }
+    return NULL;
+}
+
+// The dots of text in the same place in each half of a side by side picture, and in back the panel behind them (one
+// for each half). The dots are half as wide as high: each half is stretched to the whole width in the headset. Nothing
+// leaves its half. Returns the number of dots.
+static int notice_rects(const char *text, UINT width, UINT height, D3D12_RECT *panel, D3D12_RECT *dots, int max)
+{
+    LONG half = (LONG)width / 2, high = ((LONG)height + 300) / 600 > 1 ? ((LONG)height + 300) / 600 : 1;
+    LONG wide = high / 2 > 1 ? high / 2 : 1, margin = wide * 2, count = (LONG)strlen(text);
+    LONG textWidth = count * (GLYPH_COLUMNS + 1) * wide - wide, top = (LONG)height / 8;
+    int n = 0;
+    for (LONG eye = 0; eye < 2; eye++) {
+        LONG lo = eye * half, hi = lo + half, left = lo + (half - textWidth) / 2;
+        panel[eye].left = left - margin > lo ? left - margin : lo;
+        panel[eye].right = left + textWidth + margin < hi ? left + textWidth + margin : hi;
+        panel[eye].top = top - margin;
+        panel[eye].bottom = top + GLYPH_ROWS * high + margin;
+        for (LONG c = 0; c < count; c++) {
+            const uint8_t *glyph = notice_glyph(text[c]);
+            if (!glyph) continue;
+            for (LONG y = 0; y < GLYPH_ROWS; y++)
+                for (LONG column = 0; column < GLYPH_COLUMNS; column++) {
+                    if (!(glyph[y] & (16 >> column)) || n == max) continue;
+                    LONG x = left + (c * (GLYPH_COLUMNS + 1) + column) * wide;
+                    if (x < lo || x + wide > hi) continue;
+                    D3D12_RECT dot = { x, top + y * high, x + wide, top + (y + 1) * high };
+                    dots[n++] = dot;
+                }
+        }
+    }
+    return n;
+}
+
+// Draws the notice into bb, a back buffer in the PRESENT state on our device, and leaves it in that state.
+static int draw_notice(ID3D12Resource *bb, int on)
+{
+    static D3D12_RECT dots[NOTICE_RECTS];
+    D3D12_RECT panel[2];
+    static const float dark[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    static const float green[4] = { 0.25f, 1.0f, 0.35f, 1.0f }, amber[4] = { 1.0f, 0.7f, 0.1f, 1.0f };
+    D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
+    int n = notice_rects(on ? "FIXED 3D ON" : "FIXED 3D OFF", (UINT)desc.Width, desc.Height, panel, dots, NOTICE_RECTS);
+    int slot = begin_commands();
+    if (slot < 0) return 0;
+    ID3D12GraphicsCommandList *cl = g.list;
+    D3D12_RESOURCE_BARRIER b;
+    barrier(&b, bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, &b);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(g.rtvHeap);
+    ID3D12Device_CreateRenderTargetView(g.device, bb, NULL, rtv);
+    ID3D12GraphicsCommandList_ClearRenderTargetView(cl, rtv, dark, 2, panel);
+    // One rectangle a call: NVIDIA's driver copies them to a fixed buffer on the stack, and over 200 in one call ended
+    // the game with a stack cookie failure in nvwgf2umx (seen with the debugger, 2026-11-02).
+    for (int i = 0; i < n; i++) ID3D12GraphicsCommandList_ClearRenderTargetView(cl, rtv, on ? green : amber, 1, &dots[i]);
+    barrier(&b, bb, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+    ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, &b);
+    return submit_commands(slot);
+}
+
+void menus_notice(int on)
+{
+    g.noticeOn = on;
+    g.noticeUntil = (LONG)(GetTickCount() + NOTICE_MS) | 1; // never the 0 of "none"
+}
+
+static int notice_showing(void)
+{
+    LONG until = g.noticeUntil;
+    if (!until) return 0;
+    if ((LONG)((DWORD)until - GetTickCount()) > 0) return 1;
+    InterlockedCompareExchange(&g.noticeUntil, 0, until);
+    return 0;
+}
+
+// Draws the notice on the current back buffer of sc. Called just before the swap chain presents it.
+static void notice(IDXGISwapChain *sc)
+{
+    if (g.failed || !init_d3d()) return;
+    UINT index;
+    ID3D12Resource *bb = current_back_buffer(sc, &index);
+    if (!bb) return;
+    draw_notice(bb, g.noticeOn != 0);
+    ID3D12Resource_Release(bb);
+}
+
 // ---------------------------------------------------------------- when to squeeze
 
 static const char *stereo_name(LONG v) { return v == STEREO_ON ? "on" : v == STEREO_OFF ? "off" : "unknown"; }
@@ -864,6 +977,10 @@ static void before_present(IDXGISwapChain *sc, const char *which)
     if (want && g.lastSqueezeFrame != g.gameFrames) {
         g.lastSqueezeFrame = g.gameFrames;
         squeeze(sc);
+    }
+    if (!g.failed && g.lastNoticeFrame != g.gameFrames && notice_showing()) {
+        g.lastNoticeFrame = g.gameFrames;
+        notice(sc);
     }
     log_summary();
     InterlockedExchange(&g.busy, 0);

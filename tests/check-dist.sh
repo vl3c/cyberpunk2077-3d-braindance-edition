@@ -38,6 +38,7 @@ check_zip() { # zip, kind (full or nexus)
         "$MOD/CHANGELOG.md"
         engine/config/platform/pc/braindance3d.ini
         red4ext/plugins/Braindance3D/Braindance3D.dll
+        r6/scripts/Braindance3D/FixedStereo.reds
         fomod/info.xml
         fomod/ModuleConfig.xml
     )
@@ -63,16 +64,16 @@ check_zip() { # zip, kind (full or nexus)
     # The installer looks for the DLL at <InstallPath>\GameLauncherData\core, the game for the engine ini
     # under engine\, RED4ext for plugins under red4ext\plugins: all relative to the game folder the zip is
     # extracted into.
-    TOP='^(bin/|engine/|red4ext/|fomod/)'
+    TOP='^(bin/|engine/|red4ext/|r6/|fomod/)'
     if unzip -Z1 "$ZIP" | grep -qvE "$TOP"; then
-        fail "zip has top-level entries other than bin/, engine/, red4ext/ and fomod/: $(unzip -Z1 "$ZIP" | grep -vE "$TOP" | head -3)"
+        fail "zip has top-level entries other than bin/, engine/, red4ext/, r6/ and fomod/: $(unzip -Z1 "$ZIP" | grep -vE "$TOP" | head -3)"
     else
-        ok "only bin/, engine/, red4ext/ and fomod/ at the top level"
+        ok "only bin/, engine/, red4ext/, r6/ and fomod/ at the top level"
     fi
 
     # A mod manager installs through the FOMOD: it must copy every top-level game folder in the zip.
     if [[ -f "$WORK/x/fomod/ModuleConfig.xml" ]]; then
-        for d in bin engine red4ext; do
+        for d in bin engine red4ext r6; do
             if grep -q "<folder source=\"$d\" destination=\"$d\"" "$WORK/x/fomod/ModuleConfig.xml"; then
                 ok "fomod/ModuleConfig.xml installs $d/"
             else

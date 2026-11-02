@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-02)
 
+- Fixed 3D, new and off by default, for VR headsets, 3D glasses and 3D depth enthusiasts (tested in game on a Quest 3 with
+  Virtual Desktop, on a large cinema screen). The game re-aims the stereo every frame for a 3D monitor on a desk, so the world's
+  scale changes from scene to scene. Fixed 3D keeps one real eye gap and one distance to the screen, so the world keeps
+  its scale, closer to VR. Turn it on in Mod Settings, 3D Braindance Edition: Fixed 3D, Your IPD and Screen size. Ctrl+F8
+  switches it on and off in game to compare, and the picture says which.
+- With Fixed 3D on, the game's Depth setting scales your IPD: Immersive is true scale (use FoV 90 or so), Comfort and
+  Balanced are flatter, Extreme is stronger. Weapon Depth still sets the weapon's depth. Motion Comfort does nothing,
+  because it works on the game's own separation.
+- Fixed 3D has none of the game's comfort limits. Things up close separate much more than in the game's own mode, and
+  a high Depth on a large screen makes distant things need your eyes to turn outward. It's made for a large virtual
+  screen: on a 3D TV the world comes far out of the screen. If your eyes ache, lower Depth or Screen size.
+- Needs RED4ext. Its settings page needs Mod Settings and redscript; without those, Ctrl+F8 still switches it, with the
+  default settings.
+- New file: `r6\scripts\Braindance3D\FixedStereo.reds`. A manual install also needs the `r6` folder.
 - README and Nexus page: shorter.
 - New name: **Cyberpunk 2077 3D: Braindance Edition** (**3DBD**), was 3D Braindance Edition. File, folder and
   setting names stay the same, so updating over an older version works as before.

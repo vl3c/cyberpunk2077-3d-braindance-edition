@@ -71,7 +71,7 @@ test sessions the game called only the slots above, about 110 times a second for
 | --- | --- |
 | `engine\config\platform\pc\braindance3d.ini` | The engine options above |
 | `bin\x64\Braindance3D\GameLauncherData\core\Odyssey3DSDK.dll` | The SDK stand-in |
-| `bin\x64\Braindance3D\Braindance3D-Settings.ini` | Log level, monitor choice and the menu squeeze |
+| `bin\x64\Braindance3D\Braindance3D-Settings.ini` | Log level, monitor choice, the menu squeeze and Fixed 3D's flat weapon |
 | `bin\x64\Braindance3D\Braindance3D-Setup.ps1` | Install, uninstall and status (registry only) |
 | `bin\x64\Braindance3D\Install-Braindance3D.bat`, `Uninstall-Braindance3D.bat` | Double-click wrappers |
 | `bin\x64\Braindance3D\README.md`, `LICENSE`, `CHANGELOG.md` | Docs |
@@ -79,6 +79,7 @@ test sessions the game called only the slots above, about 110 times a second for
 | `red4ext\plugins\Braindance3D\Braindance3D.dll` | RED4ext plugin that writes the registry setting at game start, squeezes menus and keeps the game's frame generation (DLSS, FSR or XeSS) in 3D Mode |
 | `bin\x64\Braindance3D\Braindance3D-hooks.log`, `Braindance3D-hooks.old.log` | What the menu squeeze and the frame generation hooks did (this run and the previous one) |
 | `bin\x64\Braindance3D\Braindance3D-autosetup.log` | What the RED4ext plugin did (appended each start, reset past 256 KB) |
+| `r6\scripts\Braindance3D\FixedStereo.reds` | The Fixed 3D page in Mod Settings (needs redscript and Mod Settings; nothing in the game runs it) |
 | `fomod\` | Install metadata for Vortex and other FOMOD-aware managers |
 
 ## Registration
@@ -255,6 +256,56 @@ settings above on, or the vars not found yet) and SBSDebug is on, the hook answe
 without touching the setting: once those are off the slider works again. If the getter's check fails, or the
 lookups weren't found at load (the getter isn't hooked then), the flat weapon keeps the game's Weapon Depth shift. If
 CDPR fixes the ray-traced first-person lighting in stereo, both the step-aside and this can go.
+
+## Fixed 3D
+
+The camera build (`RVA 0x4240DC`) reads the eye separation and the convergence through the renderer's vtable, at `+0x440`
+and `+0x450`: thunks `RVA 0x226F600` and `0x226F380` that jump to the getters `0x2284990` and `0x2284950`. Nothing else
+calls the thunks. The depth analysis calls the getters directly, so its limiter keeps working on the game's own numbers,
+unseen. The plugin hooks the thunks. Each value is in metres: the eyes sit half the separation left and right of the
+centre (`0x206EC57`), and the convergence is the distance with no parallax.
+
+On-screen parallax at depth z, as a fraction of the image width, is the game's own expression (`0x142285E8B`):
+`sep * (1 - conv / z) / (2 * conv * tan(hfov / 2))`. So:
+
+- The parallax between two depths doesn't depend on `conv`: Screen size only slides the two pictures.
+- It's in proportion to `sep`: Depth and the IPD change depth.
+- Infinity is `sep / (2 * conv * tan(hfov / 2))` of the width. On a screen W wide that's the eye gap when
+  `conv = W / (2 * tan(hfov / 2))`. A wider screen needs the eyes to diverge.
+- With that, and the screen's real distance equal to `conv`, everything is seen at its true distance. The tests check
+  this against a model of the viewer (`seen_at` in `tests/native/test_framegen.c`).
+
+`hfov` comes from a stub on the per-frame stereo update (`RVA 0x22866F0`), which takes `tan(hfov / 2)` on the stack (one
+over the camera's `+0x270`); the stub only writes it to a global, for the log. FOV 75 logs 75.6 degrees in play.
+
+The separation is the IPD, times `s` (Depth through the game's curve, object `+0x6C`: 1 at Depth 0.7, 2 at 1.0), times
+the game's aim fade. The fade multiplies both separations from 1 to 0 while aiming (`0x2286399`), so it's read as the
+weapon's separation over its base (`+0x57C` over `+0x580`), or as "the game's separation is 0" at Weapon Depth 0.
+
+The weapon view takes the weapon separation and the `WeaponConvergenceDistance` config var, which the plugin keeps at
+the same distance while Fixed 3D is on and puts back after. The real weapon gets half the separation at Weapon Depth 1.
+The flat weapon's eyes sit at the centre, so its separation only slides the picture: `sep * (1 - conv / WeaponDistance)`
+is the slide of something at that distance. It's negative for anything in front of the screen; the only use of the sign
+outside the projection is the cull pull-back (`0x206EAD0`), which floors the value.
+
+The close end stops at 5 m on purpose. With a convergence of 0.5 to 1.5 m, water reflections on raster didn't line up in
+one eye, more so the closer it was; at 7.5 m and over they did, and 5 m is less tested. Screen space reflections not
+allowing for a large off-axis shift are the likely cause; not confirmed.
+
+Ctrl+F8 flips the setting in memory only (polled about 30 times a second, on the render threads, only with the game in
+front, and only while the world is rendered, so not in menus). The notice goes through the menu squeeze's Present hook,
+so with `[Menus] Squeeze = off` there's none. It is drawn on the back buffer just before Present, as `ClearRenderTargetView` rectangles, in the same
+place in each half. One rectangle a call: NVIDIA's driver copies them to a fixed buffer on the stack, and over 200 in one
+call ended the process with a stack cookie failure in `nvwgf2umx.dll` (no report, no event log entry).
+
+Before attaching, the plugin checks both thunks (renderer global, Odyssey object, jmp target) and both getters. If any
+doesn't match, nothing is hooked and stereo stays as the game sets it. The fade's fields, the weapon's convergence var
+and the stereo update are checked separately: losing one only loses that part. The settings are read at start and
+whenever `Braindance3D-Settings.ini` or Mod Settings' `user.ini` changes, checked once a second while the world is
+rendered.
+
+The game's own limits, which Fixed 3D leaves behind, are in its stereo update (`0x142285780`): far
+parallax about 0.6% of the image width (the log shows 0.60 in play), near about 0.7%.
 
 ## Upscaler jitter in 3D
 

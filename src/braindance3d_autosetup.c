@@ -434,6 +434,7 @@ EXPORT int Main(HMODULE handle, uint8_t reason, const void *sdk)
     alog("Result: %d", (int)r);
     if (g_log) { fclose(g_log); g_log = NULL; }
     menus_load(handle, sdk, target);
+    stereo_settings_load(target);
     framegen_load(handle, sdk);
     return 1; // never stop the game from loading
 }

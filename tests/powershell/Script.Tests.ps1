@@ -320,7 +320,7 @@ Describe 'Shipped files agree with each other' {
     It 'the FOMOD installs the game folders the zip contains' {
         $xml = [xml](Get-Content -LiteralPath (Join-Path $script:RepoRoot 'package\fomod\ModuleConfig.xml') -Raw)
         $folders = @($xml.config.requiredInstallFiles.folder | ForEach-Object { $_.source + '>' + $_.destination })
-        ($folders -join ',') | Should -BeExactly 'bin>bin,engine>engine,red4ext>red4ext'
+        ($folders -join ',') | Should -BeExactly 'bin>bin,engine>engine,red4ext>red4ext,r6>r6'
     }
     It '<Bat> runs the script with -Action <Action> -NoPause and passes extra arguments on' -TestCases @(
         @{ Bat = 'Install-Braindance3D.bat'; Action = 'install' }
