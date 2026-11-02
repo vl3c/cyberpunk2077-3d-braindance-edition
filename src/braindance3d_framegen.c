@@ -1202,7 +1202,7 @@ static float stereo_fade(void)
     float base = stereo.fadeChecked ? *(const volatile float *)(od + OD_WEAPON_BASE) : 0.0f;
     if (base <= 0.0f) return *(const volatile float *)(od + OD_SEP) > 0.0f ? 1.0f : 0.0f;
     float x = *(const volatile float *)(od + OD_WEAPON_SEP) / base;
-    return x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x;
+    return !(x > 0.0f) ? 0.0f : x > 1.0f ? 1.0f : x; // not a number counts as 0
 }
 
 // The game's Depth setting through its curve: 1 at Immersive, 0 to 2 (1 if the object's fields can't be trusted).
@@ -1224,7 +1224,7 @@ static float stereo_weapon_depth(void)
     const uint8_t *od = stereo_object();
     if (!od || !stereo.fadeChecked) return 1.0f;
     float depth = *(const volatile float *)(od + OD_WEAPON_BASE) / WEAPON_DEPTH_METRES;
-    return depth < 0.0f ? 0.0f : depth > 1.0f ? 1.0f : depth;
+    return !(depth > 0.0f) ? 0.0f : depth > 1.0f ? 1.0f : depth; // not a number counts as 0
 }
 
 // The weapon's separation in fixed mode, scaled by the Weapon Depth slider. Flat (ray tracing, stereo_active only): its
@@ -1339,7 +1339,7 @@ static int game_in_front(void)
 static void stereo_hotkey(void)
 {
     LONG now = (LONG)GetTickCount(), last = stereo.keyTick;
-    if ((DWORD)(now - last) < 30 || InterlockedCompareExchange(&stereo.keyTick, now, last) != last) return;
+    if (!stereo.convOrig || (DWORD)(now - last) < 30 || InterlockedCompareExchange(&stereo.keyTick, now, last) != last) return;
     if (InterlockedCompareExchange(&stereo.busy, 1, 0) != 0) return;
     DWORD err = GetLastError();
     int down = (GetAsyncKeyState(VK_F8) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
@@ -1798,7 +1798,7 @@ static int attach_stereo(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     else if (!h->Attach(pluginHandle, sep, (void *)bd3d_thunk_camera_sep, (void **)&stereo.sepOrig))
         why = "couldn't hook the separation thunk";
     else {
-        stereo.renderer = (uint8_t *const *)renderer; // the separation hook reads it from its first call
+        stereo.renderer = (uint8_t *const *)renderer; // nothing renders yet: plugins load before the game's first frame
         if (!h->Attach(pluginHandle, conv, (void *)bd3d_thunk_camera_conv, (void **)&stereo.convOrig)) {
             why = "couldn't hook the convergence thunk";
             // If it stays attached it still needs its original; Ctrl+F8 stays off with no convergence hook.
