@@ -11,18 +11,19 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "3D Braindance Edition contributors"
+            VALUE "CompanyName", "3DBD contributors"
 #ifdef BD3D_AUTOSETUP
-            VALUE "FileDescription", "3D Braindance Edition: RED4ext plugin that registers the Odyssey 3D SDK stand-in"
+            VALUE "FileDescription", "3DBD: RED4ext plugin that registers the Odyssey 3D SDK stand-in"
             VALUE "InternalName", "Braindance3D"
             VALUE "OriginalFilename", "Braindance3D.dll"
 #else
-            VALUE "FileDescription", "3D Braindance Edition: independent Odyssey 3D SDK stand-in for Cyberpunk 2077 (not Samsung software)"
+            VALUE "FileDescription", "3DBD: independent Odyssey 3D SDK stand-in for Cyberpunk 2077 (not Samsung software)"
             VALUE "InternalName", "Odyssey3DSDK"
             VALUE "OriginalFilename", "Odyssey3DSDK.dll"
 #endif
             VALUE "FileVersion", BD3D_VERSION_STR
             VALUE "LegalCopyright", "Copyright (c) 2026 vl3c. MIT License. Not affiliated with CD PROJEKT RED or Samsung."
+            // The old name stays: the plugin and the setup script compare it to recognise their own stand-in.
             VALUE "ProductName", "3D Braindance Edition"
             VALUE "ProductVersion", BD3D_VERSION_STR
         END
