@@ -27,8 +27,9 @@ monitor's software. This mod:
    RT Reflections keeps the depth.
 6. Turns off the **effects that ghost in 3D** (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens
    bend) when you switch 3D Mode on in the menu. Change any back if you like.
-7. Adds **[Fixed 3D](#fixed-3d)**, off by default: one real eye gap and one screen distance instead of stereo that
-   re-aims every frame, so the world keeps its scale. On a headset it's much closer to VR.
+7. Adds **[Fixed 3D](#fixed-3d)**, off by default, for VR headsets, 3D glasses and 3D depth enthusiasts: one real eye
+   gap and one screen distance instead of stereo that re-aims every frame, so the world keeps its scale. On a headset
+   it's much closer to VR.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
 generation, weapon depth, effects switch and Fixed 3D hook a few game functions through RED4ext.
@@ -71,8 +72,8 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 ## Fixed 3D
 
 The game re-aims its stereo every frame, for a 3D monitor on a desk, so the world's scale changes from scene to scene.
-Fixed 3D keeps one real eye gap and one distance to the screen, the way VR does. Made for a large virtual screen; tested
-on a Quest 3 with Virtual Desktop. Off by default.
+Fixed 3D keeps one real eye gap and one distance to the screen, the way VR does. It's for **VR headsets, 3D glasses and
+3D depth enthusiasts**: anyone viewing a large virtual screen. Tested on a Quest 3 with Virtual Desktop. Off by default.
 
 - **Turn it on:** Mod Settings, **3D Braindance Edition**, **Fixed 3D**, then Apply. Works with the game running.
 - **Compare:** **Ctrl+F8** switches it on and off in game, and the picture shows FIXED 3D ON or OFF for two seconds. It

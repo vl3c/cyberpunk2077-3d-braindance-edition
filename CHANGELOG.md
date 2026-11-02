@@ -2,8 +2,8 @@
 
 ## 0.5.0 (2026-11-02)
 
-- Fixed 3D, new and off by default (tested in game on a Quest 3 with Virtual Desktop, on a large cinema screen; driving,
-  combat and cutscenes less so). The game re-aims the stereo every frame for a 3D monitor on a desk, so the world's
+- Fixed 3D, new and off by default, for VR headsets, 3D glasses and 3D depth enthusiasts (tested in game on a Quest 3 with
+  Virtual Desktop, on a large cinema screen; driving, combat and cutscenes less so). The game re-aims the stereo every frame for a 3D monitor on a desk, so the world's
   scale changes from scene to scene. Fixed 3D keeps one real eye gap and one distance to the screen, so the world keeps
   its scale, closer to VR. Turn it on in Mod Settings, 3D Braindance Edition: Fixed 3D, Your IPD and Screen size. Ctrl+F8
   switches it on and off in game to compare, and the picture says which.
