@@ -1,6 +1,6 @@
 # Nexus Mods page
 
-- **Name:** 3D Braindance Edition
+- **Name:** Cyberpunk 2077 3D: Braindance Edition (3DBD)
 - **Version:** 0.4.0
 - **Category:** Visuals and Graphics
 - **Summary (short description):** Play Cyberpunk 2077 in real stereoscopic 3D using the game's own built-in 3D renderer, shown side by side for any 3D / VR headset with SBS support (half-SBS; best on a 4K screen). Unlocks the hidden in-game 3D Mode on a normal monitor. Requires RED4ext. Not VR: no head tracking, no motion controls!

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem 3D Braindance Edition: install. Extra arguments (for example -Force) are passed on.
+rem Cyberpunk 2077 3D: Braindance Edition (3DBD): install. Extra arguments (for example -Force) are passed on.
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Braindance3D-Setup.ps1" -Action install -NoPause %*
 set "BD3D_RC=%ERRORLEVEL%"
 if not "%BD3D_RC%"=="0" echo.& echo Something went wrong, exit code %BD3D_RC%. See the messages above and Braindance3D-setup.log.

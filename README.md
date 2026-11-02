@@ -1,6 +1,6 @@
-# 3D Braindance Edition Mod for Cyberpunk 2077
+# Cyberpunk 2077 3D: Braindance Edition (3DBD)
 
-![3D Braindance Edition](docs/promo.jpg)
+![Cyberpunk 2077 3D: Braindance Edition](docs/promo.jpg)
 
 Play Cyberpunk 2077 in **real stereoscopic 3D** on any **3D display or VR headset with SBS support**: the game's
 own stereo renderer on a big virtual screen, not a depth-map effect.

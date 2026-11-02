@@ -105,6 +105,10 @@ Both write these values in `HKCU\SOFTWARE\Samsung\Odyssey3DHub`:
 | `Braindance3D_PreviousInstallPath` | What uninstall restores, or `<none>` |
 | `Braindance3D_InstalledBy` | The mod version that installed it |
 
+The stand-in DLL's version info keeps the product name `3D Braindance Edition`, the mod's old name: the plugin
+and the script compare it to tell their own stand-in from someone else's SDK, so changing it would break existing
+installs. The file and folder names (`Braindance3D`) stay for the same reason.
+
 ## Menu squeeze
 
 The game draws menus, the map and loading screens once across the whole window. In half-SBS each eye would see a
