@@ -5,7 +5,7 @@ public class BraindanceFixedStereo {
 
     @runtimeProperty("ModSettings.mod", "3D Braindance Edition")
     @runtimeProperty("ModSettings.displayName", "Fixed 3D")
-    @runtimeProperty("ModSettings.description", "Fixed eye gap and screen distance instead of self-adjusting stereo. True scale: Immersive, FoV 90. Ctrl+F8 toggles it in game. SBS only.")
+    @runtimeProperty("ModSettings.description", "Fixed eye gap and screen distance instead of self-adjusting stereo. Try Immersive with FoV 90. Ctrl+F8 toggles it in game. SBS only.")
     let Fixed: Bool = false;
 
     @runtimeProperty("ModSettings.mod", "3D Braindance Edition")
