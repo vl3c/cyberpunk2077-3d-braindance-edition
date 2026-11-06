@@ -114,8 +114,12 @@ The file and folder names (`Braindance3D`) stay for the same reason.
 
 On a PC with the monitor's own software installed, the plugin never registers the stand-in (above), so the game loads
 the real SDK. The engine ini still turns `SBSDebug` on, which would make the game draw side by side on that monitor
-instead of handing the eyes to its weaver. So the plugin picks the output at start-up, from `[Display] Output` in
-`Braindance3D-Settings.ini` and what the registration found (`choose_output` in `src/braindance3d_autosetup.c`):
+instead of handing the eyes to its weaver. So the plugin picks the output at start-up, from Mod Settings' Output,
+`[Display] Output` in `Braindance3D-Settings.ini` and what the registration found (`choose_output` in
+`src/braindance3d_autosetup.c`). Mod Settings' Output (`FixedStereo.reds`' `BraindanceOutput`, saved by name as
+`[BraindanceFixedStereo] Output` in its `user.ini`) set to Half SBS always keeps side by side; Auto, or nothing applied
+yet, leaves it to the table. Mod Settings can't change a page's options per PC, so everyone sees the dropdown; without
+the monitor's software both options give side by side.
 
 | `Output` | Registration result | 3D Mode shows |
 | --- | --- | --- |

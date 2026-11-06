@@ -38,6 +38,10 @@ int framegen_load(void *pluginHandle, const R4eSdk *sdk);
 // The picture 3D Mode sends out ([Display] Output): side by side (the mod's own), or the game's stock output for a
 // glasses-free 3D monitor, whose own SDK weaves the two eyes.
 enum { OUTPUT_SBS = 0, OUTPUT_MONITOR = 1 };
+// Mod Settings' file, from the mod's folder (bin\x64\Braindance3D, three levels under the game), and our section in it:
+// the class in FixedStereo.reds.
+#define MOD_SETTINGS_FROM_MOD_DIR L"\\..\\..\\..\\red4ext\\plugins\\mod_settings\\user.ini"
+#define MOD_SETTINGS_SECTION L"BraindanceFixedStereo"
 
 // Sets it, from the auto-setup's result. With OUTPUT_MONITOR the 3D Mode handler hook turns [Odyssey3D] SBSDebug off
 // (the engine ini turns it on), so the game uses its stock path and every SBSDebug-gated change steps aside. Call before

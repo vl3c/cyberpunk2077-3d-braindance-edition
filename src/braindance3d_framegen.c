@@ -279,7 +279,6 @@ static const char AOB_WEAPON_SEP[] =
 #define SCREEN_SMALLEST 30.0f
 #define SCREEN_LARGEST 5.0f
 #define FIXED_WEAPON_DEFAULT 1.0f      // [Stereo] WeaponDistance, metres
-#define MOD_SETTINGS_SECTION L"BraindanceFixedStereo" // the class in FixedStereo.reds, its section in Mod Settings' file
 // A thunk: mov rax,[renderer global]; mov rcx,[rax+4680h]; jmp getter. Matches three thunks, so the jmp is checked too.
 static const char AOB_CAMERA_THUNK[] = "48 8B 05 ?? ?? ?? ?? 48 8B 88 80 46 00 00 E9";
 // The getters, like the weapon's: under the lock, return the float at +0x570 or +0x56C.
@@ -1202,8 +1201,7 @@ void stereo_settings_load(const wchar_t *installDir)
     stereo.ini[0] = 0;
     if (_snwprintf(stereo.ini, MAX_PATH, L"%ls\\Braindance3D-Settings.ini", installDir) < 0) stereo.ini[0] = 0;
     stereo.ini[MAX_PATH - 1] = 0;
-    // The folder is bin\\x64\\Braindance3D, three levels under the game.
-    if (_snwprintf(stereo.modIni, MAX_PATH, L"%ls\\..\\..\\..\\red4ext\\plugins\\mod_settings\\user.ini", installDir) < 0)
+    if (_snwprintf(stereo.modIni, MAX_PATH, L"%ls" MOD_SETTINGS_FROM_MOD_DIR, installDir) < 0)
         stereo.modIni[0] = 0;
     stereo.modIni[MAX_PATH - 1] = 0;
     stereo_file_changed(stereo.ini, &stereo.iniTime);
