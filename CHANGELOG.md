@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-11-06)
 
 - Glasses-free 3D monitors: when the monitor's own software is installed (the mod never replaces it), 3D Mode now uses
   the game's own output for the monitor instead of side by side. Frame generation, the weapon's depth, the screen
