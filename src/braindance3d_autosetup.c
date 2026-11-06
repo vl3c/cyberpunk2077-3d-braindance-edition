@@ -391,10 +391,17 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
 // game's stock output when another SDK is the one the game loads (Samsung's software for its glasses-free 3D monitor,
 // registered or in its default folder: the plugin never replaces it), else side by side. sbs: always side by side.
 // monitor: always the stock output, even with this mod's stand-in (whose weaver draws nothing: for testing only).
+// Whether an ini value is word (any case), alone or followed by a space or a comment (the menu squeeze's rule).
+static int output_is(const wchar_t *v, const wchar_t *word)
+{
+    size_t n = wcslen(word);
+    return _wcsnicmp(v, word, n) == 0 && (!v[n] || wcschr(L" \t;#", v[n]));
+}
+
 static int choose_output(AutoResult r, const wchar_t *setting)
 {
-    if (_wcsicmp(setting, L"sbs") == 0) return OUTPUT_SBS;
-    if (_wcsicmp(setting, L"monitor") == 0) return OUTPUT_MONITOR;
+    if (output_is(setting, L"sbs")) return OUTPUT_SBS;
+    if (output_is(setting, L"monitor")) return OUTPUT_MONITOR;
     return r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT ? OUTPUT_MONITOR : OUTPUT_SBS;
 }
 

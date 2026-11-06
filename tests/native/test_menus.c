@@ -1639,6 +1639,7 @@ TEST(off_side_by_side_the_notice_is_drawn_once_in_the_middle)
     int two = notice_rects("FIXED 3D OFF", 3840, 2160, 2, panel, dots, NOTICE_RECTS);
     int one = notice_rects("FIXED 3D OFF", 3840, 2160, 1, panel, dots, NOTICE_RECTS);
     CHECK_EQ_INT(one * 2, two);
+    CHECK_EQ_INT(dots[0].right - dots[0].left, dots[0].bottom - dots[0].top); // square: nothing stretches it
     CHECK_EQ_INT(panel[0].left + panel[0].right, 3840); // centred in the whole picture
     for (int i = 0; i < one; i++) CHECK(dots[i].left >= panel[0].left && dots[i].right <= panel[0].right);
 }

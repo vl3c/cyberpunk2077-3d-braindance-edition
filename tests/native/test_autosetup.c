@@ -609,6 +609,10 @@ TEST(choose_output_is_the_monitors_own_only_for_another_sdk)
         CHECK_EQ_INT(choose_output((AutoResult)r, L"SBS"), OUTPUT_SBS);
         CHECK_EQ_INT(choose_output((AutoResult)r, L"monitor"), OUTPUT_MONITOR);
         CHECK_EQ_INT(choose_output((AutoResult)r, L"Monitor"), OUTPUT_MONITOR);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"sbs ; for the headset"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"sbs;"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"monitor # testing"), OUTPUT_MONITOR);
+        CHECK_MSG(choose_output((AutoResult)r, L"sbsx") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
     }
 }
 

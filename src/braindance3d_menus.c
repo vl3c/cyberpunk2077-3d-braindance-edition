@@ -727,7 +727,8 @@ static const uint8_t *notice_glyph(char c)
 static int notice_rects(const char *text, UINT width, UINT height, int eyes, D3D12_RECT *panel, D3D12_RECT *dots, int max)
 {
     LONG half = (LONG)width / eyes, high = ((LONG)height + 300) / 600 > 1 ? ((LONG)height + 300) / 600 : 1;
-    LONG wide = high / 2 > 1 ? high / 2 : 1, margin = wide * 2, count = (LONG)strlen(text);
+    // Half as wide as high in side by side, for the headset's stretch of each half; square on a monitor's own output.
+    LONG wide = eyes == 1 ? high : high / 2 > 1 ? high / 2 : 1, margin = wide * 2, count = (LONG)strlen(text);
     LONG textWidth = count * (GLYPH_COLUMNS + 1) * wide - wide, top = (LONG)height / 8;
     int n = 0;
     for (LONG eye = 0; eye < eyes; eye++) {
