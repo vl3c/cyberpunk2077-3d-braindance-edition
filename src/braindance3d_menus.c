@@ -724,13 +724,13 @@ static const uint8_t *notice_glyph(char c)
 // The dots of text in the same place in each half of a side by side picture, and in back the panel behind them (one
 // for each half). The dots are half as wide as high: each half is stretched to the whole width in the headset. Nothing
 // leaves its half. Returns the number of dots.
-static int notice_rects(const char *text, UINT width, UINT height, D3D12_RECT *panel, D3D12_RECT *dots, int max)
+static int notice_rects(const char *text, UINT width, UINT height, int eyes, D3D12_RECT *panel, D3D12_RECT *dots, int max)
 {
-    LONG half = (LONG)width / 2, high = ((LONG)height + 300) / 600 > 1 ? ((LONG)height + 300) / 600 : 1;
+    LONG half = (LONG)width / eyes, high = ((LONG)height + 300) / 600 > 1 ? ((LONG)height + 300) / 600 : 1;
     LONG wide = high / 2 > 1 ? high / 2 : 1, margin = wide * 2, count = (LONG)strlen(text);
     LONG textWidth = count * (GLYPH_COLUMNS + 1) * wide - wide, top = (LONG)height / 8;
     int n = 0;
-    for (LONG eye = 0; eye < 2; eye++) {
+    for (LONG eye = 0; eye < eyes; eye++) {
         LONG lo = eye * half, hi = lo + half, left = lo + (half - textWidth) / 2;
         panel[eye].left = left - margin > lo ? left - margin : lo;
         panel[eye].right = left + textWidth + margin < hi ? left + textWidth + margin : hi;
@@ -757,10 +757,11 @@ static int draw_notice(ID3D12Resource *bb, int on)
 {
     static D3D12_RECT dots[NOTICE_RECTS];
     D3D12_RECT panel[2];
+    int eyes = framegen_side_by_side() ? 2 : 1; // on a 3D monitor's own output, once in the middle of the woven picture
     static const float dark[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     static const float green[4] = { 0.25f, 1.0f, 0.35f, 1.0f }, amber[4] = { 1.0f, 0.7f, 0.1f, 1.0f };
     D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
-    int n = notice_rects(on ? "FIXED 3D ON" : "FIXED 3D OFF", (UINT)desc.Width, desc.Height, panel, dots, NOTICE_RECTS);
+    int n = notice_rects(on ? "FIXED 3D ON" : "FIXED 3D OFF", (UINT)desc.Width, desc.Height, eyes, panel, dots, NOTICE_RECTS);
     int slot = begin_commands();
     if (slot < 0) return 0;
     ID3D12GraphicsCommandList *cl = g.list;
@@ -769,7 +770,7 @@ static int draw_notice(ID3D12Resource *bb, int on)
     ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, &b);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(g.rtvHeap);
     ID3D12Device_CreateRenderTargetView(g.device, bb, NULL, rtv);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(cl, rtv, dark, 2, panel);
+    ID3D12GraphicsCommandList_ClearRenderTargetView(cl, rtv, dark, eyes, panel);
     // One rectangle a call: NVIDIA's driver copies them to a fixed buffer on the stack, and over 200 in one call ended
     // the game with a stack cookie failure in nvwgf2umx (seen with the debugger, 2026-11-02).
     for (int i = 0; i < n; i++) ID3D12GraphicsCommandList_ClearRenderTargetView(cl, rtv, on ? green : amber, 1, &dots[i]);
@@ -927,7 +928,8 @@ void menus_note_3d_mode(int on)
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
 
-static int want_squeeze(void) { return g.mode == MODE_ON ? 1 : menu_open(); }
+// Only side by side: on a 3D monitor's own output the monitor's weaver shows flat frames to both eyes itself.
+static int want_squeeze(void) { return framegen_side_by_side() && (g.mode == MODE_ON ? 1 : menu_open()); }
 
 // Whether p (any pointer, checked first) is the same COM object as obj (a live one): the same pointer, or the
 // same IUnknown identity.

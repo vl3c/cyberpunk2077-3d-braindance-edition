@@ -35,5 +35,17 @@ void plugin_log(int level, const char *fmt, ...) __attribute__((format(printf, 2
 // is logged). Never stops the game.
 int framegen_load(void *pluginHandle, const R4eSdk *sdk);
 
+// The picture 3D Mode sends out ([Display] Output): side by side (the mod's own), or the game's stock output for a
+// glasses-free 3D monitor, whose own SDK weaves the two eyes.
+enum { OUTPUT_SBS = 0, OUTPUT_MONITOR = 1 };
+
+// Sets it, from the auto-setup's result. With OUTPUT_MONITOR the 3D Mode handler hook turns [Odyssey3D] SBSDebug off
+// (the engine ini turns it on), so the game uses its stock path and every SBSDebug-gated change steps aside. Call before
+// framegen_load.
+void framegen_set_output(int output);
+
+// Whether 3D Mode draws side by side: [Odyssey3D] SBSDebug is on, or the var wasn't found (as before this check).
+int framegen_side_by_side(void);
+
 // Reads the Fixed 3D settings from installDir and Mod Settings' file. Call before framegen_load.
 void stereo_settings_load(const wchar_t *installDir);

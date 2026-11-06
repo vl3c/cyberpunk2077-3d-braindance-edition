@@ -13,6 +13,10 @@
 
 // ===================================================================================== state reset
 
+// braindance3d_framegen.c's answer: side by side unless a test says otherwise.
+static int f_side_by_side = 1;
+int framegen_side_by_side(void) { return f_side_by_side; }
+
 static LONG64 fake_device_calls(int slot) { return slot >= 0 ? 0 : -1; }
 
 // Puts the plugin's globals back to a freshly loaded auto mode, with the stand-in's counters "found".
@@ -27,6 +31,7 @@ static void mt_begin(void)
     g.mode = MODE_AUTO;
     g.deviceCalls = fake_device_calls;
     g.stereo = STEREO_UNKNOWN;
+    f_side_by_side = 1;
 }
 
 // Frame patterns measured on the PC (2.5, 2026-10-29): what the game asks the stand-in per frame.
@@ -211,6 +216,20 @@ TEST(stereo_frame_means_3d_on_and_menus_are_squeezed)
     map_frame();
     CHECK_EQ_INT(want_squeeze(), 1); // the map asks IsAvailable twice but no eye positions
     CHECK_EQ_INT(g.stereo, STEREO_ON);
+}
+
+TEST(nothing_is_squeezed_on_a_3d_monitors_own_output)
+{
+    mt_begin();
+    stereo_frame();
+    menu_frame();
+    REQUIRE_EQ_INT(want_squeeze(), 1);
+    f_side_by_side = 0; // SBSDebug off: the monitor's weaver shows flat frames to both eyes
+    CHECK_EQ_INT(want_squeeze(), 0);
+    g.mode = MODE_ON;
+    CHECK_EQ_INT(want_squeeze(), 0); // not even with Squeeze = on
+    f_side_by_side = 1;
+    CHECK_EQ_INT(want_squeeze(), 1);
 }
 
 TEST(nothing_is_squeezed_before_3d_mode_is_known)
@@ -1597,7 +1616,7 @@ TEST(the_notice_is_in_the_same_place_in_each_half_and_stays_there)
     struct { UINT w, h; } sizes[] = { { 3840, 2160 }, { 2560, 1440 }, { 64, 24 } };
     for (int k = 0; k < 3; k++) {
         UINT w = sizes[k].w, h = sizes[k].h;
-        int n = notice_rects("FIXED 3D OFF", w, h, panel, dots, NOTICE_RECTS);
+        int n = notice_rects("FIXED 3D OFF", w, h, 2, panel, dots, NOTICE_RECTS);
         REQUIRE_MSG(n > 0 && n % 2 == 0, "%d dots at %ux%u", n, w, h);
         CHECK(panel[1].left - panel[0].left == (LONG)w / 2);
         CHECK(panel[0].right <= (LONG)w / 2 && panel[1].right <= (LONG)w);
@@ -1608,16 +1627,27 @@ TEST(the_notice_is_in_the_same_place_in_each_half_and_stays_there)
             CHECK(dots[i].right <= (LONG)w / 2 && dots[n / 2 + i].right <= (LONG)w);
         }
     }
-    int all = notice_rects("FIXED 3D OFF", 3840, 2160, panel, dots, NOTICE_RECTS);
+    int all = notice_rects("FIXED 3D OFF", 3840, 2160, 2, panel, dots, NOTICE_RECTS);
     CHECK(all <= NOTICE_RECTS);
     CHECK_EQ_INT(all, 2 * (14 + 11 + 13 + 18 + 18 + 14 + 18 + 16 + 14 + 14)); // F, I, X, E, D, 3, D, O, F, F's dots, per eye
+}
+
+TEST(off_side_by_side_the_notice_is_drawn_once_in_the_middle)
+{
+    static D3D12_RECT dots[NOTICE_RECTS];
+    D3D12_RECT panel[2];
+    int two = notice_rects("FIXED 3D OFF", 3840, 2160, 2, panel, dots, NOTICE_RECTS);
+    int one = notice_rects("FIXED 3D OFF", 3840, 2160, 1, panel, dots, NOTICE_RECTS);
+    CHECK_EQ_INT(one * 2, two);
+    CHECK_EQ_INT(panel[0].left + panel[0].right, 3840); // centred in the whole picture
+    for (int i = 0; i < one; i++) CHECK(dots[i].left >= panel[0].left && dots[i].right <= panel[0].right);
 }
 
 TEST(a_dot_is_twice_as_high_as_wide_for_the_stretch_in_the_headset)
 {
     static D3D12_RECT dots[NOTICE_RECTS];
     D3D12_RECT panel[2];
-    notice_rects("I", 3840, 2160, panel, dots, NOTICE_RECTS);
+    notice_rects("I", 3840, 2160, 2, panel, dots, NOTICE_RECTS);
     CHECK_EQ_INT(dots[0].bottom - dots[0].top, 4);
     CHECK_EQ_INT(dots[0].right - dots[0].left, 2);
 }
@@ -1649,7 +1679,7 @@ TEST(the_notice_is_drawn_into_both_halves_and_nothing_else_changes)
     read_texels(bb, after);
     static D3D12_RECT dots[NOTICE_RECTS];
     D3D12_RECT panel[2];
-    int n = notice_rects("FIXED 3D ON", 64, 24, panel, dots, NOTICE_RECTS);
+    int n = notice_rects("FIXED 3D ON", 64, 24, 2, panel, dots, NOTICE_RECTS);
     REQUIRE(n > 0);
     const uint32_t green = after[dots[0].top * 64 + dots[0].left];
     CHECK_MSG((green & 0xFF00) == 0xFF00 && (green & 0xFF) < 0x80, "the first dot is 0x%08x", green);

@@ -598,6 +598,38 @@ TEST(write_registration_writes_the_bookkeeping_then_install_path)
 
 // ===================================================================================== white box: ABI
 
+TEST(choose_output_is_the_monitors_own_only_for_another_sdk)
+{
+    for (int r = AUTO_ALREADY; r <= AUTO_ERROR; r++) {
+        int monitor = r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT;
+        CHECK_MSG(choose_output((AutoResult)r, L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_MSG(choose_output((AutoResult)r, L"") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_MSG(choose_output((AutoResult)r, L"Something") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"sbs"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"SBS"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"monitor"), OUTPUT_MONITOR);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"Monitor"), OUTPUT_MONITOR);
+    }
+}
+
+TEST(output_setting_reads_display_output_trimmed_and_defaults_to_auto)
+{
+    wchar_t *dir = tu_tempdir(L"output");
+    wchar_t ini[TU_PATH], v[64];
+    tu_join(ini, TU_PATH, dir, L"Braindance3D-Settings.ini");
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"auto"); // no file
+    REQUIRE(tu_write_text(ini, "[Display]\r\nMonitor = auto\r\n"));
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"auto"); // no key
+    REQUIRE(tu_write_text(ini, "[Display]\r\nOutput =   sbs  \r\n"));
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"sbs");
+    REQUIRE(tu_write_text(ini, "[Display]\r\nOutput=monitor\r\n"));
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"monitor");
+}
+
 TEST(plugin_info_struct_matches_the_red4ext_v0_layout)
 {
     // RED4ext.SDK include/RED4ext/Api/v0: SemVer {u8 major; u16 minor; u32 patch; {u32 type; u32 number}},
@@ -1535,6 +1567,9 @@ TEST(plugin_main_registers_a_fresh_game)
     CHECK_EQ_INT(game_run(g, 0), 0);
     check_installed(g->hub, g->target, NO_PREVIOUS);
     CHECK(tu_file_size(g->log) > 0);
+    char *text = tu_read_file(g->log, NULL);
+    CHECK(text && strstr(text, "Output ([Display] Output = auto): side by side") != NULL);
+    free(text);
     CHECK(!tu_exists(g->lad_log));
     // Nothing is written next to the plugin.
     WIN32_FIND_DATAW fd;
@@ -1578,6 +1613,9 @@ TEST(plugin_main_keeps_a_registered_foreign_sdk)
     CHECK_EQ_INT(game_run(g, 0), 0);
     kdump(g->hub, after, sizeof(after));
     CHECK_EQ_STR(after, before);
+    char *text = tu_read_file(g->log, NULL);
+    CHECK(text && strstr(text, "Output ([Display] Output = auto): the game's own output for a 3D monitor") != NULL);
+    free(text);
 }
 
 TEST(plugin_main_keeps_samsung_in_its_default_folder)

@@ -385,6 +385,47 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
     return write_registration(subkey, target, keep);
 }
 
+// ---------------------------------------------------------------- the output
+
+// Which picture 3D Mode sends out, from [Display] Output and what the registration found. auto (or anything else): the
+// game's stock output when another SDK is the one the game loads (Samsung's software for its glasses-free 3D monitor,
+// registered or in its default folder: the plugin never replaces it), else side by side. sbs: always side by side.
+// monitor: always the stock output, even with this mod's stand-in (whose weaver draws nothing: for testing only).
+static int choose_output(AutoResult r, const wchar_t *setting)
+{
+    if (_wcsicmp(setting, L"sbs") == 0) return OUTPUT_SBS;
+    if (_wcsicmp(setting, L"monitor") == 0) return OUTPUT_MONITOR;
+    return r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT ? OUTPUT_MONITOR : OUTPUT_SBS;
+}
+
+// [Display] Output from <dir>\Braindance3D-Settings.ini ("auto" when it isn't set), trimmed of spaces.
+static void output_setting(const wchar_t *dir, wchar_t *out, int size)
+{
+    wchar_t ini[MAX_PATH];
+    int n = _snwprintf(ini, MAX_PATH, L"%ls\\" SETTINGS_FILE, dir);
+    if (n <= 0 || n >= MAX_PATH) {
+        wcsncpy(out, L"auto", size);
+        return;
+    }
+    GetPrivateProfileStringW(L"Display", L"Output", L"auto", out, size, ini);
+    wchar_t *start = out;
+    while (*start == L' ' || *start == L'\t') start++;
+    size_t len = wcslen(start);
+    while (len && (start[len - 1] == L' ' || start[len - 1] == L'\t')) start[--len] = 0;
+    memmove(out, start, (len + 1) * sizeof(wchar_t));
+}
+
+static void set_output(AutoResult r, const wchar_t *dir)
+{
+    wchar_t setting[64];
+    char b[256];
+    output_setting(dir, setting, 64);
+    int o = choose_output(r, setting);
+    alog("Output ([Display] Output = %s): %s", utf8(setting, b, sizeof(b)),
+         o == OUTPUT_MONITOR ? "the game's own output for a 3D monitor (SBSDebug goes off)" : "side by side");
+    framegen_set_output(o);
+}
+
 // <exe folder>\Braindance3D, where the mod puts the stand-in (<game>\bin\x64\Braindance3D).
 static int default_target(wchar_t *out)
 {
@@ -432,6 +473,7 @@ EXPORT int Main(HMODULE handle, uint8_t reason, const void *sdk)
     default_samsung_dir(samsung);
     AutoResult r = auto_register(DEFAULT_KEY, target, samsung);
     alog("Result: %d", (int)r);
+    set_output(r, target);
     if (g_log) { fclose(g_log); g_log = NULL; }
     menus_load(handle, sdk, target);
     stereo_settings_load(target);

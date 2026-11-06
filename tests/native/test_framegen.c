@@ -398,6 +398,7 @@ static void ft_begin(void)
     static DWORD tls = TLS_OUT_OF_INDEXES;
     if (tls == TLS_OUT_OF_INDEXES) tls = TlsAlloc();
     memset(&fg, 0, sizeof(fg));
+    memset(&output, 0, sizeof(output));
     fg.tls = tls;
     fg.framegen = 1;
     f_noted3d = -1;
@@ -835,6 +836,69 @@ TEST(handler_without_sbs_debug_does_what_the_game_does)
     CHECK_EQ_INT(f_setFgIndex, 0);
     CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
     CHECK_EQ_INT(f_noted3d, 1); // the squeeze still follows the handler
+}
+
+TEST(on_a_3d_monitor_the_handler_hook_turns_sbsdebug_off_before_the_handler_runs)
+{
+    ft_begin();
+    framegen_set_output(OUTPUT_MONITOR);
+    output.var = (uint8_t *)f_sbsVar;
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(((uint8_t *)f_sbsVar)[VAR_VALUE], 0);
+    CHECK_EQ_INT(f_setFgCalls, 1); // so the game's rule: Frame Generation Off and greyed
+    CHECK_EQ_INT(*(uint32_t *)(f_var + SETTING_FLAGS) & FLAG_GREYED, FLAG_GREYED);
+    CHECK(strstr(ft_log, "output: [Odyssey3D] SBSDebug turned off") != NULL);
+    CHECK_EQ_INT(framegen_side_by_side(), 0);
+    ft_log[0] = 0;
+    hook_o3d_changed(NULL); // already off: nothing written or logged
+    CHECK(strstr(ft_log, "output:") == NULL);
+}
+
+TEST(side_by_side_the_handler_hook_leaves_sbsdebug_alone)
+{
+    ft_begin();
+    output.var = (uint8_t *)f_sbsVar; // framegen_set_output(OUTPUT_SBS) is the default
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(((uint8_t *)f_sbsVar)[VAR_VALUE], 1);
+    CHECK_EQ_INT(framegen_side_by_side(), 1);
+    ft_begin();
+    framegen_set_output(OUTPUT_MONITOR); // the var didn't check out: nothing to write
+    hook_o3d_changed(NULL);
+    CHECK_EQ_INT(((uint8_t *)f_sbsVar)[VAR_VALUE], 1);
+}
+
+TEST(side_by_side_is_assumed_until_the_sbsdebug_var_is_found)
+{
+    ft_begin();
+    fg.sbsVar = NULL;
+    CHECK_EQ_INT(framegen_side_by_side(), 1);
+    fg.sbsVar = (const uint8_t *)f_sbsVar;
+    set_sbs_debug(0);
+    CHECK_EQ_INT(framegen_side_by_side(), 0);
+}
+
+TEST(find_output_var_checks_the_sbsdebug_var_on_its_own)
+{
+    ft_begin();
+    fg.sbsVar = NULL;
+    find_output_var(fake_resolve);
+    CHECK_EQ_PTR(output.var, f_sbsVar);
+    CHECK_EQ_PTR(fg.sbsVar, f_sbsVar);
+    CHECK(strstr(ft_log, "output: side by side") != NULL);
+    ft_begin();
+    fg.sbsVar = NULL;
+    framegen_set_output(OUTPUT_MONITOR);
+    find_output_var(fake_resolve);
+    CHECK(strstr(ft_log, "a 3D monitor's own SDK is registered") != NULL);
+    ft_begin();
+    fg.sbsVar = NULL;
+    framegen_set_output(OUTPUT_MONITOR);
+    f_sbsVar[VAR_NAME / 8] = "StereoEnabled";
+    find_output_var(fake_resolve);
+    CHECK(output.var == NULL);
+    CHECK(fg.sbsVar == NULL);
+    CHECK(strstr(ft_log, "doesn't check out") != NULL);
+    CHECK(strstr(ft_log, "also on this 3D monitor") != NULL);
 }
 
 TEST(handler_keeps_fsr_frame_generation)
@@ -2411,7 +2475,7 @@ TEST(the_game_values_are_logged_once_a_second)
     CHECK(strstr(ft_log, "| 3 reads") != NULL);
 }
 
-TEST(with_fixed_on_the_hooks_return_the_fixed_values_only_in_side_by_side)
+TEST(with_fixed_on_the_hooks_return_the_fixed_values_side_by_side_and_on_a_3d_monitor)
 {
     stereo_begin();
     stereo.fixed = 1;
@@ -2419,9 +2483,24 @@ TEST(with_fixed_on_the_hooks_return_the_fixed_values_only_in_side_by_side)
     CHECK(hook_camera_conv(NULL) == 20.0f);
     CHECK(near_float(bd3d_thunk_camera_sep(NULL), 0.065f));
     CHECK(bd3d_thunk_camera_conv(NULL) == 20.0f);
-    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 0; // a real 3D monitor
+    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 0; // a 3D monitor's own output: before the weave, the same values
+    CHECK(near_float(hook_camera_sep(NULL), 0.065f));
+    CHECK(hook_camera_conv(NULL) == 20.0f);
+    stereo.fixed = 0;
     CHECK(hook_camera_sep(NULL) == 0.05f);
     CHECK(hook_camera_conv(NULL) == 3.0f);
+}
+
+TEST(on_a_3d_monitor_the_weapon_is_the_games_flat_one_so_it_gets_the_slide)
+{
+    stereo_begin();
+    fg.sepOrig = fake_weapon_sep;
+    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 0;
+    CHECK(hook_weapon_sep(NULL) == 0.017f); // Fixed off: the game's, ray tracing or not
+    rt_on(RT_PATH);
+    CHECK(hook_weapon_sep(NULL) == 0.017f);
+    stereo.fixed = 1;
+    CHECK(near_float(hook_weapon_sep(NULL), 0.065f * (1.0f - 20.0f / 1.0f))); // in front of the screen, at 1 m
 }
 
 TEST(the_games_fade_while_aiming_is_kept)

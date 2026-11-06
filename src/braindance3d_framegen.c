@@ -27,8 +27,10 @@
 //     two flags, called by us rather than hooked). XeSS's check is there too, a read of the XeSS object's "frame
 //     generation on" flag: for such a view, feature 75 is set again from that flag.
 // Apart from telling the menu squeeze about 3D Mode, they change nothing unless SBSDebug is on (read on every call:
-// the engine ini isn't applied yet when the plugin loads), so a real 3D monitor keeps the game's rule. Each is entered through a thunk that keeps the
-// caller's registers (see REGISTER_KEEPING_THUNK). Before anything is attached, the addresses and byte patterns are
+// the engine ini isn't applied yet when the plugin loads), so a real 3D monitor keeps the game's rule. On a PC whose
+// registered SDK is a 3D monitor's own (not this mod's stand-in), the handler hook turns SBSDebug off before the
+// handler's first run (apply_output), so the game uses its stock output and all of this steps aside. Each is entered
+// through a thunk that keeps the caller's registers (see REGISTER_KEEPING_THUNK). Before anything is attached, the addresses and byte patterns are
 // checked (check_handler, check_framegen); if one doesn't match (a game update), that group isn't attached and the log
 // says which: without the frame generation group the game keeps its rule, and without the handler group the menu squeeze
 // also loses the 3D Mode switches. If only the FSR or the XeSS part doesn't match (check_fsr, check_xess), the others
@@ -63,7 +65,7 @@
 //
 // Fixed 3D, for viewers on a virtual screen. The camera build reads the world's eye separation and convergence through
 // two renderer vtable thunks, and nothing else uses those thunks (the depth analysis calls the getters behind them
-// directly). With Fixed 3D on (and SBSDebug on) hooks on them return fixed values: the player's IPD scaled by the game's
+// directly). With Fixed 3D on, hooks on them return fixed values (side by side and on a 3D monitor alike): the player's IPD scaled by the game's
 // Depth setting through its own curve, so Immersive (s = 1) is true scale, and the distance of the virtual screen. The
 // world keeps one scale instead of being re-aimed each frame. The game's comfort limits work on its own values, upstream
 // of the hooks, so they no longer apply. The game still fades the separation to 0 while aiming, and that fade is kept.
@@ -377,6 +379,12 @@ static struct {
     int keyDown;               // Ctrl+F8 was down then
 } stereo;
 
+// The output: side by side, or the game's stock path for a glasses-free 3D monitor (framegen_set_output).
+static struct {
+    int monitor;               // OUTPUT_MONITOR: SBSDebug is turned off at the 3D Mode handler
+    uint8_t *var;              // the [Odyssey3D] SBSDebug config var, NULL if it didn't check out
+} output;
+
 // Read by name from bd3d_stub_stereo_update.
 __attribute__((used)) volatile float bd3d_stereo_tan;   // tan(hfov / 2) of the last stereo update, 0: none yet
 __attribute__((used)) void *bd3d_stereo_update_orig;
@@ -494,6 +502,24 @@ static int text_is(const char *p, const char *want) { return readable(p, strlen(
 // The engine sets the var after the plugin loads and may change it at any time, so it's read anew on every call: a
 // volatile read, which the compiler can't merge with an earlier one or move across a write it can't see.
 static int sbs_debug(void) { return *(const volatile uint8_t *)(fg.sbsVar + VAR_VALUE) != 0; }
+
+void framegen_set_output(int o) { output.monitor = o == OUTPUT_MONITOR; }
+
+int framegen_side_by_side(void) { return !fg.sbsVar || sbs_debug(); }
+
+// For a glasses-free 3D monitor: turns SBSDebug off, which the engine ini turned on. Called on every 3D Mode handler
+// call, before the handler runs: its first call, at start-up, comes after the engine ini is applied (the log shows
+// SBSDebug on there), and the game asks for the monitor's weaver only when it draws a stereo frame with SBSDebug off.
+// Nothing sets it back on but the ini, so in practice this writes once.
+static void apply_output(void)
+{
+    if (!output.monitor || !output.var) return;
+    volatile uint8_t *value = (volatile uint8_t *)(output.var + VAR_VALUE);
+    if (!*value) return;
+    *value = 0;
+    plugin_log(1, "output: [Odyssey3D] SBSDebug turned off: 3D Mode uses the game's own output for a 3D monitor (no "
+                  "side by side; frame generation, the weapon's depth and the screen effects keep the game's rules)");
+}
 
 // Frame Generation's settings var, found the way SetFrameGeneration finds it. NULL if it isn't readable as expected.
 static uint8_t *fg_var(void)
@@ -830,6 +856,7 @@ HOOK void hook_o3d_changed(uint8_t *event)
     int ev0 = ev1 >= 0 ? event[0] : -1;
     int offAsked;
     uint32_t *flags;
+    apply_output();
     run_handler(event, &offAsked, &flags);
     // Its branch for "3D Mode on and the 3D display available" starts with its only SetFrameGeneration call (checked at
     // load), and it has no other way out than that branch or the 3D-off one, so the call tells which way it set 3D
@@ -1062,7 +1089,8 @@ HOOK float hook_weapon_sep(void *settings)
                              "(as Weapon Depth 0)"
                            : "gun: the weapon's eye gap follows Weapon Depth again");
     float sep = zero ? 0.0f : fg.sepOrig(settings);
-    return stereo.sepOrig && stereo_active() ? stereo_weapon_sep(zero) : sep;
+    // Off side by side the gun hook steps aside, so the weapon is the game's flat one there too.
+    return stereo.sepOrig && stereo_active() ? stereo_weapon_sep(zero || !sbs_debug()) : sep;
 }
 
 // The square root of x >= 0, without the C library's (a few Newton steps from a power of two: plenty for a log).
@@ -1183,8 +1211,9 @@ void stereo_settings_load(const wchar_t *installDir)
     stereo_read_settings(); // even with neither file there: the defaults
 }
 
-// Fixed values are in use: [Stereo] Fixed on, and side by side (a real 3D monitor keeps the game's stereo).
-static int stereo_active(void) { return stereo.fixed && stereo.convOrig && sbs_debug(); }
+// Fixed values are in use: [Stereo] Fixed on, and the thunks hooked. In side by side and on a 3D monitor alike: the
+// thunks are read by the camera build, before the eyes are drawn (and on a monitor, woven).
+static int stereo_active(void) { return stereo.fixed && stereo.convOrig; }
 
 // The Odyssey object, or NULL. (While the game's in the thunks, it's there: the thunks read it the same way.)
 static const uint8_t *stereo_object(void)
@@ -1628,6 +1657,7 @@ static int attach_hooks(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     if (!handlerOk || !attach_range(pluginHandle, h, t, T_SET_FG, T_O3D)) {
         plugin_log(1, "framegen: nothing attached: frame generation stays off in 3D Mode, and the menu squeeze sees 3D "
                       "Mode switches only once gameplay shows them");
+        if (output.monitor) plugin_log(1, "output: without the 3D Mode handler hook SBSDebug stays on: side by side");
         return 0;
     }
     if (!framegenOk || !attach_range(pluginHandle, h, t, T_DLSSG, T_FLAG_COMPUTE)) {
@@ -1782,7 +1812,7 @@ static void attach_stereo_update(void *pluginHandle, R4eHooking *h, ResolveFn re
         plugin_log(1, "fixed: stereo update hooked %p", (void *)update);
 }
 
-// The camera's two thunks, checked, then attached as a group of their own. Needs fg.sbsVar: call after attach_gun.
+// The camera's two thunks, checked, then attached as a group of their own. Needs fg.sbsVar (find_output_var).
 static int attach_stereo(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
     uint8_t *sep = (uint8_t *)resolve(HASH_CAMERA_SEP), *conv = (uint8_t *)resolve(HASH_CAMERA_CONV);
@@ -1816,12 +1846,30 @@ static int attach_stereo(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
+// The SBSDebug var, for the output and for Fixed 3D (which needs it to know whether the weapon is flat). Checked on its
+// own, so a 3D monitor's output doesn't depend on the frame generation or gun checks.
+static void find_output_var(ResolveFn resolve)
+{
+    uint8_t *sbs = (uint8_t *)resolve(HASH_VAR_SBSDEBUG);
+    if (!in_exe((uintptr_t)sbs, VAR_VALUE + 1) || !is_sbs_var(sbs)) {
+        plugin_log(1, "output: the SBSDebug config var doesn't check out (game update?): 3D Mode stays as the engine ini "
+                      "sets it%s", output.monitor ? " (side by side, also on this 3D monitor)" : "");
+        return;
+    }
+    output.var = sbs;
+    fg.sbsVar = sbs;
+    plugin_log(1, "output: %s", output.monitor ? "a 3D monitor's own SDK is registered: SBSDebug goes off at the 3D Mode "
+                                                 "handler, so the game uses its own output for it"
+                                               : "side by side (SBSDebug as the engine ini sets it)");
+}
+
 int framegen_load(void *pluginHandle, const R4eSdk *sdk)
 {
     if (!sdk || !sdk->hooking || !sdk->hooking->Attach || !sdk->hooking->Detach)
         return fail("RED4ext didn't pass a hooking interface");
     ResolveFn resolve = red4ext_resolver();
     if (!resolve) return fail("RED4ext.dll has no RED4ext_ResolveAddress");
+    find_output_var(resolve);
     int attached = attach_hooks(pluginHandle, sdk->hooking, resolve);
     attach_gun(pluginHandle, sdk->hooking, resolve);
     attach_stereo(pluginHandle, sdk->hooking, resolve);

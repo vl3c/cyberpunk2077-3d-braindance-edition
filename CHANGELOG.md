@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Glasses-free 3D monitors: when the monitor's own software is installed (the mod never replaces it), 3D Mode now uses
+  the game's own output for the monitor instead of side by side. Frame generation, the weapon's depth, the screen
+  effects switch and the menu fix keep the game's rules there. Untested on such a monitor.
+- Fixed 3D also works on that output (untested on such a monitor). The weapon stays the game's flat one there, and
+  Ctrl+F8's notice shows once in the middle.
+- New setting `[Display] Output` in `Braindance3D-Settings.ini`: `auto` (default), `sbs` to keep side by side on such a
+  PC, `monitor` for testing.
+
 ## 0.5.0 (2026-11-02)
 
 - Fixed 3D, new and off by default, for VR headsets, 3D glasses and 3D depth enthusiasts (tested in game on a Quest 3 with
