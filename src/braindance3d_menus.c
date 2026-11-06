@@ -721,9 +721,9 @@ static const uint8_t *notice_glyph(char c)
     return NULL;
 }
 
-// The dots of text in the same place in each half of a side by side picture, and in back the panel behind them (one
-// for each half). The dots are half as wide as high: each half is stretched to the whole width in the headset. Nothing
-// leaves its half. Returns the number of dots.
+// The dots of text in the same place in each of the eyes' parts of the picture (2: the halves of side by side; 1: the
+// whole picture, on a monitor's own output), and in back the panel behind them (one for each part). Nothing leaves its
+// part. Returns the number of dots.
 static int notice_rects(const char *text, UINT width, UINT height, int eyes, D3D12_RECT *panel, D3D12_RECT *dots, int max)
 {
     LONG half = (LONG)width / eyes, high = ((LONG)height + 300) / 600 > 1 ? ((LONG)height + 300) / 600 : 1;

@@ -10,7 +10,8 @@
 - New setting `[Display] Output` in `Braindance3D-Settings.ini`: `auto` (default), `sbs` to keep side by side on such a
   PC, `monitor` for testing.
 - New dropdown Output on Mod Settings' 3D Braindance Edition page: Auto (default) or Half SBS, to keep side by side on
-  such a PC. It applies when the game starts. Without the monitor's software both give side by side.
+  such a PC. It applies when the game starts. Without the monitor's software both give side by side (with
+  `[Display] Output` left at `auto`).
 
 ## 0.5.0 (2026-11-02)
 
