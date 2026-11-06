@@ -45,8 +45,9 @@ generation, weapon depth, effects switch and Fixed 3D hook a few game functions 
   redscript. Optional: without it, Ctrl+F8 still switches Fixed 3D, with the default settings.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
   or FSR3 on any GPU (2x), tested on an NVIDIA card. FSR4 (RX 9000) and XeSS (Intel Arc) are untested.
-- **Own a glasses-free 3D monitor the game supports? Don't install this mod:** it switches the game to
-  side-by-side output.
+- **Own a glasses-free 3D monitor the game supports?** With its software installed, the mod keeps the monitor's own
+  3D and adds Fixed 3D to it (untested on such a monitor). Frame generation, weapon depth and the menu fix stay off
+  there, as in the game. For side by side on that PC instead, set **Output** to **Half SBS** in Mod Settings.
 
 ## Install
 
@@ -62,8 +63,10 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 - In game: **Depth** (0.5 to 1.0 suits a headset), **Weapon Depth**, **Motion Comfort** and **Preset**.
 - **More 3D depth:** lower the game's **Field of View** (Graphics settings), e.g. 90 to 80 (step 7 of the
   recommended setup).
+- **Output** (Mod Settings, 3D Braindance Edition): Auto, or Half SBS to keep side by side on a PC with a glasses-free
+  3D monitor's software. Without that software both are side by side. Applies when the game starts.
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
-  multi-monitor PCs), menu fix (`[Menus] Squeeze = auto` or `off`) and where Fixed 3D's flat weapon sits
+  multi-monitor PCs), output (`[Display] Output`), menu fix (`[Menus] Squeeze = auto` or `off`) and where Fixed 3D's flat weapon sits
   (`[Stereo] WeaponDistance`).
 - Each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice lowers
   the frame rate versus 2D.
@@ -167,8 +170,8 @@ Logs contain folder paths, which can include your Windows user name.
 - **Uninstall:** remove the mod in Vortex, or delete its files including `red4ext\plugins\Braindance3D`. The
   leftover registry key points at a missing folder, so the stand-in is no longer found. To remove the key, run
   `Uninstall-Braindance3D.bat` (full zip) after removing the plugin.
-- **Real 3D monitor owners:** the engine ini alone switches 3D Mode to side by side. After
-  `Install-Braindance3D.bat -Force`, run the uninstaller before deleting the mod to restore the monitor
+- **Real 3D monitor owners:** with RED4ext, 3D Mode keeps the monitor's own output (Output = Half SBS for side by
+  side); without RED4ext, the engine ini switches it to side by side. After `Install-Braindance3D.bat -Force`, run the uninstaller before deleting the mod to restore the monitor
   software's setting.
 - **Mod Organizer 2** isn't supported yet: the game needs the DLL in a real folder.
 - **Other games:** the registry key isn't per game. The stand-in only works in `Cyberpunk2077.exe`; if another

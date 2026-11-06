@@ -71,7 +71,7 @@ test sessions the game called only the slots above, about 110 times a second for
 | --- | --- |
 | `engine\config\platform\pc\braindance3d.ini` | The engine options above |
 | `bin\x64\Braindance3D\GameLauncherData\core\Odyssey3DSDK.dll` | The SDK stand-in |
-| `bin\x64\Braindance3D\Braindance3D-Settings.ini` | Log level, monitor choice, the menu squeeze and Fixed 3D's flat weapon |
+| `bin\x64\Braindance3D\Braindance3D-Settings.ini` | Log level, monitor choice, the output (side by side or a 3D monitor's own), the menu squeeze and Fixed 3D's flat weapon |
 | `bin\x64\Braindance3D\Braindance3D-Setup.ps1` | Install, uninstall and status (registry only) |
 | `bin\x64\Braindance3D\Install-Braindance3D.bat`, `Uninstall-Braindance3D.bat` | Double-click wrappers |
 | `bin\x64\Braindance3D\README.md`, `LICENSE`, `CHANGELOG.md` | Docs |
@@ -109,6 +109,37 @@ Both write these values in `HKCU\SOFTWARE\Samsung\Odyssey3DHub`:
 Both DLLs keep the product name `3D Braindance Edition`, the mod's old name, in their version info. The plugin and
 the script compare the stand-in's to tell it from someone else's SDK, so changing it would break existing installs.
 The file and folder names (`Braindance3D`) stay for the same reason.
+
+## A glasses-free 3D monitor's own output
+
+On a PC with the monitor's own software installed, the plugin never registers the stand-in (above), so the game loads
+the real SDK. The engine ini still turns `SBSDebug` on, which would make the game draw side by side on that monitor
+instead of handing the eyes to its weaver. So the plugin picks the output at start-up, from Mod Settings' Output,
+`[Display] Output` in `Braindance3D-Settings.ini` and what the registration found (`choose_output` in
+`src/braindance3d_autosetup.c`). Mod Settings' Output (`FixedStereo.reds`' `BraindanceOutput`, saved by name as
+`[BraindanceFixedStereo] Output` in its `user.ini`) set to Half SBS always keeps side by side; Auto, or nothing applied
+yet, leaves it to the table. Mod Settings can't change a page's options per PC, so everyone sees the dropdown; without
+the monitor's software both options give side by side.
+
+| `Output` | Registration result | 3D Mode shows |
+| --- | --- | --- |
+| `auto` (default) | another SDK is registered, or the monitor's software is in its default folder | the game's own output for the monitor |
+| `auto` | anything else (this mod's stand-in is the SDK, or an error) | side by side |
+| `sbs` | any | side by side |
+| `monitor` | any | the game's own output (for testing: with the stand-in, whose weaver draws nothing, there's no 3D picture) |
+
+For the monitor's output, the 3D Mode handler hook writes 0 to `SBSDebug` (its value byte at `+0x30`) before the handler
+runs (`apply_output` in `src/braindance3d_framegen.c`). The handler's first call, at start-up, comes after the engine ini
+is applied: the log shows `SBSDebug` on there. The game asks for the weaver only when it draws a stereo frame with
+`SBSDebug` off, so this needs nothing else. The var is checked on its own (`find_output_var`: by hash, then its name and
+group), so this doesn't depend on the frame generation or weapon checks; without the handler hook it stays on, logged.
+
+With `SBSDebug` off, everything gated on it keeps the game's rules: frame generation stays off in 3D Mode (it would blend
+two woven pictures), the weapon stays flat, the screen effects aren't switched. The menu squeeze stays off (the
+monitor's weaver shows flat frames to both eyes itself), even with `Squeeze = on`. Fixed 3D still works (below).
+
+Not tested on the monitor: the plugin's side (the write, the weaver being asked for) can be checked with `Output = monitor`
+and the stand-in, whose log lists every weaver call.
 
 ## Menu squeeze
 
@@ -167,7 +198,7 @@ library like `GpuApi::Present`:
 | `SetFrameGeneration` | Skips the handler's Off when Frame Generation is DLSS (and the setting's list offers it: an RTX 40 or 50), FSR3 (FSR 3.1, every GPU), FSR4 (AMD's AI frame generation on RX 9000, untested), XESS (Intel Arc, untested), or Off while one of those can be picked. Before the list is built, the saved value decides alone. Values it doesn't know keep the game's rule (Off, greyed out), as do FSR3 and FSR4 if the FSR checks at start-up failed, XESS if the XeSS checks failed, and Off when nothing in the list runs in 3D (for example no DLSS, because OptiScaler holds DLSS-G, and the FSR checks failed) |
 | `FlagCompute`, `IsDlssgEnabled` | FlagCompute asks `IsDlssgEnabled` only for a view that passed its frame generation checks, so that answer is the game's own decision for the view. It's noted per thread (FlagCompute runs for several views at once on worker threads), and on stereo frames feature 88 is set again from it. For a view that was asked, feature 89 is set again when the game's `IsFsrFgEnabled` says yes (called by the plugin, not hooked). It covers FSR3 and FSR4 alike: both run through the same FidelityFX frame generation DLL. Likewise feature 75 is set again when the renderer's XeSS object (`+0x4678`) has its frame generation flag (`+0xDD`) set, the field FlagCompute itself reads there |
 
-They change nothing unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor keeps the
+They change nothing unless `[Odyssey3D] SBSDebug` is on (read on every call), so a real 3D monitor (see above) keeps the
 game's rule. Each is entered through a small assembly thunk that keeps `rcx`, `rdx`, `r8`-`r11` and `xmm0`-`xmm5`:
 the game is built with whole-program optimisation, and FlagCompute keeps using `rcx` after calling
 `IsDlssgEnabled`. The selected Frame Generation value is read from the setting itself (`+0x84` indexes the list of
@@ -297,6 +328,10 @@ front, and only while the world is rendered, so not in menus). The notice goes t
 so with `[Menus] Squeeze = off` there's none. It is drawn on the back buffer just before Present, as `ClearRenderTargetView` rectangles, in the same
 place in each half. One rectangle a call: NVIDIA's driver copies them to a fixed buffer on the stack, and over 200 in one
 call ended the process with a stack cookie failure in `nvwgf2umx.dll` (no report, no event log entry).
+
+Fixed 3D works the same on a glasses-free 3D monitor's own output: the thunks are read before the eyes are drawn, and
+woven. There the weapon is always the game's flat one (the weapon depth hook is side by side only), so it gets the flat
+weapon's slide, and Ctrl+F8's notice is drawn once, in the middle of the picture. Not tested on such a monitor.
 
 Before attaching, the plugin checks both thunks (renderer global, Odyssey object, jmp target) and both getters. If any
 doesn't match, nothing is hooked and stereo stays as the game sets it. The fade's fields, the weapon's convergence var

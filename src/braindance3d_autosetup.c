@@ -385,6 +385,79 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
     return write_registration(subkey, target, keep);
 }
 
+// ---------------------------------------------------------------- the output
+
+// Which picture 3D Mode sends out, from Mod Settings' Output, [Display] Output and what the registration found.
+// Mod Settings' Half SBS (FixedStereo.reds' BraindanceOutput.HalfSBS, saved by name; its number is taken too): always side
+// by side. Otherwise [Display] Output decides. auto (or anything else): the game's stock output when another SDK is the
+// one the game loads (Samsung's software for its glasses-free 3D monitor, registered or in its default folder: the plugin
+// never replaces it), else side by side. sbs: always side by side. monitor: always the stock output, even with this
+// mod's stand-in (whose weaver draws nothing: for testing only).
+// Whether an ini value is word (any case), alone or followed by a space or a comment (the menu squeeze's rule).
+static int output_is(const wchar_t *v, const wchar_t *word)
+{
+    size_t n = wcslen(word);
+    return _wcsnicmp(v, word, n) == 0 && (!v[n] || wcschr(L" \t;#", v[n]));
+}
+
+static int choose_output(AutoResult r, const wchar_t *modSetting, const wchar_t *setting)
+{
+    if (output_is(modSetting, L"HalfSBS") || output_is(modSetting, L"1")) return OUTPUT_SBS;
+    if (output_is(setting, L"sbs")) return OUTPUT_SBS;
+    if (output_is(setting, L"monitor")) return OUTPUT_MONITOR;
+    return r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT ? OUTPUT_MONITOR : OUTPUT_SBS;
+}
+
+// section's key from ini into out (def when it isn't set), trimmed of spaces.
+static void read_trimmed(const wchar_t *ini, const wchar_t *section, const wchar_t *key, const wchar_t *def,
+                         wchar_t *out, int size)
+{
+    GetPrivateProfileStringW(section, key, def, out, size, ini);
+    wchar_t *start = out;
+    while (*start == L' ' || *start == L'\t') start++;
+    size_t len = wcslen(start);
+    while (len && (start[len - 1] == L' ' || start[len - 1] == L'\t')) start[--len] = 0;
+    memmove(out, start, (len + 1) * sizeof(wchar_t));
+}
+
+// [Display] Output from <dir>\Braindance3D-Settings.ini ("auto" when it isn't set), trimmed of spaces.
+static void output_setting(const wchar_t *dir, wchar_t *out, int size)
+{
+    wchar_t ini[MAX_PATH];
+    int n = _snwprintf(ini, MAX_PATH, L"%ls\\" SETTINGS_FILE, dir);
+    if (n <= 0 || n >= MAX_PATH) {
+        wcsncpy(out, L"auto", size);
+        return;
+    }
+    read_trimmed(ini, L"Display", L"Output", L"auto", out, size);
+}
+
+// Mod Settings' Output, [BraindanceFixedStereo] Output in its user.ini ("" before the page's first Apply). <dir> is
+// bin\x64\Braindance3D, three levels under the game; the file is <game>\red4ext\plugins\mod_settings\user.ini.
+static void mod_settings_output(const wchar_t *dir, wchar_t *out, int size)
+{
+    wchar_t ini[MAX_PATH];
+    int n = _snwprintf(ini, MAX_PATH, L"%ls" MOD_SETTINGS_FROM_MOD_DIR, dir);
+    if (n <= 0 || n >= MAX_PATH) {
+        out[0] = 0;
+        return;
+    }
+    read_trimmed(ini, MOD_SETTINGS_SECTION, L"Output", L"", out, size);
+}
+
+static void set_output(AutoResult r, const wchar_t *dir)
+{
+    wchar_t setting[64], modSetting[64];
+    char b[256], m[256];
+    output_setting(dir, setting, 64);
+    mod_settings_output(dir, modSetting, 64);
+    int o = choose_output(r, modSetting, setting);
+    alog("Output (Mod Settings' Output = %s, [Display] Output = %s): %s",
+         modSetting[0] ? utf8(modSetting, m, sizeof(m)) : "not applied yet", utf8(setting, b, sizeof(b)),
+         o == OUTPUT_MONITOR ? "the game's own output for a 3D monitor (SBSDebug goes off)" : "side by side");
+    framegen_set_output(o);
+}
+
 // <exe folder>\Braindance3D, where the mod puts the stand-in (<game>\bin\x64\Braindance3D).
 static int default_target(wchar_t *out)
 {
@@ -432,6 +505,7 @@ EXPORT int Main(HMODULE handle, uint8_t reason, const void *sdk)
     default_samsung_dir(samsung);
     AutoResult r = auto_register(DEFAULT_KEY, target, samsung);
     alog("Result: %d", (int)r);
+    set_output(r, target);
     if (g_log) { fclose(g_log); g_log = NULL; }
     menus_load(handle, sdk, target);
     stereo_settings_load(target);

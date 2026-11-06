@@ -598,6 +598,78 @@ TEST(write_registration_writes_the_bookkeeping_then_install_path)
 
 // ===================================================================================== white box: ABI
 
+TEST(choose_output_is_the_monitors_own_only_for_another_sdk)
+{
+    for (int r = AUTO_ALREADY; r <= AUTO_ERROR; r++) {
+        int monitor = r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT;
+        CHECK_MSG(choose_output((AutoResult)r, L"", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_MSG(choose_output((AutoResult)r, L"", L"") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_MSG(choose_output((AutoResult)r, L"", L"Something") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"SBS"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"monitor"), OUTPUT_MONITOR);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"Monitor"), OUTPUT_MONITOR);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs ; for the headset"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs;"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"monitor # testing"), OUTPUT_MONITOR);
+        CHECK_MSG(choose_output((AutoResult)r, L"", L"sbsx") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+    }
+}
+
+TEST(mod_settings_half_sbs_keeps_side_by_side_and_auto_leaves_it_to_the_ini)
+{
+    for (int r = AUTO_ALREADY; r <= AUTO_ERROR; r++) {
+        int monitor = r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT;
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"auto"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"halfsbs", L"auto"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"1", L"auto"), OUTPUT_SBS); // the enum's number
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"monitor"), OUTPUT_SBS); // the page wins
+        CHECK_MSG(choose_output((AutoResult)r, L"Auto", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_MSG(choose_output((AutoResult)r, L"0", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"Auto", L"sbs"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"Auto", L"monitor"), OUTPUT_MONITOR);
+        CHECK_MSG(choose_output((AutoResult)r, L"10", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
+    }
+}
+
+TEST(output_setting_reads_display_output_trimmed_and_defaults_to_auto)
+{
+    wchar_t *dir = tu_tempdir(L"output");
+    wchar_t ini[TU_PATH], v[64];
+    tu_join(ini, TU_PATH, dir, L"Braindance3D-Settings.ini");
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"auto"); // no file
+    REQUIRE(tu_write_text(ini, "[Display]\r\nMonitor = auto\r\n"));
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"auto"); // no key
+    REQUIRE(tu_write_text(ini, "[Display]\r\nOutput =   sbs  \r\n"));
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"sbs");
+    REQUIRE(tu_write_text(ini, "[Display]\r\nOutput=monitor\r\n"));
+    output_setting(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"monitor");
+}
+
+TEST(mod_settings_output_reads_user_ini_three_levels_up)
+{
+    // <game>\bin\x64\Braindance3D and <game>\red4ext\plugins\mod_settings\user.ini
+    wchar_t *game = tu_tempdir(L"modsettings");
+    wchar_t dir[TU_PATH], folder[TU_PATH], ini[TU_PATH], v[64];
+    tu_join(dir, TU_PATH, game, L"bin\\x64\\Braindance3D");
+    tu_join(folder, TU_PATH, game, L"red4ext\\plugins\\mod_settings");
+    REQUIRE(tu_mkdirs(dir));
+    REQUIRE(tu_mkdirs(folder));
+    tu_join(ini, TU_PATH, folder, L"user.ini");
+    mod_settings_output(dir, v, 64);
+    CHECK_EQ_WSTR(v, L""); // no file: not applied yet
+    REQUIRE(tu_write_text(ini, "[BraindanceFixedStereo]\r\nFixed = true\r\n"));
+    mod_settings_output(dir, v, 64);
+    CHECK_EQ_WSTR(v, L""); // no key
+    REQUIRE(tu_write_text(ini, "[OtherMod]\r\nOutput = HalfSBS\r\n[BraindanceFixedStereo]\r\nOutput =  HalfSBS \r\n"));
+    mod_settings_output(dir, v, 64);
+    CHECK_EQ_WSTR(v, L"HalfSBS");
+}
+
 TEST(plugin_info_struct_matches_the_red4ext_v0_layout)
 {
     // RED4ext.SDK include/RED4ext/Api/v0: SemVer {u8 major; u16 minor; u32 patch; {u32 type; u32 number}},
@@ -1535,6 +1607,9 @@ TEST(plugin_main_registers_a_fresh_game)
     CHECK_EQ_INT(game_run(g, 0), 0);
     check_installed(g->hub, g->target, NO_PREVIOUS);
     CHECK(tu_file_size(g->log) > 0);
+    char *text = tu_read_file(g->log, NULL);
+    CHECK(text && strstr(text, "Output (Mod Settings' Output = not applied yet, [Display] Output = auto): side by side") != NULL);
+    free(text);
     CHECK(!tu_exists(g->lad_log));
     // Nothing is written next to the plugin.
     WIN32_FIND_DATAW fd;
@@ -1578,6 +1653,25 @@ TEST(plugin_main_keeps_a_registered_foreign_sdk)
     CHECK_EQ_INT(game_run(g, 0), 0);
     kdump(g->hub, after, sizeof(after));
     CHECK_EQ_STR(after, before);
+    char *text = tu_read_file(g->log, NULL);
+    CHECK(text && strstr(text, "Output (Mod Settings' Output = not applied yet, [Display] Output = auto): the game's own output for a 3D monitor") != NULL);
+    free(text);
+}
+
+TEST(plugin_main_keeps_side_by_side_with_a_foreign_sdk_when_mod_settings_says_half_sbs)
+{
+    Game *g = game_new(L"main-halfsbs", L"Cyberpunk 2077", 1);
+    REQUIRE(tu_mkdirs(g->samsung));
+    put_sdk(g->samsung, SDK_FOREIGN_PRODUCT);
+    kset_sz(g->hub, VALUE_INSTALL_PATH, g->samsung);
+    wchar_t folder[TU_PATH], ini[TU_PATH];
+    sub_dir(folder, g->game, L"red4ext\\plugins\\mod_settings", 1);
+    tu_join(ini, TU_PATH, folder, L"user.ini");
+    REQUIRE(tu_write_text(ini, "[BraindanceFixedStereo]\r\nFixed = false\r\nOutput = HalfSBS\r\n"));
+    CHECK_EQ_INT(game_run(g, 0), 0);
+    char *text = tu_read_file(g->log, NULL);
+    CHECK(text && strstr(text, "Output (Mod Settings' Output = HalfSBS, [Display] Output = auto): side by side") != NULL);
+    free(text);
 }
 
 TEST(plugin_main_keeps_samsung_in_its_default_folder)
