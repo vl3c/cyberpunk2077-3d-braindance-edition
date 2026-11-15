@@ -98,8 +98,8 @@
 // is laid out exactly as half SBS on a 16:9 screen, with twice the pixels across. Found with the Cyberpunk VR port
 // (dariulone/cyberpunk-vr-port, MIT, src/Stereo/EngineStereo.cpp). Only while [Odyssey3D] SBSDebug is on and the
 // camera's aspect is at least the full SBS aspect, so a window that isn't (glasses switched to 2D) keeps half SBS.
-// Attached only when the output can be full SBS (not with Half SBS or a 3D monitor's output). The HUD is still laid
-// out over the whole window and comes out squashed in each eye.
+// Attached unless the output is a 3D monitor's own, so Mod Settings' Output switches between Half SBS, Full SBS and Auto
+// live (output_reread). The HUD is still laid out over the whole window and comes out squashed in each eye.
 //
 // License: MIT (see LICENSE).
 
@@ -416,6 +416,9 @@ static struct {
     int monitor;               // OUTPUT_MONITOR: SBSDebug is turned off at the 3D Mode handler
     uint8_t *var;              // the [Odyssey3D] SBSDebug config var, NULL if it didn't check out
     float fullSbsAspect;       // from this window aspect side by side is full SBS (0: never)
+    int autoOutput;            // what Mod Settings' Output = Auto stands for (framegen_set_output_auto)
+    wchar_t modOutput[32];     // Mod Settings' Output as last read ("" before the page's first Apply)
+    int modOutputSeen;         //   and whether it has been read yet (the first read only notes it)
 } output;
 
 // Full SBS (check_full_sbs).
@@ -546,10 +549,43 @@ static int text_is(const char *p, const char *want) { return readable(p, strlen(
 // volatile read, which the compiler can't merge with an earlier one or move across a write it can't see.
 static int sbs_debug(void) { return *(const volatile uint8_t *)(fg.sbsVar + VAR_VALUE) != 0; }
 
+static float full_sbs_aspect(int o) { return o == OUTPUT_SBS ? FULL_SBS_AUTO : o == OUTPUT_FULL_SBS ? FULL_SBS_FORCED : 0.0f; }
+
 void framegen_set_output(int o)
 {
     output.monitor = o == OUTPUT_MONITOR;
-    output.fullSbsAspect = o == OUTPUT_SBS ? FULL_SBS_AUTO : o == OUTPUT_FULL_SBS ? FULL_SBS_FORCED : 0.0f;
+    output.fullSbsAspect = full_sbs_aspect(o);
+}
+
+void framegen_set_output_auto(int o) { output.autoOutput = o; }
+
+// Mod Settings' Output, read again: a change switches side by side between half, full and auto at once (the cameras are
+// made again each frame). The first read only notes it (the auto-setup applied it at start). A 3D monitor's own output
+// is decided at start: a switch to or from it is logged and waits for a restart.
+static void output_reread(const wchar_t *modIni)
+{
+    wchar_t v[32] = L"";
+    if (modIni[0]) GetPrivateProfileStringW(MOD_SETTINGS_SECTION, L"Output", L"", v, 32, modIni);
+    int seen = output.modOutputSeen;
+    output.modOutputSeen = 1;
+    if (seen && wcscmp(v, output.modOutput) == 0) return;
+    wcsncpy(output.modOutput, v, 31);
+    output.modOutput[31] = 0;
+    if (!seen) return;
+    int o = _wcsicmp(v, L"HalfSBS") == 0 || wcscmp(v, L"1") == 0   ? OUTPUT_HALF_SBS
+            : _wcsicmp(v, L"FullSBS") == 0 || wcscmp(v, L"2") == 0 ? OUTPUT_FULL_SBS
+                                                                   : output.autoOutput;
+    if (output.monitor || o == OUTPUT_MONITOR) {
+        plugin_log(1, "output: Mod Settings' Output is now '%ls': a 3D monitor's own output is chosen at start, so this "
+                      "waits for a restart",
+                   v);
+        return;
+    }
+    output.fullSbsAspect = full_sbs_aspect(o);
+    plugin_log(1, "output: Mod Settings' Output is now '%ls': %s", v[0] ? v : L"Auto",
+               o == OUTPUT_HALF_SBS   ? "half side by side"
+               : o == OUTPUT_FULL_SBS ? "full side by side (half in a window less than twice as wide as tall)"
+                                      : "side by side: full in a window at least 3 times as wide as tall, else half");
 }
 
 static int full_sbs_window(float width, float height);
@@ -1299,6 +1335,7 @@ static void stereo_read_settings(void)
     stereo.conv = conv;
     stereo.weaponDistance = weapon;
     stereo.fixed = fixed;
+    output_reread(stereo.modIni);
     plugin_log(1, "fixed: settings read: Fixed = %s, eye gap %.1f mm, display size %.0f: distance %.2f m%s, "
                   "WeaponDistance = %.2f m",
                fixed ? "on" : "off", 1000.0f * sep, size, conv, applied ? "" : " (nothing applied on the page yet)", weapon);
@@ -1915,11 +1952,12 @@ static int check_full_sbs(ResolveFn resolve, uint8_t **build)
     return 1;
 }
 
-// The full SBS group: only when the output can be full SBS. Returns 1 when attached.
+// The full SBS group: not with a 3D monitor's own output (Half SBS too, so Output can switch to Full SBS live). Returns 1
+// when attached.
 static int attach_full_sbs(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
-    if (output.fullSbsAspect <= 0.0f) {
-        plugin_log(1, "fullsbs: not hooked: the output is %s", output.monitor ? "a 3D monitor's own" : "half SBS");
+    if (output.monitor) {
+        plugin_log(1, "fullsbs: not hooked: the output is a 3D monitor's own");
         return 0;
     }
     uint8_t *build;
@@ -1929,9 +1967,12 @@ static int attach_full_sbs(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
         plugin_log(1, "fullsbs: couldn't hook the camera build: not hooked, side by side stays half SBS in any window");
         return 0;
     }
-    plugin_log(1, "fullsbs: camera build hooked; side by side is full SBS in a window at least %.0f times as wide as it "
-                  "is high (while [Odyssey3D] SBSDebug is on)",
-               output.fullSbsAspect);
+    if (output.fullSbsAspect > 0.0f)
+        plugin_log(1, "fullsbs: camera build hooked; side by side is full SBS in a window at least %.0f times as wide as "
+                      "it is high (while [Odyssey3D] SBSDebug is on)",
+                   output.fullSbsAspect);
+    else
+        plugin_log(1, "fullsbs: camera build hooked; side by side is half SBS until Mod Settings' Output changes");
     return 1;
 }
 

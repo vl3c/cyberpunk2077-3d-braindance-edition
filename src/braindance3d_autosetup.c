@@ -462,6 +462,7 @@ static void set_output(AutoResult r, const wchar_t *dir)
          : o == OUTPUT_FULL_SBS ? "full side by side (half in a window less than twice as wide as tall)"
                                 : "side by side: full in a window at least 3 times as wide as tall, else half");
     framegen_set_output(o);
+    framegen_set_output_auto(choose_output(r, L"", setting));
 }
 
 // <exe folder>\Braindance3D, where the mod puts the stand-in (<game>\bin\x64\Braindance3D).

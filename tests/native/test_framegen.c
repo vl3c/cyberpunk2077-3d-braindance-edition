@@ -2642,6 +2642,46 @@ TEST(the_page_sets_fixed_mode_the_eye_gap_and_the_distance)
     RemoveDirectoryW(dir);
 }
 
+TEST(the_page_switches_the_output_between_half_full_and_auto_live)
+{
+    stereo_begin();
+    wchar_t dir[MAX_PATH], mod[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    wcscat(dir, L"bd3d-output-mod-test");
+    CreateDirectoryW(dir, NULL);
+    _snwprintf(mod, MAX_PATH, L"%ls\\user.ini", dir);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = HalfSBS\r\n");
+    memset(&output, 0, sizeof(output));
+    framegen_set_output(OUTPUT_HALF_SBS);   // what the auto-setup chose at start
+    framegen_set_output_auto(OUTPUT_SBS);   // and what Auto stands for
+    wcscpy(stereo.modIni, mod);
+    stereo_read_settings();                 // the first read only notes the value
+    CHECK(output.fullSbsAspect == 0.0f);
+    CHECK(strstr(ft_log, "output: Mod Settings' Output is now") == NULL);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = FullSBS\r\n");
+    stereo_read_settings();
+    CHECK(output.fullSbsAspect == FULL_SBS_FORCED);
+    CHECK(strstr(ft_log, "output: Mod Settings' Output is now 'FullSBS': full side by side") != NULL);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = Auto\r\n");
+    stereo_read_settings();
+    CHECK(output.fullSbsAspect == FULL_SBS_AUTO);
+    ft_log[0] = 0;
+    stereo_read_settings();                 // unchanged: nothing logged
+    CHECK(strstr(ft_log, "output:") == NULL);
+    framegen_set_output_auto(OUTPUT_MONITOR); // Auto stands for a 3D monitor's output: needs a restart
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = HalfSBS\r\n");
+    stereo_read_settings();
+    CHECK(output.fullSbsAspect == 0.0f);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = Auto\r\n");
+    stereo_read_settings();
+    CHECK(output.fullSbsAspect == 0.0f && !output.monitor);
+    CHECK(strstr(ft_log, "this waits for a restart") != NULL);
+    memset(&output, 0, sizeof(output));
+    framegen_set_output(OUTPUT_SBS);
+    DeleteFileW(mod);
+    RemoveDirectoryW(dir);
+}
+
 TEST(the_display_size_covers_v_s_distances)
 {
     CHECK(near_float(stereo_distance(0.0f), 30.0f));
@@ -3151,17 +3191,21 @@ TEST(full_sbs_attaches_the_camera_build_or_nothing)
     CHECK(strstr(ft_log, "fullsbs: couldn't hook the camera build") != NULL);
 }
 
-TEST(full_sbs_isnt_hooked_for_half_sbs_or_a_3d_monitor)
+TEST(full_sbs_is_hooked_for_half_sbs_but_not_a_3d_monitor)
 {
     fs_begin();
     memset(&full, 0, sizeof(full));
     framegen_set_output(OUTPUT_HALF_SBS);
-    CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 0);
-    CHECK_EQ_INT(f_attached, 0);
-    CHECK(strstr(ft_log, "fullsbs: not hooked: the output is half SBS") != NULL);
+    CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 1);
+    CHECK(strstr(ft_log, "fullsbs: camera build hooked; side by side is half SBS until Mod Settings' Output changes") != NULL);
+    CHECK(!framegen_full_sbs(3840, 1080));
+    fs_begin();
+    memset(&full, 0, sizeof(full));
     framegen_set_output(OUTPUT_MONITOR);
     CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 0);
+    CHECK_EQ_INT(f_attached, 0);
     CHECK(strstr(ft_log, "fullsbs: not hooked: the output is a 3D monitor's own") != NULL);
+    framegen_set_output(OUTPUT_SBS);
 }
 
 TEST(full_sbs_window_needs_the_output_sbsdebug_and_the_width)

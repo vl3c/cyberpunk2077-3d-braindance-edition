@@ -54,6 +54,11 @@ enum { OUTPUT_SBS = 0, OUTPUT_MONITOR = 1, OUTPUT_HALF_SBS = 2, OUTPUT_FULL_SBS 
 // framegen_load.
 void framegen_set_output(int output);
 
+// The output Mod Settings' Output = Auto stands for (the ini's [Display] Output, or the auto-setup's pick): Output
+// switches between Half SBS, Full SBS and Auto live, when Mod Settings saves it (except to or from a 3D monitor's own
+// output, which the game decides at start). Call before stereo_settings_load.
+void framegen_set_output_auto(int output);
+
 // Whether 3D Mode draws side by side: [Odyssey3D] SBSDebug is on, or the var wasn't found (as before this check).
 int framegen_side_by_side(void);
 
