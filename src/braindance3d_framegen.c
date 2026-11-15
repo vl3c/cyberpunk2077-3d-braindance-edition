@@ -1205,6 +1205,31 @@ static void log_centre_camera(const uint8_t *camera)
                fov, t, aspect, t * aspect);
 }
 
+// TEST ONLY (full SBS test 3, never released): Ctrl+F9 cycles how the cameras are built, to find which one makes the
+// lighting flip. 0 the game's (half SBS shapes), 1 eye cameras only, 2 centre and eyes with the aspect put back after
+// the build (test 2), 3 centre and eyes with the aspect kept halved for the frame (the game makes the cameras again
+// each frame). The picture shows FIX 0..3 for two seconds; the log says which.
+static volatile LONG fullVariant = 2, fullKeyTick, fullKeyDown;
+static void full_variant_key(void)
+{
+    LONG now = (LONG)GetTickCount(), last = fullKeyTick;
+    if ((DWORD)(now - last) < 30 || InterlockedCompareExchange(&fullKeyTick, now, last) != last) return;
+    DWORD err = GetLastError();
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    LONG down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_F9) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
+    if (InterlockedExchange(&fullKeyDown, down) != down && down) {
+        LONG v = (fullVariant + 1) % 4;
+        fullVariant = v;
+        static const char *const what[4] = { "the game's cameras (half SBS shapes)", "eye cameras only",
+                                             "centre and eyes, aspect put back after the build",
+                                             "centre and eyes, aspect kept halved for the frame" };
+        plugin_log(1, "fullsbs: TEST Ctrl+F9: variant %ld: %s", (long)v, what[v]);
+        menus_notice(2 + (int)v);
+    }
+    SetLastError(err);
+}
+
 // Builds a camera of the 3D frame in a full SBS window for one eye's picture: the centre camera with eyes, or one of
 // its eye cameras, with half the window's aspect (the field of view is vertical, so the vertical view stays the
 // window's). The centre gets it too because the game's shared screen effects and the world markers work from the
@@ -1216,6 +1241,8 @@ HOOK int64_t hook_camera_build(uint8_t *camera)
 {
     float *aspect = NULL, window = 0.0f;
     int kind = -1; // 0 centre, 1 eye
+    full_variant_key();
+    LONG variant = fullVariant;
     if (camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES)) {
         log_centre_camera(camera);
         kind = 0;
@@ -1223,19 +1250,29 @@ HOOK int64_t hook_camera_build(uint8_t *camera)
                (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2)) {
         kind = 1;
     }
+    if (variant == 0 || (variant == 1 && kind == 0)) kind = -1;
     if (kind >= 0) {
         float a = *(float *)(camera + CAMERA_ASPECT);
-        if (full_sbs_window(a, 1.0f)) {
+        const int32_t *size = (const int32_t *)(camera + 0x378); // the view's size, for the jitter
+        // Variant 3 keeps the halved aspect: halve only an aspect that is still the view's (not halved yet).
+        int fresh = variant != 3 || size[1] <= 0 || fabsf(a - (float)size[0] / (float)size[1]) < 0.02f * a;
+        if (full_sbs_window(a, 1.0f) && fresh) {
             aspect = (float *)(camera + CAMERA_ASPECT);
             window = a;
             *aspect = 0.5f * a;
+        } else if (!fresh) {
+            // already halved this frame
         } else if (!full.leftLogged && !InterlockedExchange(&full.leftLogged, 1)) {
             plugin_log(1, "fullsbs: %s camera kept the window's aspect %.4f: half SBS", kind ? "an eye" : "a centre", a);
         }
+        static volatile LONG sizeLogged;
+        if (!sizeLogged && !InterlockedExchange(&sizeLogged, 1))
+            plugin_log(1, "fullsbs: TEST a %s camera's view size %dx%d, aspect %.4f", kind ? "eye" : "centre",
+                       (int)size[0], (int)size[1], a);
     }
     int64_t r = full.buildOrig(camera);
     if (aspect) {
-        *aspect = window;
+        if (variant != 3) *aspect = window;
         if (!full.builtLogged[kind] && !InterlockedExchange(&full.builtLogged[kind], 1))
             plugin_log(1, "fullsbs: first %s camera built for one eye of the window (aspect %.4f -> %.4f, field of view "
                           "%.2f kept)",
