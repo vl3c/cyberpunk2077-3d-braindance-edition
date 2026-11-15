@@ -3323,15 +3323,18 @@ TEST(full_sbs_thunk_has_unwind_info)
 // ink's layer tick (start only) and its classes: a fake GetNativeType in slot 0 of each fake vtable, returning a fake
 // class (name and parent at the game's offsets).
 static uint8_t f_tickCode[LAYER_TICK_SIZE];
-static _Alignas(16) uint8_t f_clsLayer[0x40], f_clsLoading[0x40], f_clsHud[0x40], f_clsOdd[0x40];
+static _Alignas(16) uint8_t f_clsLayer[0x40], f_clsLoading[0x40], f_clsHud[0x40], f_clsOdd[0x40], f_clsMenu[0x40];
+static const uint8_t *fake_native_menu(const void *o) { (void)o; return f_clsMenu; }
+static void *f_vtMenu[4] = { (void *)fake_native_menu };
+static _Alignas(16) uint8_t f_layerMenu[0x200];
 static const uint8_t *fake_native_loading(const void *o) { (void)o; return f_clsLoading; }
 static const uint8_t *fake_native_hud(const void *o) { (void)o; return f_clsHud; }
 static const uint8_t *fake_native_odd(const void *o) { (void)o; return f_clsOdd; }
-static void *f_vtLoading[4] = { (void *)fake_native_loading }, *f_vtHud[4] = { (void *)fake_native_hud },
+static void *f_vtLoading[4] = { (void *)fake_native_loading }, *f_vtHud[40] = { (void *)fake_native_hud },
             *f_vtOdd[4] = { (void *)fake_native_odd };
 static _Alignas(16) uint8_t f_layerLoading[0x200], f_layerHud[0x200], f_layerOdd[0x200];
 static int f_ticks;
-static int64_t fake_tick(uint8_t *layer, const void *tick, void *jobs) { (void)layer; (void)tick; (void)jobs; f_ticks++; return 7; }
+static int64_t fake_tick(uint8_t *layer, const LayerTick *tick, void *jobs) { (void)layer; (void)tick; (void)jobs; f_ticks++; return 7; }
 
 static void set_class(uint8_t *cls, const char *name, const uint8_t *parent)
 {
@@ -3356,6 +3359,8 @@ static void ld_begin(void)
     set_class(f_clsLoading, "inkLoadingLayer", f_clsLayer);
     set_class(f_clsHud, "inkHUDLayer", f_clsLayer);
     set_class(f_clsOdd, "somethingElse", NULL);
+    set_class(f_clsMenu, "inkMenuLayer", f_clsLayer);
+    *(void ***)f_layerMenu = f_vtMenu;
     *(void ***)f_layerLoading = f_vtLoading;
     *(void ***)f_layerHud = f_vtHud;
     *(void ***)f_layerOdd = f_vtOdd;
@@ -3402,18 +3407,25 @@ TEST(the_layer_tick_finds_the_loading_layer_by_its_class)
 {
     ld_begin();
     CHECK_EQ_INT(layer_kind(f_layerLoading), LAYER_LOADING);
-    CHECK_EQ_INT(layer_kind(f_layerHud), LAYER_OTHER);
+    CHECK_EQ_INT(layer_kind(f_layerMenu), LAYER_OTHER);
+    CHECK_EQ_INT(layer_kind(f_layerHud), LAYER_PER_EYE);
     CHECK_EQ_INT(layer_kind(f_layerOdd), LAYER_UNKNOWN);
     CHECK(strstr(ft_log, "loading: found the loading layer") != NULL);
+    CHECK(strstr(ft_log, "hud: found a layer drawn once per eye") != NULL);
     CHECK(strstr(ft_log, "doesn't read as one of ink's") != NULL);
-    CHECK_EQ_INT(loading.count, 3);
+    CHECK_EQ_INT(loading.count, 4);
     CHECK_EQ_INT(layer_kind(f_layerLoading), LAYER_LOADING); // remembered, not asked again
-    CHECK_EQ_INT(loading.count, 3);
+    CHECK_EQ_INT(loading.count, 4);
     // A layer class two steps under inkLayer counts as ink's too, but isn't the loading layer.
-    set_class(f_clsHud, "inkHUDLayer", f_clsLoading);
+    set_class(f_clsMenu, "inkMenuLayer", f_clsLoading);
     memset(&loading, 0, sizeof(loading));
     InitializeSRWLock(&loading.lock);
-    CHECK_EQ_INT(layer_kind(f_layerHud), LAYER_OTHER);
+    CHECK_EQ_INT(layer_kind(f_layerMenu), LAYER_OTHER);
+    // Only the class itself makes a layer per eye or the loading layer, not a parent.
+    set_class(f_clsMenu, "inkMenuLayer", f_clsHud);
+    memset(&loading, 0, sizeof(loading));
+    InitializeSRWLock(&loading.lock);
+    CHECK_EQ_INT(layer_kind(f_layerMenu), LAYER_OTHER);
 }
 
 TEST(a_loading_screen_up_in_a_wide_window_is_drawn_flat)
@@ -3451,6 +3463,7 @@ TEST(other_layers_and_other_windows_keep_the_games_3d)
 {
     ld_begin();
     tick_layer(f_layerHud, 1);
+    tick_layer(f_layerMenu, 1);
     tick_layer(f_layerOdd, 1);
     CHECK_EQ_INT(framegen_loading_flat(), 0);
     tick_layer(f_layerLoading, 1);
@@ -3472,6 +3485,405 @@ TEST(loading_thunk_has_unwind_info)
 {
     DWORD64 base = 0;
     CHECK(RtlLookupFunctionEntry((DWORD64)(uintptr_t)(void *)bd3d_thunk_layer_tick, &base, NULL) != NULL);
+}
+
+
+// ===================================================================================== the HUD in a full SBS window
+
+static uint8_t f_resizeCode[LAYER_RESIZE_SIZE], f_targetCode[LAYER_TARGET_SIZE], f_uploadCode[CB_UPLOAD_SIZE];
+static uint8_t f_constsCode[CAMERA_CONSTS_SIZE], f_sysProjCode[SYSTEM_PROJECT_SIZE];
+static uint8_t f_viewProj[2][UI_VIEW_PROJECT_SIZE], f_viewUnproj[UI_VIEW_UNPROJECT_SIZE];
+static void *f_viewVt[UI_VIEW_SLOTS], *f_sysVt[SYSTEM_SLOT_PROJECT + 1];
+static _Alignas(16) uint8_t f_system[0x300];      // a camera system: its vtable, its camera at +0x60
+static void *f_gameView[2] = { f_viewVt, f_system }; // the UI view a tick comes with
+static _Alignas(16) uint8_t f_stereoSetting[0x80];  // the 3D Mode setting
+static int f_resizes, f_targets, f_uploads;
+static int32_t f_lastWidth;
+static void *f_lastTarget;
+static float f_uploaded[INK_CAMERA_BYTES / 4];
+static const LayerTick *f_lastTick;
+static LayerTick f_tickSeen;
+
+static uint8_t *fake_stereo_var(uint64_t group, uint64_t name)
+{
+    return group == cname("/video/display") && name == cname("Odyssey3D_StereoEnabled") ? f_stereoSetting : NULL;
+}
+static int64_t fake_resize_orig(uint8_t *layer, int32_t w, int32_t h)
+{
+    f_resizes++;
+    f_lastWidth = w;
+    ((float *)(layer + LAYER_SIZE))[0] = (float)w;
+    ((float *)(layer + LAYER_SIZE))[1] = (float)h;
+    return 3;
+}
+static int64_t fake_target_orig(uint8_t *layer, int32_t w, int32_t h, void *target)
+{
+    f_targets++;
+    f_lastWidth = w;
+    f_lastTarget = target;
+    *(void **)(layer + LAYER_TARGET) = target;
+    ((float *)(layer + LAYER_SIZE))[0] = (float)w;
+    ((float *)(layer + LAYER_SIZE))[1] = (float)h;
+    return 4;
+}
+// The layer's own slots, as the game's are: the hooked functions.
+static int64_t slot_resize(uint8_t *layer, int32_t w, int32_t h) { return hook_layer_resize(layer, w, h); }
+static int64_t slot_target(uint8_t *layer, int32_t w, int32_t h, void *t) { return hook_layer_target(layer, w, h, t); }
+static void fake_upload(uint32_t slot, uint32_t size, const void *data)
+{
+    (void)slot;
+    f_uploads++;
+    memcpy(f_uploaded, data, size < sizeof(f_uploaded) ? size : sizeof(f_uploaded));
+}
+static int64_t fake_tick_seen(uint8_t *layer, const LayerTick *tick, void *jobs)
+{
+    (void)layer; (void)jobs;
+    f_ticks++;
+    f_lastTick = tick;
+    if (tick) f_tickSeen = *tick;
+    return 7;
+}
+static float *fake_project(void *view, float *ndc, const float *world) { (void)view; ndc[0] = world[0]; ndc[1] = world[1]; return ndc; }
+static void *fake_unproject(void *view, void *world, const float *ndc) { (void)view; memcpy(world, ndc, 8); return world; }
+
+static uintptr_t hud_resolve(uint32_t hash)
+{
+    switch (hash) {
+    case HASH_LAYER_RESIZE: return (uintptr_t)f_resizeCode;
+    case HASH_LAYER_TARGET: return (uintptr_t)f_targetCode;
+    case HASH_CB_UPLOAD: return (uintptr_t)f_uploadCode;
+    case HASH_CAMERA_CONSTS: return (uintptr_t)f_constsCode;
+    case HASH_SYSTEM_PROJECT: return (uintptr_t)f_sysProjCode;
+    case HASH_UI_VIEW_VTABLE: return (uintptr_t)f_viewVt;
+    case HASH_CAMERA_SYSTEM_VTABLE: return (uintptr_t)f_sysVt;
+    }
+    return loading_resolve(hash);
+}
+
+// The game camera that places markers: vertical field of view 60 degrees, this aspect.
+static void set_marker_camera(float aspect)
+{
+    float p11 = 1.0f / tanf(30.0f * 3.14159265f / 180.0f);
+    *(float *)(f_system + SYSTEM_CAMERA + CAMERA_P11) = p11;
+    *(float *)(f_system + SYSTEM_CAMERA + CAMERA_P00) = p11 / aspect;
+}
+
+static void fake_hud_game(void)
+{
+    memset(f_resizeCode, 0xCC, sizeof(f_resizeCode));
+    memset(f_targetCode, 0xCC, sizeof(f_targetCode));
+    memset(f_uploadCode, 0xCC, sizeof(f_uploadCode));
+    memset(f_constsCode, 0xCC, sizeof(f_constsCode));
+    memset(f_sysProjCode, 0xCC, sizeof(f_sysProjCode));
+    put(f_resizeCode, AOB_LAYER_RESIZE);
+    put(f_resizeCode + 0x5D, AOB_LAYER_RESIZE_SAME);
+    put(f_targetCode, AOB_LAYER_TARGET);
+    put(f_targetCode + 0x33, AOB_LAYER_TARGET_SIZE);
+    put(f_uploadCode, AOB_CB_UPLOAD);
+    put(f_constsCode + 0xB7C, AOB_CONSTS_CANVAS);
+    put_rel32(put(f_constsCode + 0xBA9, AOB_CONSTS_UPLOAD) + 4, f_uploadCode);
+    put(f_sysProjCode, AOB_SYSTEM_PROJECT);
+    for (int i = 0; i < 2; i++) {
+        memset(f_viewProj[i], 0xCC, sizeof(f_viewProj[i]));
+        put(f_viewProj[i], AOB_UI_VIEW_PROJECT);
+    }
+    memset(f_viewUnproj, 0xCC, sizeof(f_viewUnproj));
+    put(f_viewUnproj, AOB_UI_VIEW_UNPROJECT);
+    for (int i = 0; i < UI_VIEW_SLOTS; i++) f_viewVt[i] = f_viewUnproj;
+    f_viewVt[UI_VIEW_PROJECT] = f_viewProj[0];
+    f_viewVt[UI_VIEW_PROJECT_OTHER] = f_viewProj[1];
+    f_viewVt[UI_VIEW_UNPROJECT] = f_viewUnproj;
+    for (int i = 0; i <= SYSTEM_SLOT_PROJECT; i++) f_sysVt[i] = f_sysProjCode;
+    memset(f_system, 0, sizeof(f_system));
+    *(void **)f_system = f_sysVt;
+    set_marker_camera(32.0f / 9.0f);
+}
+
+// A full SBS session (Output Auto) in a 5120x1440 window with 3D Mode on and the HUD group checked; the originals are
+// the fakes above. The HUD layer is laid out over the whole window, with a target.
+static void hd_begin(void)
+{
+    ld_begin();
+    memset(&hud, 0, sizeof(hud));
+    InitializeSRWLock(&hud.viewsLock);
+    fake_hud_game();
+    framegen_set_output(OUTPUT_SBS);
+    fg.boolVar = fake_stereo_var;
+    memset(f_stereoSetting, 0, sizeof(f_stereoSetting));
+    f_stereoSetting[BOOL_SETTING_VALUE] = 1;
+    uint8_t *t[3];
+    CHECK_EQ_INT(check_hud(hud_resolve, t), 1);
+    CHECK_EQ_PTR(t[0], f_resizeCode);
+    CHECK_EQ_PTR(t[1], f_targetCode);
+    CHECK_EQ_PTR(t[2], f_uploadCode);
+    hud.resizeOrig = fake_resize_orig;
+    hud.targetOrig = fake_target_orig;
+    hud.uploadOrig = fake_upload;
+    hud.project = hud.projectOther = fake_project;
+    hud.unproject = fake_unproject;
+    loading.tickOrig = fake_tick_seen;
+    f_vtHud[LAYER_SLOT_RESIZE] = (void *)slot_resize;
+    f_vtHud[LAYER_SLOT_TARGET] = (void *)slot_target;
+    memset(f_layerHud + 8, 0, sizeof(f_layerHud) - 8);
+    ((float *)(f_layerHud + LAYER_SIZE))[0] = 5120.0f;
+    ((float *)(f_layerHud + LAYER_SIZE))[1] = 1440.0f;
+    *(void **)(f_layerHud + LAYER_TARGET) = f_stereoSetting; // any pointer: the layer's target
+    f_resizes = f_targets = f_uploads = 0;
+    f_lastTick = NULL;
+}
+
+static LayerTick tick_of(float w, float h) { LayerTick t = { (void *)1, f_gameView, { w, h }, 0, { 0 } }; return t; }
+
+TEST(check_hud_finds_its_functions_or_says_why_not)
+{
+    hd_begin();
+    CHECK_EQ_PTR(hud.gameViewVtable, f_viewVt);
+    CHECK_EQ_PTR(hud.viewVtable[UI_VIEW_PROJECT], (void *)ui_view_project);
+    CHECK_EQ_PTR(hud.viewVtable[UI_VIEW_UNPROJECT], (void *)ui_view_unproject);
+    CHECK_EQ_PTR(hud.viewVtable[0], f_viewVt[0]); // the rest is the game's
+    uint8_t *t[3];
+    f_constsCode[0xBA9 + aob_len(AOB_CONSTS_UPLOAD)] ^= 1; // the block goes somewhere else
+    CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
+    CHECK(strstr(ft_log, "hud: the camera constants: the camera block isn't uploaded where expected (game update?): "
+                         "not hooked") != NULL);
+    hd_begin();
+    f_sysVt[SYSTEM_SLOT_PROJECT] = f_resizeCode;
+    CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
+    CHECK(strstr(ft_log, "hud: the UI view or camera system vtable doesn't look right") != NULL);
+    hd_begin();
+    f_viewProj[1][2] = 0x90;
+    CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
+    CHECK(strstr(ft_log, "hud: the UI view's projections don't match") != NULL);
+    hd_begin();
+    loading.tickOrig = NULL;
+    CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
+    CHECK(strstr(ft_log, "hud: the layer tick isn't hooked") != NULL);
+}
+
+TEST(the_hud_is_hooked_whole_or_not_at_all)
+{
+    hd_begin();
+    full.buildOrig = NULL; // full SBS isn't hooked
+    CHECK_EQ_INT(attach_hud(NULL, &f_hooking, hud_resolve), 0);
+    CHECK_EQ_INT(f_attached, 0);
+    hd_begin();
+    full.buildOrig = (CameraBuildFn)(void *)fake_tick; // any
+    f_attached = f_detached = 0;
+    f_attachFails = 3;
+    CHECK_EQ_INT(attach_hud(NULL, &f_hooking, hud_resolve), 0);
+    CHECK_EQ_INT(f_detached, 2);
+    CHECK(hud.resizeOrig == NULL && hud.targetOrig == NULL && hud.uploadOrig == NULL);
+    f_attachFails = 0;
+    hd_begin();
+    full.buildOrig = (CameraBuildFn)(void *)fake_tick;
+    f_attached = 0;
+    CHECK_EQ_INT(attach_hud(NULL, &f_hooking, hud_resolve), 1);
+    CHECK_EQ_INT(f_attached, 3);
+    CHECK(strstr(ft_log, "hud: layer resize, layer target and constant upload hooked") != NULL);
+}
+
+TEST(the_hud_is_laid_out_one_eye_wide_in_full_sbs_with_3d_mode_on)
+{
+    hd_begin();
+    CHECK_EQ_INT((int)hook_layer_target(f_layerHud, 5120, 1440, f_stereoSetting), 4);
+    CHECK_EQ_INT(f_lastWidth, 2560);
+    CHECK_EQ_INT((int)hud.oneEye, 1);
+    CHECK(strstr(ft_log, "drawn into its target at 2560x1440, one eye of the 5120x1440 window") != NULL);
+    CHECK_EQ_INT((int)hook_layer_resize(f_layerHud, 3840, 1080), 3);
+    CHECK_EQ_INT(f_lastWidth, 1920);
+    hook_layer_resize(f_layerMenu, 5120, 1440); // not drawn per eye
+    CHECK_EQ_INT(f_lastWidth, 5120);
+}
+
+TEST(the_hud_keeps_the_windows_layout_in_half_sbs_or_2d)
+{
+    hd_begin();
+    hook_layer_resize(f_layerHud, 3840, 2160); // 16:9: half SBS
+    CHECK_EQ_INT(f_lastWidth, 3840);
+    CHECK(strstr(ft_log, "laid out at 3840x2160 (the window's: not full SBS)") != NULL);
+    f_stereoSetting[BOOL_SETTING_VALUE] = 0; // 3D Mode off: 2D in a wide window
+    hook_layer_resize(f_layerHud, 5120, 1440);
+    CHECK_EQ_INT(f_lastWidth, 5120);
+    CHECK_EQ_INT((int)hud.oneEye, 0);
+    CHECK(strstr(ft_log, "(the window's: 3D Mode is off)") != NULL);
+    f_stereoSetting[BOOL_SETTING_VALUE] = 1;
+    framegen_set_output(OUTPUT_HALF_SBS);
+    hook_layer_resize(f_layerHud, 5120, 1440);
+    CHECK_EQ_INT(f_lastWidth, 5120);
+    framegen_set_output(OUTPUT_SBS);
+    fg.boolVar = NULL; // the setting can't be found: never one eye wide
+    hud.stereoVar = NULL;
+    hud.stereoSearched = 0;
+    hook_layer_resize(f_layerHud, 5120, 1440);
+    CHECK_EQ_INT(f_lastWidth, 5120);
+    CHECK(strstr(ft_log, "hud: couldn't find the 3D Mode setting") != NULL);
+}
+
+TEST(a_hud_tick_lays_the_layer_out_again_when_that_should_change)
+{
+    hd_begin();
+    LayerTick t = tick_of(5120.0f, 1440.0f);
+    CHECK_EQ_INT((int)hook_layer_tick(f_layerHud, &t, NULL), 7); // laid out over the window: one eye now
+    CHECK_EQ_INT(f_resizes, 1);
+    CHECK_EQ_INT(f_targets, 1);
+    CHECK_EQ_PTR(f_lastTarget, f_stereoSetting); // its own target
+    CHECK_NEAR(((float *)(f_layerHud + LAYER_SIZE))[0], 2560.0f, 0);
+    CHECK(strstr(ft_log, "hud: per-eye layer") != NULL && strstr(ft_log, "is 5120 wide, should be 2560") != NULL);
+    hook_layer_tick(f_layerHud, &t, NULL); // nothing to do
+    CHECK_EQ_INT(f_resizes, 1);
+    framegen_set_output(OUTPUT_HALF_SBS); // Output switched live
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK_EQ_INT(f_resizes, 2);
+    CHECK_NEAR(((float *)(f_layerHud + LAYER_SIZE))[0], 5120.0f, 0);
+    *(void **)(f_layerHud + LAYER_TARGET) = NULL; // a layer without a target of its own: only the resize
+    framegen_set_output(OUTPUT_SBS);
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK_EQ_INT(f_resizes, 3);
+    CHECK_EQ_INT(f_targets, 2);
+    ((float *)(f_layerHud + LAYER_SIZE))[0] = 1000.0f; // sized for something else: left alone
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK_EQ_INT(f_resizes, 3);
+}
+
+TEST(a_layout_that_doesnt_take_isnt_tried_every_frame)
+{
+    hd_begin();
+    hud.resizeOrig = (LayerResizeFn)(void *)fake_tick; // returns 7 and changes nothing
+    hud.targetOrig = NULL;
+    *(void **)(f_layerHud + LAYER_TARGET) = NULL;
+    LayerTick t = tick_of(5120.0f, 1440.0f);
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(strstr(ft_log, "hud: it stayed 5120 wide: not tried again") != NULL);
+    int before = f_ticks;
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_ticks == before + 1);
+    CHECK(strstr(strstr(ft_log, "it stayed") + 1, "it stayed") == NULL); // not tried again yet
+}
+
+TEST(a_one_eye_hud_is_ticked_with_its_own_size_and_a_narrowed_view)
+{
+    hd_begin();
+    LayerTick t = tick_of(5120.0f, 1440.0f);
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_lastTick != &t);
+    CHECK_NEAR(f_tickSeen.size[0], 2560.0f, 0);
+    CHECK_NEAR(f_tickSeen.size[1], 1440.0f, 0);
+    CHECK(f_tickSeen.time == t.time);
+    // The marker camera is the window's shape (32:9): a view of ours, narrowed 2x.
+    UiView *v = (UiView *)f_tickSeen.view;
+    CHECK(v != (UiView *)f_gameView);
+    CHECK_EQ_PTR(v->vtable, (void *const *)hud.viewVtable);
+    CHECK_EQ_PTR(v->cameraSystem, f_system);
+    CHECK_NEAR(v->narrow, 2.0f, 1e-4);
+    CHECK(strstr(ft_log, "hud: the camera that places markers has aspect 3.5556, the one-eye layer 1.7778: markers placed "
+                         "through our narrowed view") != NULL);
+    float world[3] = { 0.25f, -0.5f, 3.0f }, ndc[2];
+    CHECK(ui_view_project(v, ndc, world) == ndc);
+    CHECK_NEAR(ndc[0], 0.5f, 1e-6);
+    CHECK_NEAR(ndc[1], -0.5f, 1e-6);
+    ui_view_project_other(v, ndc, world);
+    CHECK_NEAR(ndc[0], 0.5f, 1e-6);
+    float back[2];
+    ui_view_unproject(v, back, ndc);
+    CHECK_NEAR(back[0], 0.25f, 1e-6);
+    // The same view again next tick; with a 16:9 marker camera, the game's own.
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_tickSeen.view == v);
+    set_marker_camera(16.0f / 9.0f);
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_tickSeen.view == (void *)f_gameView);
+    CHECK(strstr(ft_log, "markers placed as the game does") != NULL);
+    // A view that isn't the game's UI view is passed on as it is.
+    set_marker_camera(32.0f / 9.0f);
+    void *odd[2] = { f_sysVt, f_system };
+    t.view = odd;
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_tickSeen.view == (void *)odd);
+    CHECK(strstr(ft_log, "isn't the game's UI view") != NULL);
+}
+
+TEST(a_hud_laid_out_over_the_window_is_ticked_as_the_game_has_it)
+{
+    hd_begin();
+    f_stereoSetting[BOOL_SETTING_VALUE] = 0; // 2D: stays over the window
+    LayerTick t = tick_of(5120.0f, 1440.0f);
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_lastTick == &t);
+    CHECK_EQ_INT(f_resizes, 0);
+    hud.resizeOrig = NULL; // not hooked: the tick doesn't look at it
+    f_stereoSetting[BOOL_SETTING_VALUE] = 1;
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_lastTick == &t);
+}
+
+// A camera block as the camera constants builder uploads it: ink's canvas matrix in floats 0, 32, 48, 64 and 112.
+static float f_block[INK_CAMERA_BYTES / 4];
+static const float *ink_block(float w, float h, int eye)
+{
+    memset(f_block, 0, sizeof(f_block));
+    const float m[16] = { 2.0f / w, 0, 0, -1, 0, -2.0f / h, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1 };
+    const int at[5] = { 0, 32, 48, 64, 112 };
+    for (int i = 0; i < 5; i++) memcpy(f_block + at[i], m, sizeof(m));
+    f_block[16] = 0.5f; // something else
+    f_block[INK_CAMERA_CANVAS] = w;
+    f_block[INK_CAMERA_CANVAS + 1] = h;
+    *(int32_t *)((uint8_t *)f_block + INK_CAMERA_EYE) = eye;
+    return f_block;
+}
+
+TEST(an_eye_canvas_camera_maps_half_the_canvas_to_the_eye)
+{
+    hd_begin();
+    hud.oneEye = 1;
+    hook_cb_upload(5, INK_CAMERA_BYTES, ink_block(5120.0f, 1440.0f, 2));
+    CHECK_EQ_INT(f_uploads, 1);
+    const int at[5] = { 0, 32, 48, 64, 112 };
+    for (int i = 0; i < 5; i++) {
+        const float *m = f_uploaded + at[i];
+        CHECK_NEAR(m[0] * 0.0f + m[3], -1.0f, 1e-6);    // x 0: the eye's left edge
+        CHECK_NEAR(m[0] * 2560.0f + m[3], 1.0f, 1e-5);  // x 2560 (one eye): its right edge
+        CHECK_NEAR(m[5], -2.0f / 1440.0f, 1e-9);        // y as it was
+        CHECK_NEAR(m[7], 1.0f, 0);
+    }
+    CHECK_NEAR(f_uploaded[16], 0.5f, 0);
+    CHECK_NEAR(f_uploaded[INK_CAMERA_CANVAS], 5120.0f, 0);
+    CHECK_NEAR(f_block[0], 2.0f / 5120.0f, 0); // the game's block itself isn't changed
+    CHECK(strstr(ft_log, "hud: first eye canvas camera widened (right eye, canvas 5120x1440, 5 copies of its matrix)") != NULL);
+}
+
+TEST(other_constant_blocks_go_up_as_they_are)
+{
+    hd_begin();
+    hud.oneEye = 1;
+    const float *b = ink_block(5120.0f, 1440.0f, 0); // a flat frame (a menu): the centre draws it
+    hook_cb_upload(5, INK_CAMERA_BYTES, b);
+    CHECK_NEAR(f_uploaded[0], 2.0f / 5120.0f, 0);
+    b = ink_block(3840.0f, 2160.0f, 1); // half SBS
+    hook_cb_upload(5, INK_CAMERA_BYTES, b);
+    CHECK_NEAR(f_uploaded[0], 2.0f / 3840.0f, 0);
+    b = ink_block(512.0f, 512.0f, 1); // a HUD slot's own small canvas
+    hook_cb_upload(5, INK_CAMERA_BYTES, b);
+    CHECK_NEAR(f_uploaded[0], 2.0f / 512.0f, 0);
+    b = ink_block(5120.0f, 1440.0f, 1);
+    f_block[1] = 0.1f; // not the flat canvas matrix (a world camera)
+    hook_cb_upload(5, INK_CAMERA_BYTES, b);
+    CHECK_NEAR(f_uploaded[0], 2.0f / 5120.0f, 0);
+    b = ink_block(5120.0f, 1440.0f, 1);
+    hook_cb_upload(5, 0x100, b); // another size
+    CHECK_NEAR(f_uploaded[0], 2.0f / 5120.0f, 0);
+    hud.oneEye = 0; // the HUD is laid out over the window
+    hook_cb_upload(5, INK_CAMERA_BYTES, b);
+    CHECK_NEAR(f_uploaded[0], 2.0f / 5120.0f, 0);
+    CHECK_EQ_INT(f_uploads, 6);
+    CHECK(strstr(ft_log, "canvas camera widened") == NULL);
+}
+
+TEST(hud_thunks_have_unwind_info)
+{
+    DWORD64 base = 0;
+    CHECK(RtlLookupFunctionEntry((DWORD64)(uintptr_t)(void *)bd3d_thunk_layer_resize, &base, NULL) != NULL);
+    CHECK(RtlLookupFunctionEntry((DWORD64)(uintptr_t)(void *)bd3d_thunk_layer_target, &base, NULL) != NULL);
+    CHECK(RtlLookupFunctionEntry((DWORD64)(uintptr_t)(void *)bd3d_thunk_cb_upload, &base, NULL) != NULL);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }
