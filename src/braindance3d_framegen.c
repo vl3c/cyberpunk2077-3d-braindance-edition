@@ -86,24 +86,18 @@
 // for two seconds (menus_notice).
 //
 // Full side by side (Output = Full SBS, or Auto in a window from 3:1), for XR glasses whose 3D mode takes a window two
-// eyes wide (3840x1080: 1920x1080 per eye). The game gives each eye half the window but builds it with the whole
-// window's aspect and lays the HUD out over the whole window, then squeezes both into each half: right for half SBS,
-// where the viewer stretches each half back out, squashed for full SBS. Four detours and a view of our own fix it, the
-// way the Cyberpunk VR port does for its two-eyes-wide window (it found every address used here) (dariulone/cyberpunk-vr-port, MIT,
-// src/Stereo/EngineStereo.cpp: per-eye windows and UiOneEye), all in a group of their own (check_full_sbs):
-//   - the camera build: an eye camera is built with half the window's aspect and the horizontal field of view of the
-//     window's middle half (then both are put back, so whatever reads the descriptor later sees the game's values), so
-//     each eye is a whole picture with the window's vertical view: 16:9 in a 32:9 window;
-//   - ink's layer resize and layer target: the HUD layer and the game notifications layer (the two that each eye's UI
-//     pass draws into its own half) are laid out one eye wide, so they are drawn 1:1 into each half. Menus, loading
-//     screens and the rest are drawn once over the whole window and keep its size (the menu squeeze shows their middle);
-//   - ink's layer tick: a one-eye layer's controllers (world markers, projected widgets) get the layer's own size and a
-//     UI view of ours, a copy of the game's with its world-to-screen and back narrowed by the window over the layer (2),
-//     so a marker lands on its target in the one-eye picture instead of at half its angle.
-// Only while [Odyssey3D] SBSDebug is on and the window (the camera's aspect, the layer's size) is at least the full SBS
-// aspect wide, so a window that isn't (glasses switched to 2D) keeps half SBS; the layers also only with 3D Mode on, so
-// 2D in a wide window keeps the game's HUD (the camera needs no such check: eye cameras exist only in 3D). Attached only when the output can be full
-// SBS (not with Half SBS or a 3D monitor's output).
+// eyes wide (3840x1080: 1920x1080 per eye). The game gives each eye half the window but builds its cameras with the
+// whole window's aspect, then squeezes the picture into each half: right for half SBS, where the viewer stretches each
+// half back out, squashed for full SBS. One detour fixes the world: the camera build builds every camera of the 3D
+// frame (the centre one with eyes and its two eye cameras) with half the window's aspect, then puts the aspect back so
+// whatever reads the descriptor later sees the game's value. The camera's field of view is vertical, so each eye is a
+// 16:9 picture with the window's vertical view, and the centre camera, which the game's shared screen effects (AO,
+// reflections, shadows, fog, the denoisers) and the world markers work from, has the same shape as the eyes: the frame
+// is laid out exactly as half SBS on a 16:9 screen, with twice the pixels across. Found with the Cyberpunk VR port
+// (dariulone/cyberpunk-vr-port, MIT, src/Stereo/EngineStereo.cpp). Only while [Odyssey3D] SBSDebug is on and the
+// camera's aspect is at least the full SBS aspect, so a window that isn't (glasses switched to 2D) keeps half SBS.
+// Attached only when the output can be full SBS (not with Half SBS or a 3D monitor's output). The HUD is still laid
+// out over the whole window and comes out squashed in each eye.
 //
 // License: MIT (see LICENSE).
 
@@ -262,33 +256,11 @@ static const char AOB_WEAPON_SEP[] =
 // Full SBS. The camera build: (camera descriptor), builds its matrices from its field of view (+0x20) and aspect.
 #define HASH_CAMERA_BUILD 1097666260u
 #define CAMERA_BUILD_SIZE 0x62D      // its code (pdata 0x296EA0-0x2974CD)
-#define CAMERA_FOV 0x20              // float: the field of view, degrees (logged)
+#define CAMERA_FOV 0x20              // float: the vertical field of view, degrees (logged)
 #define CAMERA_ASPECT 0x28           // float: width / height, the window's (3.5556 at 3840x1080)
 #define CAMERA_EYE_KIND 0x398        // uint8: 1 left eye, 2 right eye
 #define CAMERA_IS_EYE 0x02           // CAMERA_FLAGS bit 1: an eye camera, built off-axis for its eye
 #define FULL_SBS_MAX_ASPECT 8.0f     // a window wider than this isn't two eyes (or the descriptor isn't what we think)
-// Ink's layers. Every layer class shares these three slots: resize (layer, width, height) when the window changes; target
-// (layer, width, height, render target) for a layer drawn into a target of its own (the HUD, notifications); and the tick
-// (layer, tick, jobs) that hands the layer's controllers the screen they place things in.
-#define HASH_LAYER_RESIZE 376311189u
-#define HASH_LAYER_TARGET 915085273u
-#define HASH_LAYER_TICK 616175466u
-#define HASH_HUD_LAYER_VTABLE 1231619757u           // inkHUDLayer's vtable
-#define HASH_NOTIFICATIONS_LAYER_VTABLE 3848277152u // inkGameNotificationsLayer's (its tick slot calls the shared tick first)
-#define HASH_UI_VIEW_VTABLE 189861301u              // the view a layer tick hands its controllers: {vtable, camera system}
-#define LAYER_RESIZE_SIZE 0x1FF      // pdata 0x132654C-0x132674B
-#define LAYER_TARGET_SIZE 0xA0       // pdata 0x399094-0x399134
-#define LAYER_TICK_SIZE 0xC7         // pdata 0x60787C-0x607943
-#define LAYER_SLOT_RESIZE 30         // vtable slots (+0xF0, +0x108, +0x120)
-#define LAYER_SLOT_TICK 33
-#define LAYER_SLOT_TARGET 36
-#define LAYER_SIZE 0x30              // float width, height: the layer's own size (what resize and target set)
-#define UI_VIEW_SLOTS 17             // the UI view's vtable (the next class's starts right after)
-#define UI_VIEW_PROJECT 13           // (view, float out[2], const float world[3]): world to screen NDC (camera system +0x2D0)
-#define UI_VIEW_UNPROJECT 14         // (view, out world, const float ndc[2]): back (camera system +0x2D8)
-#define UI_VIEW_PROJECT_OTHER 16     // as 13, through camera system +0x2C8
-#define UI_VIEW_PROJECT_SIZE 0x51
-#define UI_VIEW_UNPROJECT_SIZE 0x3B
 // The camera build's start, and its eye branch: test byte [rsi+399h],2; jz; cmp byte [rsi+398h],1.
 static const char AOB_CAMERA_BUILD[] =
     "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 55 41 55 41 56 48 8D A8 58 FF FF FF 48 81 EC 90 01 00 00 "
@@ -296,23 +268,6 @@ static const char AOB_CAMERA_BUILD[] =
 static const char AOB_CAMERA_EYE[] = "F6 86 99 03 00 00 02 0F 84 ?? ?? ?? ?? 80 BE 98 03 00 00 01";
 // In it, the eye's off-axis projection gets the aspect: movss xmm2,[rsi+28h] (then the call).
 static const char AOB_CAMERA_EYE_ASPECT[] = "F3 0F 10 56 28 48 89 44 24 30 F3 0F 11 44 24 28 E8";
-// The layer resize's start (layer in rbx, width in r15d, height in esi), and its "same size" test of +0x30 / +0x34.
-static const char AOB_LAYER_RESIZE[] =
-    "48 8B C4 55 53 56 57 41 54 41 56 41 57 48 8D 68 A1 48 81 EC 90 00 00 00 0F 29 70 B8 33 FF 0F 29 78 A8 48 8B D9";
-static const char AOB_LAYER_RESIZE_SAME[] = "F3 48 0F 2C 43 30 41 3B C7 75 0E F3 48 0F 2C 43 34 3B C6";
-// The layer target's start: it stores the target at +0x38, then the width and height as floats at +0x30 / +0x34.
-static const char AOB_LAYER_TARGET[] =
-    "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 8B C2 0F 57 C9 0F 57 C0 4C 89 49 38 48 8B F9";
-static const char AOB_LAYER_TARGET_SIZE[] = "F3 0F 11 49 30 F3 0F 11 4C 24 30 F3 0F 11 41 34";
-// The layer tick's start: it copies the tick's time (+0), size (+0x10, +0x14), view (+8) and flag (+0x18).
-static const char AOB_LAYER_TICK[] =
-    "40 53 48 83 EC 60 48 8B 02 49 8B D8 F3 0F 10 42 10 F3 0F 10 4A 14 48 89 44 24 38 48 8B 42 08 48 89 44 24 40 "
-    "8A 42 18";
-// The UI view's world to screen (both): the point's z into xmm2, the camera system from [rcx+8]; and back.
-static const char AOB_UI_VIEW_PROJECT[] =
-    "40 53 48 83 EC 40 F3 41 0F 10 50 08 48 8B DA F2 41 0F 10 18 48 8D 54 24 30 48 8B 49 08";
-static const char AOB_UI_VIEW_UNPROJECT[] =
-    "40 53 48 83 EC 20 F3 41 0F 10 00 48 8B DA F3 41 0F 10 48 04 4C 8D 44 24 30 48 8B 49 08";
 
 // Fixed 3D. The camera build reads these two through renderer vtable +0x440 and +0x450
 // (metres; the eye cameras sit half the separation left and right of the centre, and the convergence is the distance
@@ -388,18 +343,6 @@ typedef float (*CameraFloatFn)(void *renderer);
 typedef uint8_t *(*BoolVarFn)(uint64_t group, uint64_t name);
 typedef void (*BoolSetFn)(uint8_t *var, uint8_t value, uint8_t mode);
 typedef void (*ListSetFn)(uint8_t *var, int32_t index, uint8_t mode);
-typedef int64_t (*LayerResizeFn)(uint8_t *layer, int32_t width, int32_t height);
-typedef int64_t (*LayerTargetFn)(uint8_t *layer, int32_t width, int32_t height, void *target);
-typedef struct {
-    void *time;
-    void *view;     // the UI view (a UiView)
-    float size[2];  // the screen the layer's controllers place things in: the render window's
-    uint8_t flag;
-    uint8_t pad[7];
-} LayerTick;
-typedef int64_t (*LayerTickFn)(uint8_t *layer, const LayerTick *tick, void *jobs);
-typedef float *(*ViewProjectFn)(void *view, float *ndc, const float *world);
-typedef void *(*ViewUnprojectFn)(void *view, void *world, const float *ndc);
 
 // Frames whose frame generation feature was put back, for the log.
 typedef struct {
@@ -472,31 +415,10 @@ static struct {
     float fullSbsAspect;       // from this window aspect side by side is full SBS (0: never)
 } output;
 
-// A UI view of ours: the game's two fields, then how much narrower the layer is than the window. Controllers keep the
-// pointer for the tick's jobs, so these live as long as the game.
-typedef struct {
-    void *const *vtable;       // full.viewVtable
-    void *cameraSystem;
-    float narrow;
-} UiView;
-
 // Full SBS (check_full_sbs).
 static struct {
     CameraBuildFn buildOrig;
-    LayerResizeFn resizeOrig;
-    LayerTargetFn targetOrig;
-    LayerTickFn tickOrig;
-    const void *hudVtable, *notificationsVtable; // the two layers drawn per eye
-    const void *gameViewVtable;                  // the game's UI view vtable
-    void *viewVtable[UI_VIEW_SLOTS];             // ours: a copy with the three projections narrowed
-    ViewProjectFn project, projectOther;         // the game's
-    ViewUnprojectFn unproject;
-    UiView views[4];                             // one per camera system (one in practice)
-    volatile LONG nextView;
-    SRWLOCK viewsLock;
-    volatile LONG builtLogged, leftLogged, tickLogged, viewsFullLogged;
-    uint8_t *volatile stereoVar;  // the 3D Mode setting (three_d_mode_on), NULL until found
-    volatile LONG stereoSearched;
+    volatile LONG builtLogged[2], leftLogged;     // centre, eye
     volatile LONG centreKey;   // the centre camera last logged (field of view and aspect, rounded)
     volatile DWORD centreTick;
 } full;
@@ -1268,8 +1190,8 @@ static int full_sbs_window(float width, float height)
     return aspect >= output.fullSbsAspect && aspect <= FULL_SBS_MAX_ASPECT;
 }
 
-// Logs a centre camera's field of view and aspect (with eyes: the frame's main ones) when they change, at most once a
-// second: how the game sets the field of view for a window this wide is what full SBS's eyes depend on.
+// Logs a centre camera's field of view and aspect (with eyes: the frame's main ones) as the game set them, when they
+// change, at most once a second: what the game gives a window this wide, which full SBS builds every eye from.
 static void log_centre_camera(const uint8_t *camera)
 {
     float fov = *(const float *)(camera + CAMERA_FOV), aspect = *(const float *)(camera + CAMERA_ASPECT);
@@ -1279,170 +1201,48 @@ static void log_centre_camera(const uint8_t *camera)
     full.centreKey = key; // from several threads: at worst a line too many, harmless
     full.centreTick = now;
     float t = tanf(fov * 0.00872664626f);
-    plugin_log(1, "fullsbs: centre camera: field of view %.2f (horizontal, tan %.4f), aspect %.4f, vertical tan %.4f", fov,
-               t, aspect, aspect > 0.0f ? t / aspect : 0.0f);
+    plugin_log(1, "fullsbs: centre camera: field of view %.2f (vertical, tan %.4f), aspect %.4f, horizontal tan %.4f",
+               fov, t, aspect, t * aspect);
 }
 
-// The field of view (horizontal, degrees) that shows the middle 1/n of what fov shows, at the same vertical view.
-static float narrowed_fov(float fov, float n) { return 114.591559f * atanf(tanf(fov * 0.00872664626f) / n); }
-
-// Builds an eye camera for one eye of a full SBS window: half the window's aspect and the field of view of the middle
-// half of the window's (the camera's field of view is horizontal: the camera build divides its tangent by the aspect
-// for the vertical), so each eye is a whole picture with the window's vertical view, as a 16:9 screen shows it. Then
-// the game's values are put back, so whatever reads the descriptor afterwards sees what the game wrote. The eye
-// cameras are clones of the centre camera, made again each frame, so this holds for every build of them (the plane
-// rebuild's and the gun hook's too). Logs the first build it narrowed and the first eye build it left alone, with the
-// field of view, so a run shows which case it was.
+// Builds a camera of the 3D frame in a full SBS window for one eye's picture: the centre camera with eyes, or one of
+// its eye cameras, with half the window's aspect (the field of view is vertical, so the vertical view stays the
+// window's). The centre gets it too because the game's shared screen effects and the world markers work from the
+// centre's projection over each eye's half, as they do in half SBS. Then the game's aspect is put back, so whatever
+// reads the descriptor afterwards sees what the game wrote; the cameras are rebuilt every frame from it, so this holds
+// for every build (the plane rebuild's and the gun hook's too). Logs the first centre and eye build it changed and the
+// first it left alone, so a run shows which case it was.
 HOOK int64_t hook_camera_build(uint8_t *camera)
 {
-    float *aspect = NULL, *fov = NULL, window = 0.0f, windowFov = 0.0f;
-    if (camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES)) log_centre_camera(camera);
-    if (camera && (camera[CAMERA_FLAGS] & CAMERA_IS_EYE) &&
-        (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2)) {
-        float a = *(float *)(camera + CAMERA_ASPECT), f = *(float *)(camera + CAMERA_FOV);
-        if (full_sbs_window(a, 1.0f) && f > 0.0f && f < 180.0f) {
+    float *aspect = NULL, window = 0.0f;
+    int kind = -1; // 0 centre, 1 eye
+    if (camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES)) {
+        log_centre_camera(camera);
+        kind = 0;
+    } else if (camera && (camera[CAMERA_FLAGS] & CAMERA_IS_EYE) &&
+               (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2)) {
+        kind = 1;
+    }
+    if (kind >= 0) {
+        float a = *(float *)(camera + CAMERA_ASPECT);
+        if (full_sbs_window(a, 1.0f)) {
             aspect = (float *)(camera + CAMERA_ASPECT);
-            fov = (float *)(camera + CAMERA_FOV);
             window = a;
-            windowFov = f;
             *aspect = 0.5f * a;
-            *fov = narrowed_fov(f, 2.0f);
         } else if (!full.leftLogged && !InterlockedExchange(&full.leftLogged, 1)) {
-            plugin_log(1, "fullsbs: an eye camera kept the window's aspect %.4f and field of view %.2f: half SBS", a, f);
+            plugin_log(1, "fullsbs: %s camera kept the window's aspect %.4f: half SBS", kind ? "an eye" : "a centre", a);
         }
     }
     int64_t r = full.buildOrig(camera);
     if (aspect) {
-        float eyeFov = *fov;
         *aspect = window;
-        *fov = windowFov;
-        if (!full.builtLogged && !InterlockedExchange(&full.builtLogged, 1))
-            plugin_log(1, "fullsbs: first eye camera built for one eye of the window (%s eye: aspect %.4f -> %.4f, field "
-                          "of view %.2f -> %.2f)",
-                       camera[CAMERA_EYE_KIND] == 1 ? "left" : "right", window, 0.5f * window, windowFov, eyeFov);
+        if (!full.builtLogged[kind] && !InterlockedExchange(&full.builtLogged[kind], 1))
+            plugin_log(1, "fullsbs: first %s camera built for one eye of the window (aspect %.4f -> %.4f, field of view "
+                          "%.2f kept)",
+                       kind ? (camera[CAMERA_EYE_KIND] == 1 ? "left eye" : "right eye") : "centre", window,
+                       0.5f * window, *(const float *)(camera + CAMERA_FOV));
     }
     return r;
-}
-
-// Whether a layer is one each eye's UI pass draws into its own half: the HUD or the game notifications.
-static int per_eye_layer(const uint8_t *layer)
-{
-    const void *vtable = layer ? *(const void *const *)layer : NULL;
-    return vtable && (vtable == full.hudVtable || vtable == full.notificationsVtable);
-}
-
-// Whether 3D Mode is on, from the game's own setting (/video/display Odyssey3D_StereoEnabled, which its 3D Mode
-// handler keeps), found the first time it's asked through the effects checks' lookup. 0 if it can't be found (logged
-// once): a layer then keeps the window's size, so 2D in a wide window is never laid out one eye wide.
-static int three_d_mode_on(void)
-{
-    uint8_t *var = full.stereoVar;
-    if (!var && !full.stereoSearched && !InterlockedExchange(&full.stereoSearched, 1)) {
-        var = fg.boolVar ? fg.boolVar(cname("/video/display"), cname("Odyssey3D_StereoEnabled")) : NULL;
-        if (readable(var, BOOL_SETTING_VALUE + 1)) full.stereoVar = var;
-        else {
-            var = NULL;
-            plugin_log(1, "fullsbs: couldn't find the 3D Mode setting: the HUD stays laid out over the whole window");
-        }
-    }
-    return var && *(const volatile uint8_t *)(var + BOOL_SETTING_VALUE) != 0;
-}
-
-// The width a layer is laid out at: one eye's for a per-eye layer in a full SBS window with 3D Mode on, else the
-// window's. Logged each time a per-eye layer is sized (that happens when the window or its target changes, not every
-// frame).
-static int32_t layer_width(const uint8_t *layer, int32_t width, int32_t height, const char *how)
-{
-    if (!per_eye_layer(layer)) return width;
-    const char *name = *(const void *const *)layer == full.hudVtable ? "HUD" : "notifications";
-    int wide = full_sbs_window((float)width, (float)height), on = wide && three_d_mode_on();
-    if (!on) {
-        plugin_log(1, "fullsbs: %s layer %s %dx%d (the window's: %s)", name, how, (int)width, (int)height,
-                   wide ? "3D Mode is off" : "half SBS");
-        return width;
-    }
-    plugin_log(1, "fullsbs: %s layer %s %dx%d, one eye of the %dx%d window", name, how, (int)(width / 2), (int)height,
-               (int)width, (int)height);
-    return width / 2;
-}
-
-HOOK int64_t hook_layer_resize(uint8_t *layer, int32_t width, int32_t height)
-{
-    return full.resizeOrig(layer, layer_width(layer, width, height, "laid out at"), height);
-}
-
-HOOK int64_t hook_layer_target(uint8_t *layer, int32_t width, int32_t height, void *target)
-{
-    return full.targetOrig(layer, layer_width(layer, width, height, "drawn into its target at"), height, target);
-}
-
-// Our view's world to screen: the game's, then x times the narrowing (the window's frustum across one eye's picture).
-static float *ui_view_project(void *view, float *ndc, const float *world)
-{
-    float *out = full.project(view, ndc, world);
-    if (out) out[0] *= ((const UiView *)view)->narrow;
-    return out;
-}
-
-static float *ui_view_project_other(void *view, float *ndc, const float *world)
-{
-    float *out = full.projectOther(view, ndc, world);
-    if (out) out[0] *= ((const UiView *)view)->narrow;
-    return out;
-}
-
-// And back: x divided by it first.
-static void *ui_view_unproject(void *view, void *world, const float *ndc)
-{
-    float camera[2] = { ndc[0] / ((const UiView *)view)->narrow, ndc[1] };
-    return full.unproject(view, world, camera);
-}
-
-// Our view for the game's view (same camera system) narrowed by narrow, or the game's view itself if it isn't the game's
-// UI view (logged once). One per camera system: an entry is only ever written with the same camera system and narrowing
-// (the window over one eye), so a pointer a job kept from an earlier tick stays right. Four entries; if a fifth camera
-// system turns up the oldest is reused (logged once).
-static void *one_eye_view(void *view, float narrow)
-{
-    void *const *game = (void *const *)view;
-    if (!game || game[0] != full.gameViewVtable || !game[1]) {
-        if (!full.tickLogged && !InterlockedExchange(&full.tickLogged, 1))
-            plugin_log(1, "fullsbs: a per-eye layer's tick came with a view that isn't the game's UI view: markers keep "
-                          "the window's frustum");
-        return view;
-    }
-    UiView *own = NULL;
-    AcquireSRWLockExclusive(&full.viewsLock);
-    for (int i = 0; i < 4 && !own; i++)
-        if (full.views[i].vtable && full.views[i].cameraSystem == game[1] && full.views[i].narrow == narrow)
-            own = &full.views[i];
-    if (!own) {
-        LONG n = full.nextView++;
-        own = &full.views[n % 4];
-        if (n == 4 && !InterlockedExchange(&full.viewsFullLogged, 1))
-            plugin_log(1, "fullsbs: a fifth UI view: the oldest is reused");
-        own->vtable = (void *const *)full.viewVtable;
-        own->cameraSystem = game[1];
-        own->narrow = narrow;
-        plugin_log(1, "fullsbs: UI view for camera system %p, narrowed %.3f", game[1], narrow);
-    }
-    ReleaseSRWLockExclusive(&full.viewsLock);
-    return own;
-}
-
-// A per-eye layer laid out one eye wide is ticked with its own size and our narrowed view, instead of the window's.
-HOOK int64_t hook_layer_tick(uint8_t *layer, const LayerTick *tick, void *jobs)
-{
-    if (tick && per_eye_layer(layer)) {
-        const float *own = (const float *)(layer + LAYER_SIZE);
-        if (own[0] > 0.0f && own[1] == tick->size[1] && fabsf(tick->size[0] - 2.0f * own[0]) <= 2.0f) {
-            LayerTick one = *tick;
-            one.size[0] = own[0];
-            one.view = one_eye_view(tick->view, tick->size[0] / own[0]);
-            return full.tickOrig(layer, &one, jobs);
-        }
-    }
-    return full.tickOrig(layer, tick, jobs);
 }
 
 // A float from an ini file, or fallback (logged) if it's missing, malformed or outside lo..hi.
@@ -1718,12 +1518,6 @@ REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_weapon_sep, hook_weapon_sep);
 float bd3d_thunk_weapon_sep(void *settings);
 REGISTER_KEEPING_THUNK(bd3d_thunk_camera_build, hook_camera_build);
 int64_t bd3d_thunk_camera_build(uint8_t *camera);
-REGISTER_KEEPING_THUNK(bd3d_thunk_layer_resize, hook_layer_resize);
-int64_t bd3d_thunk_layer_resize(uint8_t *layer, int32_t width, int32_t height);
-REGISTER_KEEPING_THUNK(bd3d_thunk_layer_target, hook_layer_target);
-int64_t bd3d_thunk_layer_target(uint8_t *layer, int32_t width, int32_t height, void *target);
-REGISTER_KEEPING_THUNK(bd3d_thunk_layer_tick, hook_layer_tick);
-int64_t bd3d_thunk_layer_tick(uint8_t *layer, const LayerTick *tick, void *jobs);
 REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_camera_sep, hook_camera_sep);
 float bd3d_thunk_camera_sep(void *renderer);
 REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_camera_conv, hook_camera_conv);
@@ -2085,105 +1879,44 @@ static int attach_gun(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
-// Whether vtable's slot points to fn.
-static int vtable_slot_is(const void *vtable, int slot, const void *fn)
-{
-    return in_exe((uintptr_t)vtable, (size_t)(slot + 1) * sizeof(void *)) && ((void *const *)vtable)[slot] == fn;
-}
-
-// The full SBS group: the camera build (its start, the eye branch and the eye's aspect), the layer resize, target and
-// tick (their starts, and the fields they set or read), the two per-eye layers' vtables (holding those three, or the
-// tick's caller for the notifications layer, whose own tick calls the shared one first), and the UI view's vtable (its
-// three projections). Fills in full (the game's code; our view vtable) and returns 1, or logs why not and returns 0.
-static int check_full_sbs(ResolveFn resolve, uint8_t **build, uint8_t **resize, uint8_t **target, uint8_t **tick)
+// The full SBS group: the camera build (its start, the eye branch and the eye's aspect), the one the plane rebuild
+// calls. Fills in *build and returns 1, or logs why not and returns 0.
+static int check_full_sbs(ResolveFn resolve, uint8_t **build)
 {
     *build = (uint8_t *)resolve(HASH_CAMERA_BUILD);
-    *resize = (uint8_t *)resolve(HASH_LAYER_RESIZE);
-    *target = (uint8_t *)resolve(HASH_LAYER_TARGET);
-    *tick = (uint8_t *)resolve(HASH_LAYER_TICK);
-    const void *hud = (const void *)resolve(HASH_HUD_LAYER_VTABLE);
-    const void *notifications = (const void *)resolve(HASH_NOTIFICATIONS_LAYER_VTABLE);
-    void *const *view = (void *const *)resolve(HASH_UI_VIEW_VTABLE);
-    plugin_log(1, "fullsbs: resolved camera build %p, layer resize %p, target %p, tick %p, HUD layer %p, notifications "
-                  "layer %p, UI view %p",
-               (void *)*build, (void *)*resize, (void *)*target, (void *)*tick, hud, notifications, (const void *)view);
+    plugin_log(1, "fullsbs: resolved camera build %p", (void *)*build);
     const char *why = NULL;
     if (!fg.sbsVar) why = "the SBSDebug var wasn't found";
-    else if (!in_exe((uintptr_t)*build, CAMERA_BUILD_SIZE) || !in_exe((uintptr_t)*resize, LAYER_RESIZE_SIZE) ||
-             !in_exe((uintptr_t)*target, LAYER_TARGET_SIZE) || !in_exe((uintptr_t)*tick, LAYER_TICK_SIZE))
-        why = "the camera build or a layer function didn't resolve into the game exe";
+    else if (!in_exe((uintptr_t)*build, CAMERA_BUILD_SIZE)) why = "the camera build didn't resolve into the game exe";
     else if (fg.cameraBuild && (uint8_t *)fg.cameraBuild != *build)
         why = "the camera build isn't the one the plane rebuild calls";
     else if (aob_find_unique(*build, CAMERA_BUILD_SIZE, AOB_CAMERA_BUILD) != 0) why = "the camera build: start doesn't match";
     else if (aob_find_unique(*build, CAMERA_BUILD_SIZE, AOB_CAMERA_EYE) < 0) why = "the camera build: the eye branch isn't there";
     else if (aob_find_unique(*build, CAMERA_BUILD_SIZE, AOB_CAMERA_EYE_ASPECT) < 0)
         why = "the camera build: the eye's aspect isn't read where expected";
-    else if (aob_find_unique(*resize, LAYER_RESIZE_SIZE, AOB_LAYER_RESIZE) != 0) why = "the layer resize: start doesn't match";
-    else if (aob_find_unique(*resize, LAYER_RESIZE_SIZE, AOB_LAYER_RESIZE_SAME) < 0)
-        why = "the layer resize: the layer's size isn't at +0x30";
-    else if (aob_find_unique(*target, LAYER_TARGET_SIZE, AOB_LAYER_TARGET) != 0) why = "the layer target: start doesn't match";
-    else if (aob_find_unique(*target, LAYER_TARGET_SIZE, AOB_LAYER_TARGET_SIZE) < 0)
-        why = "the layer target: the layer's size isn't set at +0x30";
-    else if (aob_find_unique(*tick, LAYER_TICK_SIZE, AOB_LAYER_TICK) != 0) why = "the layer tick: start doesn't match";
-    else if (!vtable_slot_is(hud, LAYER_SLOT_RESIZE, *resize) || !vtable_slot_is(hud, LAYER_SLOT_TARGET, *target) ||
-             !vtable_slot_is(hud, LAYER_SLOT_TICK, *tick))
-        why = "the HUD layer's vtable doesn't hold the layer resize, target and tick";
-    else if (!vtable_slot_is(notifications, LAYER_SLOT_RESIZE, *resize) ||
-             !vtable_slot_is(notifications, LAYER_SLOT_TARGET, *target) ||
-             !in_exe((uintptr_t)((void *const *)notifications)[LAYER_SLOT_TICK], 0x40) ||
-             count_calls((const uint8_t *)((void *const *)notifications)[LAYER_SLOT_TICK], 0x40, (uintptr_t)*tick) != 1)
-        why = "the notifications layer's vtable doesn't hold the layer resize and target and a tick that calls the shared one";
-    else if (!in_exe((uintptr_t)view, UI_VIEW_SLOTS * sizeof(void *)) ||
-             !in_exe((uintptr_t)view[UI_VIEW_PROJECT], UI_VIEW_PROJECT_SIZE) ||
-             !in_exe((uintptr_t)view[UI_VIEW_PROJECT_OTHER], UI_VIEW_PROJECT_SIZE) ||
-             !in_exe((uintptr_t)view[UI_VIEW_UNPROJECT], UI_VIEW_UNPROJECT_SIZE))
-        why = "the UI view's vtable doesn't point into the game exe";
-    else if (aob_find_unique(view[UI_VIEW_PROJECT], UI_VIEW_PROJECT_SIZE, AOB_UI_VIEW_PROJECT) != 0 ||
-             aob_find_unique(view[UI_VIEW_PROJECT_OTHER], UI_VIEW_PROJECT_SIZE, AOB_UI_VIEW_PROJECT) != 0 ||
-             aob_find_unique(view[UI_VIEW_UNPROJECT], UI_VIEW_UNPROJECT_SIZE, AOB_UI_VIEW_UNPROJECT) != 0)
-        why = "the UI view's projections don't match";
     if (why) {
         plugin_log(1, "fullsbs: %s (game update?): not hooked, side by side stays half SBS in any window", why);
         return 0;
     }
-    full.hudVtable = hud;
-    full.notificationsVtable = notifications;
-    full.gameViewVtable = view;
-    memcpy(full.viewVtable, view, sizeof(full.viewVtable));
-    full.viewVtable[UI_VIEW_PROJECT] = (void *)ui_view_project;
-    full.viewVtable[UI_VIEW_UNPROJECT] = (void *)ui_view_unproject;
-    full.viewVtable[UI_VIEW_PROJECT_OTHER] = (void *)ui_view_project_other;
-    full.project = (ViewProjectFn)view[UI_VIEW_PROJECT];
-    full.projectOther = (ViewProjectFn)view[UI_VIEW_PROJECT_OTHER];
-    full.unproject = (ViewUnprojectFn)view[UI_VIEW_UNPROJECT];
-    InitializeSRWLock(&full.viewsLock);
     return 1;
 }
 
-// The full SBS group: only when the output can be full SBS. Checked, then attached whole or not at all (a failed attach
-// detaches the ones attached). Returns 1 when attached.
+// The full SBS group: only when the output can be full SBS. Returns 1 when attached.
 static int attach_full_sbs(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
 {
     if (output.fullSbsAspect <= 0.0f) {
         plugin_log(1, "fullsbs: not hooked: the output is %s", output.monitor ? "a 3D monitor's own" : "half SBS");
         return 0;
     }
-    uint8_t *t[4];
-    if (!check_full_sbs(resolve, &t[0], &t[1], &t[2], &t[3])) return 0;
-    static const char *const names[4] = { "the camera build", "the layer resize", "the layer target", "the layer tick" };
-    void *const detours[4] = { (void *)bd3d_thunk_camera_build, (void *)bd3d_thunk_layer_resize,
-                               (void *)bd3d_thunk_layer_target, (void *)bd3d_thunk_layer_tick };
-    void **const origs[4] = { (void **)&full.buildOrig, (void **)&full.resizeOrig, (void **)&full.targetOrig,
-                              (void **)&full.tickOrig };
-    for (int i = 0; i < 4; i++) {
-        if (h->Attach(pluginHandle, t[i], detours[i], origs[i])) continue;
-        plugin_log(1, "fullsbs: couldn't hook %s: not hooked, side by side stays half SBS in any window", names[i]);
-        while (i-- > 0) h->Detach(pluginHandle, t[i]);
-        for (int j = 0; j < 4; j++) *origs[j] = NULL;
+    uint8_t *build;
+    if (!check_full_sbs(resolve, &build)) return 0;
+    if (!h->Attach(pluginHandle, build, (void *)bd3d_thunk_camera_build, (void **)&full.buildOrig)) {
+        full.buildOrig = NULL;
+        plugin_log(1, "fullsbs: couldn't hook the camera build: not hooked, side by side stays half SBS in any window");
         return 0;
     }
-    plugin_log(1, "fullsbs: hooks attached; side by side is full SBS in a window at least %.0f times as wide as it is "
-                  "high (while [Odyssey3D] SBSDebug is on)",
+    plugin_log(1, "fullsbs: camera build hooked; side by side is full SBS in a window at least %.0f times as wide as it "
+                  "is high (while [Odyssey3D] SBSDebug is on)",
                output.fullSbsAspect);
     return 1;
 }
