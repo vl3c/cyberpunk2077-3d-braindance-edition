@@ -117,15 +117,18 @@ the real SDK. The engine ini still turns `SBSDebug` on, which would make the gam
 instead of handing the eyes to its weaver. So the plugin picks the output at start-up, from Mod Settings' Output,
 `[Display] Output` in `Braindance3D-Settings.ini` and what the registration found (`choose_output` in
 `src/braindance3d_autosetup.c`). Mod Settings' Output (`FixedStereo.reds`' `BraindanceOutput`, saved by name as
-`[BraindanceFixedStereo] Output` in its `user.ini`) set to Half SBS always keeps side by side; Auto, or nothing applied
-yet, leaves it to the table. Mod Settings can't change a page's options per PC, so everyone sees the dropdown; without
-the monitor's software both options give side by side.
+`[BraindanceFixedStereo] Output` in its `user.ini`) set to Half SBS or Full SBS always keeps side by side; Auto, or
+nothing applied yet, leaves it to the table. Mod Settings can't change a page's options per PC, so everyone sees the
+dropdown; without the monitor's software every option gives side by side. Output is read again whenever Mod Settings
+saves it (`output_reread`), so Auto, Half SBS and Full SBS switch live; to or from the monitor's own output still needs a
+restart, since the SDK is chosen at start.
 
 | `Output` | Registration result | 3D Mode shows |
 | --- | --- | --- |
 | `auto` (default) | another SDK is registered, or the monitor's software is in its default folder | the game's own output for the monitor |
-| `auto` | anything else (this mod's stand-in is the SDK, or an error) | side by side |
-| `sbs` | any | side by side |
+| `auto` | anything else (this mod's stand-in is the SDK, or an error) | side by side: full from a 3:1 window, half below |
+| `sbs` | any | half side by side |
+| `fullsbs` | any | full side by side from a 2:1 window, half below (see [Full SBS](#full-sbs)) |
 | `monitor` | any | the game's own output (for testing: with the stand-in, whose weaver draws nothing, there's no 3D picture) |
 
 For the monitor's output, the 3D Mode handler hook writes 0 to `SBSDebug` (its value byte at `+0x30`) before the handler
@@ -388,6 +391,42 @@ Then it turns on two bools in `/accessibility/interface` through the same lookup
 Before using them, the plugin checks the handler's lookup of its two settings (both through the same function) and
 its effects off (both through the same setter, after the lookup), and `SetFrameGeneration`'s list setter call. If any
 doesn't match, only the game's own two go off.
+
+## Full SBS
+
+Full SBS puts two whole 16:9 eyes in a window two eyes wide (3840x1080 for glasses with 1920x1080 per eye). The game's
+side by side always draws each eye into its half of the window with the window's projection, which is right for half
+SBS (the viewer stretches each half back) and squashes each eye 2x in full SBS. Four groups of hooks in
+`src/braindance3d_framegen.c` fix that; each checks the game's code first and turns itself off if a game update changed
+it. They are attached unless the output is a 3D monitor's own. The cameras, menus and HUD act only while
+`framegen_full_sbs` says so: side by side, `SBSDebug` on, Output allowing it and the window wide enough (3:1 for Auto,
+2:1 for Full SBS). The loading screen fix acts in any 3D window wider than 16:9 (1.8:1).
+
+- **Cameras** (the camera build, `hook_camera_build`): the 3D frame's centre camera and its eye cameras are built with
+  half the window's aspect. The field of view at `+0x20` is vertical, so the vertical view stays the game's and each eye
+  sees a normal 16:9 picture. The centre needs it too: the shared screen passes and the world markers use its
+  projection. The aspect stays halved, because the game copies built cameras within a frame and builds them again; a
+  camera is halved only while its aspect is still the window's, learnt from the view size it carries.
+- **Menus** (the menu squeeze): in full SBS each half shows the middle 16:9 block of the flat frame 1:1, which is where
+  the game puts menus in so wide a window. In a window narrower than two 16:9 eyes (3840x1200, say) that block is wider
+  than an eye, so it's shown smaller, whole, with black bars above and below (`menus_half_map`).
+- **Loading screens:** in a window wider than 16:9 the game's own 3D draws them in stereo with its black bars across the
+  whole window, which hides the outer half of each eye's screen and shows the world between (white at start). It happens
+  without the mod too. While the loading layer (`inkLoadingLayer`, found by class in ink's shared layer tick) is up in
+  such a window, FlagCompute's stereo features (98 and 99) are cleared, so the frame is flat and the squeeze shows it in
+  each eye like a menu (with `Squeeze = off` the flat frame is split across the eyes instead).
+- **The HUD:** a 3D frame draws two ink layers once per eye, the HUD (`inkHUDLayer`) and notifications
+  (`inkGameNotificationsLayer`), each laid out over the whole window, so they came out squashed. In full SBS with 3D Mode
+  on, the layer resize and layer target give them one eye's width; the layer tick hands their controllers the layer's
+  own size (world markers then land on their targets, since the game camera that places them is already one eye wide)
+  and lays them out again when Output or 3D Mode changes. Each eye's UI pass draws with ink's flat canvas camera
+  (`x' = 2x / width - 1` over the window's width); the hook on the constant upload widens it to `4x / width - 1`, in
+  every copy of the canvas matrix in the 0x360-byte camera block, for an eye's block (byte 848 = 1 or 2) only, so the
+  one-eye layout fills the eye. The approach follows the Cyberpunk VR port (MIT), which does the same for its headset
+  stereo.
+
+Overlays drawn by other mods over the whole window aren't changed. Virtual Desktop can't show full SBS (it shows the
+wide picture as one screen), so it was tested from 5120x1440 screenshots, each half a normal 16:9 picture.
 
 ## Building and testing
 

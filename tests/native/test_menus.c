@@ -16,6 +16,16 @@
 // braindance3d_framegen.c's answer: side by side unless a test says otherwise.
 static int f_side_by_side = 1;
 int framegen_side_by_side(void) { return f_side_by_side; }
+// And whether a frame is full side by side: from this width-over-height, 0 = never (half SBS).
+static float f_full_sbs_aspect = 0.0f;
+int framegen_full_sbs(unsigned width, unsigned height)
+{
+    return f_full_sbs_aspect > 0.0f && height && (float)width >= f_full_sbs_aspect * (float)height;
+}
+
+// And whether a loading screen is drawn flat in a wide window now.
+static int f_loading_flat;
+int framegen_loading_flat(void) { return f_loading_flat; }
 
 static LONG64 fake_device_calls(int slot) { return slot >= 0 ? 0 : -1; }
 
@@ -32,6 +42,8 @@ static void mt_begin(void)
     g.deviceCalls = fake_device_calls;
     g.stereo = STEREO_UNKNOWN;
     f_side_by_side = 1;
+    f_loading_flat = 0;
+    f_full_sbs_aspect = 0.0f;
 }
 
 // Frame patterns measured on the PC (2.5, 2026-10-29): what the game asks the stand-in per frame.
@@ -273,6 +285,41 @@ TEST(an_interrupted_run_of_2d_frames_does_not_switch_3d_off)
     CHECK_EQ_INT(g.stereo, STEREO_ON);
 }
 
+TEST(a_loading_screen_drawn_flat_is_squeezed_like_a_menu)
+{
+    mt_begin();
+    stereo_frame();
+    f_loading_flat = 1; // the frame was made flat after the stand-in was asked for the eyes
+    stereo_frame();
+    CHECK_EQ_INT(want_squeeze(), 1);
+    frames(flat_2d_frame, 2 * STEREO_OFF_FRAMES); // FlagCompute still asks IsAvailable once
+    CHECK_EQ_INT(g.stereo, STEREO_ON);             // not 2D gameplay
+    CHECK_EQ_INT(want_squeeze(), 1);
+    f_loading_flat = 0;
+    stereo_frame();
+    CHECK_EQ_INT(want_squeeze(), 0); // the game's 3D again
+}
+
+TEST(the_window_size_is_known_only_while_the_squeeze_runs)
+{
+    mt_begin();
+    unsigned w, h;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 0); // nothing presented yet
+    g.bbWidth = 5120;
+    g.bbHeight = 1440;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 1);
+    CHECK_EQ_INT((int)w, 5120);
+    CHECK_EQ_INT((int)h, 1440);
+    g.failed = 1;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 0);
+    g.failed = 0;
+    g.mode = MODE_OFF;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 0);
+    g.mode = MODE_ON;
+    g.gameFrames = 42;
+    CHECK_EQ_INT((int)menus_game_frame(), 42);
+}
+
 TEST(stereo_frames_switch_3d_back_on)
 {
     mt_begin();
@@ -371,6 +418,35 @@ TEST(set_stereo_logs_only_changes)
     set_stereo(STEREO_UNKNOWN, "third");
     CHECK(log_has("3D Mode now unknown (third"));
     CHECK_EQ_INT(g.stereo, STEREO_UNKNOWN);
+}
+
+TEST(each_half_shows_the_flat_frame_squeezed_or_its_middle_16_9_block)
+{
+    mt_begin();
+    log_to_file();
+    float m[4];
+    menus_half_map(3840, 2160, m); // half SBS: the whole frame in each half
+    CHECK_NEAR(m[0], 2.0f, 1e-6f);
+    CHECK_NEAR(m[1], 0.0f, 1e-6f);
+    CHECK_NEAR(m[2], 1.0f, 1e-6f);
+    CHECK_NEAR(m[3], 0.0f, 1e-6f);
+    CHECK(log_has("half side by side: each half shows the whole flat frame squeezed"));
+    f_full_sbs_aspect = 2.0f;
+    menus_half_map(5120, 1440, m); // 32:9: the middle 16:9 block 1:1
+    CHECK_NEAR(m[0], 1.0f, 1e-6f);
+    CHECK_NEAR(m[1], 0.25f, 1e-6f);
+    CHECK_NEAR(m[2], 1.0f, 1e-6f);
+    CHECK_NEAR(m[3], 0.0f, 1e-6f);
+    CHECK(log_has("full side by side (5120x1440): each half shows the middle of the flat frame 1:1"));
+    menus_half_map(3840, 1200, m); // narrower than two 16:9 eyes: the block made smaller, bars above and below
+    float b = 16.0f / 9.0f * 1200.0f / 3840.0f;
+    CHECK_NEAR(m[0], 2.0f * b, 1e-5f);
+    CHECK_NEAR(m[1], 0.5f - 0.5f * b, 1e-5f);
+    CHECK_NEAR(m[2], 2.0f * b, 1e-5f);
+    CHECK_NEAR(m[3], 0.5f - b, 1e-5f);
+    CHECK(log_has("full side by side (3840x1200): each half shows the frame's middle 16:9 block at 90% of its size"));
+    menus_half_map(3840, 1200, m); // logged once per size
+    CHECK_EQ_INT(log_count("(3840x1200)"), 1);
 }
 
 static LONG64 m_eye, m_avail;

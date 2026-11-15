@@ -36,8 +36,14 @@ void plugin_log(int level, const char *fmt, ...) __attribute__((format(printf, 2
 int framegen_load(void *pluginHandle, const R4eSdk *sdk);
 
 // The picture 3D Mode sends out ([Display] Output): side by side (the mod's own), or the game's stock output for a
-// glasses-free 3D monitor, whose own SDK weaves the two eyes.
-enum { OUTPUT_SBS = 0, OUTPUT_MONITOR = 1 };
+// glasses-free 3D monitor, whose own SDK weaves the two eyes. Side by side is half SBS (each eye squeezed into its half,
+// the game's own way) or full SBS (each eye a whole undistorted picture in its half of a window two eyes wide, such as
+// 3840x1080 for XR glasses with 1920x1080 per eye). OUTPUT_SBS picks by the window: full SBS from 3:1 (FULL_SBS_AUTO).
+// OUTPUT_FULL_SBS is full SBS whenever the window is at least two eyes of 1:1 wide (FULL_SBS_FORCED), so glasses
+// switched to 2D (1920x1080) still get half SBS.
+enum { OUTPUT_SBS = 0, OUTPUT_MONITOR = 1, OUTPUT_HALF_SBS = 2, OUTPUT_FULL_SBS = 3 };
+#define FULL_SBS_AUTO 3.0f
+#define FULL_SBS_FORCED 2.0f
 // Mod Settings' file, from the mod's folder (bin\x64\Braindance3D, three levels under the game), and our section in it:
 // the class in FixedStereo.reds.
 #define MOD_SETTINGS_FROM_MOD_DIR L"\\..\\..\\..\\red4ext\\plugins\\mod_settings\\user.ini"
@@ -48,8 +54,32 @@ enum { OUTPUT_SBS = 0, OUTPUT_MONITOR = 1 };
 // framegen_load.
 void framegen_set_output(int output);
 
+// The output Mod Settings' Output = Auto stands for (the ini's [Display] Output, or the auto-setup's pick): Output
+// switches between Half SBS, Full SBS and Auto live, when Mod Settings saves it (except to or from a 3D monitor's own
+// output, which the game decides at start). Call before stereo_settings_load.
+void framegen_set_output_auto(int output);
+
 // Whether 3D Mode draws side by side: [Odyssey3D] SBSDebug is on, or the var wasn't found (as before this check).
 int framegen_side_by_side(void);
+
+// Whether a frame this size is drawn full side by side now: the output allows it, its hooks are attached, SBSDebug is
+// on and the window is wide enough. The menu squeeze then shows the middle half of a flat frame 1:1 in each half
+// (where the game puts menus in so wide a window) instead of the whole frame squeezed.
+int framegen_full_sbs(unsigned width, unsigned height);
+
+// Whether loading screens are drawn flat now: one is up in a window wider than 16:9, side by side, with the squeeze
+// running (braindance3d_framegen.c clears the frame's stereo for it). The menu squeeze then treats the frame as a menu.
+int framegen_loading_flat(void);
+
+// How each half of a width x height window shows a flat frame (menus): x' = x * map[0] + map[1], y' = y * map[2] +
+// map[3] in 0..1 frame coordinates, black outside. For braindance3d_menus.c's squeeze and the tests.
+void menus_half_map(unsigned width, unsigned height, float map[4]);
+
+// The game frames presented so far (GpuApi::Present calls), for braindance3d_framegen.c.
+long long menus_game_frame(void);
+
+// The game's back buffer size as last presented. 1 if known and the squeeze runs (it shows flat frames to both eyes).
+int menus_window_size(unsigned *width, unsigned *height);
 
 // Reads the Fixed 3D settings from installDir and Mod Settings' file. Call before framegen_load.
 void stereo_settings_load(const wchar_t *installDir);

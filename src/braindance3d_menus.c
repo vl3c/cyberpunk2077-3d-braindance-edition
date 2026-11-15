@@ -116,6 +116,7 @@ static struct {
     volatile LONG noticeOn;    //   and what it says: FIXED ON, or FIXED OFF
     LONG64 lastNoticeFrame;    //   game frame it was last drawn on
     LONG64 gameFrames;
+    volatile LONG bbWidth, bbHeight; // the game's back buffer, as last presented
     int lastSqueeze;  // for logging changes
     LONG64 frames, squeezed;
     DWORD lastSummary;
@@ -123,6 +124,7 @@ static struct {
     ID3D12Device *device;
     ID3D12CommandQueue *queue;
     ID3D12RootSignature *rootSig;
+    int fullLogged;                // the half map last logged: 1 half SBS, 2 + 1000 x the block's share in full SBS
     ID3D12PipelineState *pso;
     DXGI_FORMAT psoFormat;
     ID3D12DescriptorHeap *rtvHeap, *srvHeap;
@@ -332,11 +334,15 @@ static const char g_hlsl[] =
     "    uv = float2((id << 1) & 2, id & 2);\n"
     "    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
     "}\n"
+    "float4 halfMap : register(b0);\n"
     "float4 ps(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target\n"
     "{\n"
-    "    // Each half of the screen shows the whole frame at half the width.\n"
-    "    float x = uv.x < 0.5 ? uv.x * 2.0 : uv.x * 2.0 - 1.0;\n"
-    "    return frame.Sample(linearClamp, float2(x, uv.y));\n"
+    "    // Each half of the screen shows the frame from halfMap (x scale and offset, y scale and offset; black outside\n"
+    "    // the frame): half SBS the whole frame at half the width, full SBS the 16:9 block in its middle (half_map).\n"
+    "    float x = (uv.x < 0.5 ? uv.x : uv.x - 0.5) * halfMap.x + halfMap.y;\n"
+    "    float y = uv.y * halfMap.z + halfMap.w;\n"
+    "    if (y < 0 || y > 1) return float4(0, 0, 0, 1);\n"
+    "    return frame.Sample(linearClamp, float2(x, y));\n"
     "}\n";
 
 // Compiles one entry point of g_hlsl; logs the compiler's message on failure.
@@ -364,24 +370,28 @@ static int compile_shaders(void)
     return 1;
 }
 
-// One SRV table for the pixel shader (the copy of the back buffer) and a linear clamp sampler.
+// One SRV table for the pixel shader (the copy of the back buffer), two constants (how a half maps to the frame) and a
+// linear clamp sampler.
 static int create_root_signature(void)
 {
     HMODULE d12 = GetModuleHandleW(L"d3d12.dll");
     SerializeRootSigFn serialize = d12 ? (SerializeRootSigFn)(void *)GetProcAddress(d12, "D3D12SerializeRootSignature") : NULL;
     if (!serialize) return fail("d3d12.dll D3D12SerializeRootSignature not found", E_FAIL);
     D3D12_DESCRIPTOR_RANGE range = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0 };
-    D3D12_ROOT_PARAMETER param = { 0 };
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    param.DescriptorTable.NumDescriptorRanges = 1;
-    param.DescriptorTable.pDescriptorRanges = &range;
-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_ROOT_PARAMETER param[2] = { { 0 } };
+    param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    param[0].DescriptorTable.NumDescriptorRanges = 1;
+    param[0].DescriptorTable.pDescriptorRanges = &range;
+    param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    param[1].Constants.Num32BitValues = 4; // b0
+    param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_STATIC_SAMPLER_DESC sampler = { 0 };
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.MaxLOD = D3D12_FLOAT32_MAX;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    D3D12_ROOT_SIGNATURE_DESC desc = { 1, &param, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+    D3D12_ROOT_SIGNATURE_DESC desc = { 2, param, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE };
     ID3DBlob *blob = NULL, *err = NULL;
     HRESULT hr = serialize(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
     if (err) ID3D10Blob_Release(err);
@@ -610,10 +620,40 @@ static ID3D12Resource *current_back_buffer(IDXGISwapChain *sc, UINT *index)
     return bb;
 }
 
+// How each half of the screen maps to the frame: x' = x * map[0] + map[1], y' = y * map[2] + map[3] (black where y' is
+// outside the frame). Half SBS: the whole frame squeezed. Full SBS: the game draws menus and loading screens in a 16:9
+// block in the middle of so wide a window; a half at least that wide shows the frame's middle half 1:1 (the block,
+// and the game's black bars beside it in a window wider than two 16:9 eyes), a narrower half shows the whole block
+// scaled down to its width, with black bars above and below. Logged when it changes.
+void menus_half_map(unsigned width, unsigned height, float map[4])
+{
+    int full = framegen_full_sbs(width, height);
+    float block = full && width ? 16.0f / 9.0f * (float)height / (float)width : 1.0f; // the block's share of the width
+    if (!full) {
+        map[0] = 2.0f, map[1] = 0.0f, map[2] = 1.0f, map[3] = 0.0f;
+    } else if (block <= 0.5f) {
+        map[0] = 1.0f, map[1] = 0.25f, map[2] = 1.0f, map[3] = 0.0f;
+    } else {
+        map[0] = 2.0f * block, map[1] = 0.5f - 0.5f * block, map[2] = 2.0f * block, map[3] = 0.5f - block;
+    }
+    int key = full ? 2 + (int)(block * 1000.0f + 0.5f) : 1;
+    if (key != g.fullLogged) {
+        g.fullLogged = key;
+        if (!full) mlog("half side by side: each half shows the whole flat frame squeezed");
+        else if (block <= 0.5f) mlog("full side by side (%ux%u): each half shows the middle of the flat frame 1:1", width, height);
+        else
+            mlog("full side by side (%ux%u): each half shows the frame's middle 16:9 block at %.0f%% of its size, with bars "
+                 "above and below",
+                 width, height, 50.0f / block);
+    }
+}
+
 // Records the squeeze of bb (in the PRESENT state before and after): copy it, then draw the copy squeezed into each
 // half.
 static void record_squeeze(ID3D12GraphicsCommandList *cl, ID3D12Resource *bb, const D3D12_RESOURCE_DESC *desc)
 {
+    float map[4];
+    menus_half_map((unsigned)desc->Width, (unsigned)desc->Height, map);
     D3D12_RESOURCE_BARRIER b[2];
     barrier(&b[0], bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
     ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, b);
@@ -632,6 +672,7 @@ static void record_squeeze(ID3D12GraphicsCommandList *cl, ID3D12Resource *bb, co
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(cl, g.rootSig);
     ID3D12GraphicsCommandList_SetDescriptorHeaps(cl, 1, &g.srvHeap);
     ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(cl, 0, ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(g.srvHeap));
+    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(cl, 1, 4, map, 0);
     ID3D12GraphicsCommandList_IASetPrimitiveTopology(cl, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D12GraphicsCommandList_DrawInstanced(cl, 3, 1, 0, 0);
 
@@ -889,7 +930,9 @@ static int find_device_calls(void)
 // What one game frame's stand-in calls say: dEye eye positions and dAvail IsAvailable calls since the last frame.
 static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
 {
-    LONG flat = dEye == 0;
+    // A loading screen drawn flat in a wide window (framegen_loading_flat) is a menu too, whatever the stand-in saw.
+    int loadingFlat = framegen_loading_flat();
+    LONG flat = dEye == 0 || loadingFlat;
     InterlockedExchange(&g.flatFrame, flat);
     if (!flat) {
         // Only a frame rendered in stereo asks for eye positions.
@@ -897,7 +940,7 @@ static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
         set_stereo(STEREO_ON, "a frame rendered in stereo");
         return;
     }
-    if (dAvail == 1) {
+    if (dAvail == 1 && !loadingFlat) {
         // 2D gameplay asks IsAvailable once per frame (stereo asks twice); a few such frames also turn up while
         // the settings menu re-checks the display, so it takes a run of them.
         if (++g.flatStreak == STEREO_OFF_FRAMES) set_stereo(STEREO_OFF, "2D gameplay frames");
@@ -925,6 +968,15 @@ void menus_note_3d_mode(int on)
     // render thread's next frame counts from there either way).
     g.flatStreak = 0;
     set_stereo(on ? STEREO_ON : STEREO_OFF, "the game's 3D Mode handler");
+}
+
+long long menus_game_frame(void) { return (long long)g.gameFrames; }
+
+int menus_window_size(unsigned *width, unsigned *height)
+{
+    *width = (unsigned)g.bbWidth;
+    *height = (unsigned)g.bbHeight;
+    return g.mode != MODE_OFF && !g.failed && *width && *height;
 }
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
@@ -971,6 +1023,11 @@ static void before_present(IDXGISwapChain *sc, const char *which)
     if (!is_game_swap_chain(sc)) return;
     if (InterlockedCompareExchange(&g.busy, 1, 0) != 0) return;
     g.frames++;
+    DXGI_SWAP_CHAIN_DESC desc;
+    if (SUCCEEDED(IDXGISwapChain_GetDesc(sc, &desc))) {
+        InterlockedExchange(&g.bbWidth, (LONG)desc.BufferDesc.Width);
+        InterlockedExchange(&g.bbHeight, (LONG)desc.BufferDesc.Height);
+    }
     int want = !g.failed && want_squeeze();
     if (want != g.lastSqueeze) {
         mlog("%s: squeeze %s (frame %lld)", which, want ? "ON" : "off", (long long)g.frames);

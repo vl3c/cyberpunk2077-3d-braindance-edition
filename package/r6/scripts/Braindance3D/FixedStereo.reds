@@ -1,10 +1,12 @@
 // 3D Braindance Edition: the Fixed 3D settings on Mod Settings' page.
 // Nothing reads this class in game: Mod Settings saves it to red4ext\plugins\mod_settings\user.ini when you press Apply,
 // and the plugin (braindance3d_framegen.c) reads the file within a second or two. The section is the class's name.
-// Output is read once, when the game starts (braindance3d_autosetup.c); Mod Settings saves it by the value's name.
+// Output is read when the game starts (braindance3d_autosetup.c) and again when Mod Settings saves it (output_reread in
+// braindance3d_framegen.c: Half SBS, Full SBS and Auto switch live); Mod Settings saves it by the value's name.
 enum BraindanceOutput {
     Auto = 0,
-    HalfSBS = 1
+    HalfSBS = 1,
+    FullSBS = 2
 }
 
 public class BraindanceFixedStereo {
@@ -32,8 +34,9 @@ public class BraindanceFixedStereo {
 
     @runtimeProperty("ModSettings.mod", "3D Braindance Edition")
     @runtimeProperty("ModSettings.displayName", "Output")
-    @runtimeProperty("ModSettings.description", "Auto: a glasses-free 3D monitor's own 3D when its software is installed, else half SBS. Half SBS: always side by side. Restart the game after Apply.")
+    @runtimeProperty("ModSettings.description", "Auto: a glasses-free 3D monitor's own 3D when its software is installed, else full SBS in a window 3x as wide as high (3840x1080), half SBS otherwise. Applies at once, except to or from a 3D monitor's own 3D: restart the game for that.")
     @runtimeProperty("ModSettings.displayValues.Auto", "Auto")
     @runtimeProperty("ModSettings.displayValues.HalfSBS", "Half SBS")
+    @runtimeProperty("ModSettings.displayValues.FullSBS", "Full SBS")
     let Output: BraindanceOutput = BraindanceOutput.Auto;
 }

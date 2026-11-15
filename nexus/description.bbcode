@@ -1,5 +1,5 @@
 [size=4][b]Description[/b][/size]
-Play Cyberpunk 2077 in [b]real stereoscopic 3D[/b], side by side for any [b]3D display / VR headset in half SBS mode[/b], on a big virtual screen. [b]With DLSS and FSR Frame Generation in 3D[/b] - up to 6x the frames on RTX 50, for smooth 3D even with path tracing and DLSS 5 on.
+Play Cyberpunk 2077 in [b]real stereoscopic 3D[/b], side by side for any [b]3D display / VR headset in half SBS mode[/b], on a big virtual screen, or in [b]full SBS for 3D glasses[/b] that take 3840x1080. [b]With DLSS and FSR Frame Generation in 3D[/b] - up to 6x the frames on RTX 50, for smooth 3D even with path tracing and DLSS 5 on.
 
 [b]Not VR: no head tracking, no motion controls![/b] You look at a 3D screen.
 
@@ -12,6 +12,7 @@ Patch 2.5 added a 3D Mode for a glasses-free 3D monitor, with real depth for the
 [*]Gives your [b]weapon and hands real depth[/b] (the game draws them flat), as much as [b]Weapon Depth[/b] sets. They stay flat with path tracing, RT Lighting or RT shadows on (the game lights them wrongly per eye); [b]raster and RT Reflections keeps the 3D weapon depth[/b].[/*]
 [*]Turns off the [b]effects that ghost in 3D[/b] when you switch 3D Mode on (Depth of Field, Lens Flare, Motion Blur, Vignette, HUD blur and lens bend). Change any back if you like.[/*]
 [*]Adds [b]Fixed 3D[/b], off by default, for [b]VR headsets, 3D glasses and 3D depth enthusiasts[/b]: one real eye gap and one screen distance instead of stereo that re-aims every frame, so the world keeps its scale. [b]On a headset it's much closer to VR.[/b] Press [b]Ctrl+F8[/b] in game to compare.[/*]
+[*]Adds [b]Full SBS[/b] for ultrawide virtual displays, such as [b]3D glasses that take 3840x1080[/b]: each eye gets a whole, undistorted 16:9 picture, HUD, menus and loading screens included. [color=#cc0000][b]Tested on a 5120x1440 screen, not on glasses yet![/b][/color][/*]
 [/list]
 [b]It's the game's own stereo renderer, not a depth-map effect.[/b] No game files are modified.
 
@@ -28,16 +29,17 @@ For 2D, turn 3D Mode off. [b]Uninstall:[/b] remove the mod in Vortex ([url=https
 [*]Tune depth with the game's [b]Preset[/b], [b]Depth[/b] (0.5 to 1.0 suits a headset), [b]Weapon Depth[/b] and [b]Motion Comfort[/b].[/*]
 [*][b]More depth:[/b] lower the game's Field of View (Graphics settings) until the world looks life-sized.[/*]
 [*][b]Fixed 3D:[/b] turn it on in Mod Settings, 3D Braindance Edition. Depth scales your IPD (Immersive is true scale; try Field of View 90). [color=#cc0000][b]It has none of the game's comfort limits[/b][/color] and is made for a large virtual screen: if your eyes ache, lower Depth or Screen size. [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#fixed-3d]Details[/url].[/*]
-[*]Each eye gets half the horizontal resolution and every frame renders twice: use a [b]4K (virtual) monitor[/b] and frame generation. See the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#recommended-setup-quest-3--virtual-desktop]recommended setup[/url].[/*]
+[*][b]Full SBS:[/b] run the game at the glasses' full SBS resolution with 3D Mode on. Mod Settings' [b]Output[/b] = Auto picks it in a window at least 3 times as wide as high, Full SBS from twice as wide; it switches at once. Virtual Desktop can't show full SBS: keep half SBS there. [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#full-sbs]Details[/url].[/*]
+[*]In half SBS each eye gets half the horizontal resolution and every frame renders twice: use a [b]4K (virtual) monitor[/b] and frame generation. See the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#recommended-setup-quest-3--virtual-desktop]recommended setup[/url].[/*]
 [/list]
 [size=4][b]Requirements[/b][/size]
 [list]
 [*]Cyberpunk 2077 [b]2.5[/b] on Windows 10 or 11. Tested on Epic; Steam and GOG untested.[/*]
 [*][url=https://www.nexusmods.com/cyberpunk2077/mods/2380]RED4ext[/url]. Without it, use the setup script from the [url=https://github.com/vl3c/cyberpunk2077-3d-braindance-edition#no-red4ext]GitHub download[/url] (then only 3D Mode and side by side work).[/*]
 [*]Optional, for Fixed 3D's settings page: [url=https://www.nexusmods.com/cyberpunk2077/mods/4885]Mod Settings[/url]. Without it, Ctrl+F8 still switches Fixed 3D with the default settings.[/*]
-[*]A 3D / VR headset with [b]half-SBS support[/b], or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with [url=https://www.vrdesktop.net/]Virtual Desktop[/url].[/*]
+[*]A 3D / VR headset with [b]half-SBS support[/b], a 3D TV or monitor with an SBS mode, or 3D glasses that take [b]full SBS[/b] (3840x1080). Tested: Quest 3 with [url=https://www.vrdesktop.net/]Virtual Desktop[/url]; full SBS on a 5120x1440 screen.[/*]
 [*][b]Frame generation in 3D[/b]: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), or FSR3 (2x; tested on an NVIDIA card, not yet on AMD). FSR4 (RX 9000) and XeSS (Intel Arc) are untested: please report how they look.[/*]
-[*]Own a glasses-free 3D monitor the game supports? With its software installed, the mod keeps the monitor's own 3D and adds Fixed 3D to it ([color=#cc0000][b]untested on such a monitor[/b][/color]). Frame generation, weapon depth and the menu fix stay off there, as in the game. For side by side instead, set [b]Output[/b] to [b]Half SBS[/b] in Mod Settings.[/*]
+[*]Own a glasses-free 3D monitor the game supports? With its software installed, the mod keeps the monitor's own 3D and adds Fixed 3D to it ([color=#cc0000][b]untested on such a monitor[/b][/color]). Frame generation, weapon depth and the menu fix stay off there, as in the game. For side by side instead, set [b]Output[/b] to [b]Half SBS[/b] or [b]Full SBS[/b] in Mod Settings.[/*]
 [/list]
 [size=4][b]Shout outs[/b][/size]
 [list]
@@ -57,6 +59,7 @@ Settings and logs are in [i]bin\x64\Braindance3D[/i] (or [i]%LOCALAPPDATA%\Brain
 [size=4][b]Known limitations[/b][/size]
 [list]
 [*]Overlays drawn over the game look split in 3D: Cyber Engine Tweaks' overlay during gameplay (fine over a game menu, so pause first), and OptiScaler's menu and FPS counter always. Turn 3D Mode off to use them; it switches live. [i]FpsOverlayPos = 0[/i] keeps OptiScaler's counter readable in the left eye.[/*]
+[*]In full SBS, overlays drawn over the whole window (FPS counters and the like) land off the middle of each eye.[/*]
 [*]Mod Organizer 2 isn't supported yet. Untested: multi-monitor setups, viewers other than Virtual Desktop.[/*]
 [/list]
 [size=4][b]Bugs[/b][/size]

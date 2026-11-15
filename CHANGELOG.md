@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 (2026-11-15)
+
+- Full SBS for ultrawide virtual displays, such as 3D glasses that take a 3840x1080 picture (two whole 1920x1080
+  eyes). Each eye gets a normal, undistorted 16:9 picture: the world (the game's vertical field of view is kept), the
+  HUD, notifications and world markers, menus and the map (the middle of the window, 1:1). Tested on a 5120x1440
+  screen (the same shape) with DLSS frame generation, path tracing and raster; not on glasses yet.
+- The Output dropdown in Mod Settings has Auto, Half SBS and Full SBS, and switches at once, no restart (except to or
+  from a glasses-free 3D monitor's own output). Auto picks full SBS in a window at least 3 times as wide as high, half
+  SBS otherwise; Full SBS picks it from twice as wide, so 1920x1080 in 2D stays half. In the settings ini:
+  `[Display] Output = fullsbs`.
+- Loading screens and the intro are drawn flat in a window wider than 16:9 in 3D Mode, so each eye shows them whole. The
+  game's own 3D swapped their halves there and showed the world between them (white at start), with or without this
+  mod; 16:9 windows are unchanged. This needs the menu squeeze (on by default).
+- Menus in a full SBS window narrower than two 16:9 eyes (3840x1200, say) are shown whole and a little smaller in each
+  eye, with black bars above and below.
+- Virtual Desktop can't show full SBS (it shows the wide picture as one screen): keep half SBS there.
+- README, Nexus page and TECHNICAL.md: full SBS.
+
 ## 0.5.1 (2026-11-06)
 
 - Glasses-free 3D monitors: when the monitor's own software is installed (the mod never replaces it), 3D Mode now uses
