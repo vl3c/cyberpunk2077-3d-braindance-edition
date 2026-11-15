@@ -67,5 +67,15 @@ int framegen_side_by_side(void);
 // (where the game puts menus in so wide a window) instead of the whole frame squeezed.
 int framegen_full_sbs(unsigned width, unsigned height);
 
+// Whether loading screens are drawn flat now: one is up in a window wider than 16:9, side by side, with the squeeze
+// running (braindance3d_framegen.c clears the frame's stereo for it). The menu squeeze then treats the frame as a menu.
+int framegen_loading_flat(void);
+
+// The game frames presented so far (GpuApi::Present calls), for braindance3d_framegen.c.
+long long menus_game_frame(void);
+
+// The game's back buffer size as last presented. 1 if known and the squeeze runs (it shows flat frames to both eyes).
+int menus_window_size(unsigned *width, unsigned *height);
+
 // Reads the Fixed 3D settings from installDir and Mod Settings' file. Call before framegen_load.
 void stereo_settings_load(const wchar_t *installDir);

@@ -98,6 +98,16 @@
 // is laid out exactly as half SBS on a 16:9 screen, with twice the pixels across. Found with the Cyberpunk VR port
 // (dariulone/cyberpunk-vr-port, MIT, src/Stereo/EngineStereo.cpp). Only while [Odyssey3D] SBSDebug is on and the
 // camera's aspect is at least the full SBS aspect, so a window that isn't (glasses switched to 2D) keeps half SBS.
+//
+// Loading screens in a window wider than 16:9 (the intro's logos and legal text, the loading screens). The game draws
+// them in 3D over the world (an empty one at start), each eye's copy of the 16:9 screen squeezed into its own half,
+// but puts the black bars that keep a 16:9 screen in the middle of a wider window across the whole window: they hide
+// the outer half of each eye's screen, and the world shows between the two halves left (white at start). The game's
+// own 3D does it, without this plugin too. While the loading layer is up in such a window, FlagCompute's stereo
+// feature (98, and 99 that comes with it) is cleared, so the frame is drawn flat and the menu squeeze shows it in each
+// eye as it does a menu. The layer is found by its class (inkLoadingLayer) in ink's shared layer tick, which also
+// reads whether it is active. Only side by side, with the menu squeeze running (it needs the window's size), and only
+// wider than 16:9: at 16:9 the bars are empty and the game's 3D draws these screens right.
 // Attached unless the output is a 3D monitor's own, so Mod Settings' Output switches between Half SBS, Full SBS and Auto
 // live (output_reread). The HUD is still laid out over the whole window and comes out squashed in each eye.
 //
@@ -148,6 +158,7 @@
 #define RENDERER_XESS 0x4678     // the renderer's XeSS object
 #define XESS_FG_ON 0xDD          //   its "frame generation on" flag (uint8_t), what FlagCompute reads
 #define FEATURE_STEREO 98
+#define FEATURE_STEREO_TOO 99      // set by FlagCompute whenever it sets 98
 #define FEATURE_BIT(n) (1ull << ((n) - 64)) // features 64-127 are in flags[1]
 #define HASH_PLANE_OVERRIDE 4284682890u // the plane override: (float *override, camera descriptor), rebuilds the plane
 #define HASH_PLANE_REBUILD 2830242058u  // the plane rebuild it calls: (camera descriptor, the plane's settings)
@@ -272,6 +283,21 @@ static const char AOB_CAMERA_EYE[] = "F6 86 99 03 00 00 02 0F 84 ?? ?? ?? ?? 80 
 // In it, the eye's off-axis projection gets the aspect: movss xmm2,[rsi+28h] (then the call).
 static const char AOB_CAMERA_EYE_ASPECT[] = "F3 0F 10 56 28 48 89 44 24 30 F3 0F 11 44 24 28 E8";
 
+// Loading screens: ink's layer tick, (layer, tick, jobs), shared by every layer class (slot 33 of their vtables).
+#define HASH_LAYER_TICK 616175466u
+#define LAYER_TICK_SIZE 0xC7         // pdata 0x60787C-0x607943
+#define LAYER_ACTIVE 0xB0            // uint8: inkLayer's active flag
+#define CLASS_PARENT 0x10            // RTTI class (what an object's first virtual, GetNativeType, returns): its parent
+#define CLASS_NAME 0x18              //   and its name, a CName (FNV-1a 64 of the text)
+#define CLASS_DEPTH 8                // parents looked at for inkLayer
+#define LOADING_CLASSES 64           // layer vtables remembered (the game has a dozen layer classes)
+#define LOADING_TICK_FRAMES 30       // game frames a loading layer counts as up after its last tick (a load skips some)
+#define WIDE_WINDOW_ASPECT 1.8f      // wider than 16:9 (1.7778), with room for an odd pixel
+// The layer tick's start: it copies the tick's time (+0), size (+0x10, +0x14), view (+8) and flag (+0x18).
+static const char AOB_LAYER_TICK[] =
+    "40 53 48 83 EC 60 48 8B 02 49 8B D8 F3 0F 10 42 10 F3 0F 10 4A 14 48 89 44 24 38 48 8B 42 08 48 89 44 24 40 "
+    "8A 42 18";
+
 // Fixed 3D. The camera build reads these two through renderer vtable +0x440 and +0x450
 // (metres; the eye cameras sit half the separation left and right of the centre, and the convergence is the distance
 // with no parallax between the eyes). Each is a thunk: renderer global -> Odyssey object -> getter.
@@ -341,6 +367,8 @@ typedef void *(*RootFn)(void);
 typedef void *(*FindFn)(void *parent, uint64_t cname);
 typedef int64_t (*PlaneOverrideFn)(float *override, uint8_t *camera);
 typedef int64_t (*CameraBuildFn)(uint8_t *camera);
+typedef int64_t (*LayerTickFn)(uint8_t *layer, const void *tick, void *jobs);
+typedef const uint8_t *(*NativeTypeFn)(const void *object);
 typedef float (*WeaponSepFn)(void *settings);
 typedef float (*CameraFloatFn)(void *renderer);
 typedef uint8_t *(*BoolVarFn)(uint64_t group, uint64_t name);
@@ -430,6 +458,20 @@ static struct {
     volatile LONG centreKey;   // the centre camera last logged (field of view and aspect, rounded)
     volatile DWORD centreTick;
 } full;
+
+// Loading screens drawn flat in a wide window (check_loading).
+static struct {
+    LayerTickFn tickOrig;
+    SRWLOCK lock;                              // guards the class table
+    const void *vtables[LOADING_CLASSES];      // layer vtables seen
+    uint8_t kinds[LOADING_CLASSES];            //   and what they are: LAYER_*
+    int count;
+    volatile LONG64 upFrame;   // menus_game_frame() + 1 when the loading layer was last ticked active; 0: not up
+    volatile LONG up, flat;    // logged states: the layer up, its frames drawn flat
+    volatile LONG classesLogged;
+    volatile LONG64 flatFrames;
+} loading;
+enum { LAYER_OTHER = 1, LAYER_LOADING = 2, LAYER_UNKNOWN = 3 };
 
 // Read by name from bd3d_stub_stereo_update.
 __attribute__((used)) volatile float bd3d_stereo_tan;   // tan(hfov / 2) of the last stereo update, 0: none yet
@@ -1072,6 +1114,8 @@ static void count_restored(RestoreCount *c, const char *name)
     }
 }
 
+static void loading_flags(uint64_t *bits);
+
 // Returns what the original returns (the flags): its caller reads the bits through it.
 HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame, void *settings)
 {
@@ -1093,6 +1137,7 @@ HOOK uint64_t *hook_flag_compute(uint8_t *renderer, uint64_t *flags, void *frame
         bits[1] |= FEATURE_BIT(FEATURE_XESS_FG);
         count_restored(&fg.xessCount, "XeSS");
     }
+    loading_flags(bits); // last: frame generation goes on as in any flat frame
     return ret;
 }
 
@@ -1294,6 +1339,102 @@ HOOK int64_t hook_camera_build(uint8_t *camera)
         }
     }
     return full.buildOrig(camera);
+}
+
+// ---------------------------------------------------------------- loading screens in a wide window
+
+// What class the layer behind vtable is: LAYER_LOADING (inkLoadingLayer), LAYER_OTHER (another of ink's layers), or
+// LAYER_UNKNOWN (its class doesn't read as one of ink's: inkLayer isn't among its parents).
+static int layer_class(const void *vtable, const uint8_t *layer)
+{
+    void *const *slots = (void *const *)vtable;
+    if (!in_exe((uintptr_t)vtable, sizeof(void *)) || !in_exe((uintptr_t)slots[0], 1)) return LAYER_UNKNOWN;
+    const uint8_t *cls = ((NativeTypeFn)slots[0])(layer);
+    int loading = 0;
+    for (int depth = 0; depth < CLASS_DEPTH && cls && readable(cls, CLASS_NAME + sizeof(uint64_t)); depth++) {
+        uint64_t name = *(const uint64_t *)(cls + CLASS_NAME);
+        if (depth == 0) loading = name == cname("inkLoadingLayer");
+        if (name == cname("inkLayer")) return loading ? LAYER_LOADING : LAYER_OTHER;
+        cls = *(const uint8_t *const *)(cls + CLASS_PARENT);
+    }
+    return LAYER_UNKNOWN;
+}
+
+// The layer's class (LAYER_*), looked up once per vtable.
+static int layer_kind(const uint8_t *layer)
+{
+    const void *vtable = *(const void *const *)layer;
+    int kind = 0;
+    AcquireSRWLockShared(&loading.lock);
+    for (int i = 0; i < loading.count && !kind; i++)
+        if (loading.vtables[i] == vtable) kind = loading.kinds[i];
+    ReleaseSRWLockShared(&loading.lock);
+    if (kind) return kind;
+    kind = layer_class(vtable, layer);
+    AcquireSRWLockExclusive(&loading.lock);
+    int known = 0;
+    for (int i = 0; i < loading.count; i++) known |= loading.vtables[i] == vtable;
+    if (!known && loading.count < LOADING_CLASSES) {
+        loading.vtables[loading.count] = vtable;
+        loading.kinds[loading.count++] = (uint8_t)kind;
+    }
+    ReleaseSRWLockExclusive(&loading.lock);
+    if (known) return kind;
+    if (kind == LAYER_LOADING) plugin_log(1, "loading: found the loading layer (vtable %p)", vtable);
+    else if (kind == LAYER_UNKNOWN && !InterlockedExchange(&loading.classesLogged, 1))
+        plugin_log(1, "loading: a layer's class doesn't read as one of ink's (vtable %p, game update?): loading screens "
+                      "stay as the game draws them",
+                   vtable);
+    return kind;
+}
+
+// Whether the loading layer was ticked active in the last LOADING_TICK_FRAMES game frames.
+static int loading_up(void)
+{
+    LONG64 up = loading.upFrame;
+    return up && menus_game_frame() + 1 - up <= LOADING_TICK_FRAMES;
+}
+
+// Notes whether the loading layer is up, each time ink ticks it.
+HOOK int64_t hook_layer_tick(uint8_t *layer, const void *tick, void *jobs)
+{
+    if (layer && layer_kind(layer) == LAYER_LOADING) {
+        LONG active = layer[LAYER_ACTIVE] != 0;
+        InterlockedExchange64(&loading.upFrame, active ? menus_game_frame() + 1 : 0);
+        if (InterlockedExchange(&loading.up, active) != active)
+            plugin_log(1, "loading: the loading screen is %s (game frame %lld)", active ? "up" : "gone",
+                       (long long)menus_game_frame());
+    }
+    return loading.tickOrig(layer, tick, jobs);
+}
+
+int framegen_loading_flat(void)
+{
+    if (!loading.tickOrig || !fg.sbsVar || !sbs_debug() || !loading_up()) return 0;
+    unsigned w, h;
+    return menus_window_size(&w, &h) && (float)w > WIDE_WINDOW_ASPECT * (float)h;
+}
+
+// In FlagCompute's result: clears the stereo features while framegen_loading_flat says so. Logs each change.
+static void loading_flags(uint64_t *bits)
+{
+    const uint64_t stereo = FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_STEREO_TOO);
+    LONG flat = framegen_loading_flat();
+    if (flat && (bits[1] & stereo)) {
+        bits[1] &= ~stereo;
+        InterlockedIncrement64(&loading.flatFrames);
+    }
+    if (InterlockedExchange(&loading.flat, flat) != flat) {
+        unsigned w = 0, h = 0;
+        menus_window_size(&w, &h);
+        if (flat)
+            plugin_log(1, "loading: loading screen in a %ux%u window: drawn flat, so each eye shows it whole (the game's "
+                          "3D puts its black bars across the window)",
+                       w, h);
+        else
+            plugin_log(1, "loading: drawn as the game has it again (%lld view frames made flat)",
+                       (long long)loading.flatFrames);
+    }
 }
 
 // A float from an ini file, or fallback (logged) if it's missing, malformed or outside lo..hi.
@@ -1570,6 +1711,8 @@ REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_weapon_sep, hook_weapon_sep);
 float bd3d_thunk_weapon_sep(void *settings);
 REGISTER_KEEPING_THUNK(bd3d_thunk_camera_build, hook_camera_build);
 int64_t bd3d_thunk_camera_build(uint8_t *camera);
+REGISTER_KEEPING_THUNK(bd3d_thunk_layer_tick, hook_layer_tick);
+int64_t bd3d_thunk_layer_tick(uint8_t *layer, const void *tick, void *jobs);
 REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_camera_sep, hook_camera_sep);
 float bd3d_thunk_camera_sep(void *renderer);
 REGISTER_KEEPING_FLOAT_THUNK(bd3d_thunk_camera_conv, hook_camera_conv);
@@ -1977,6 +2120,39 @@ static int attach_full_sbs(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
+// The loading screen group: ink's layer tick (its start). Fills in *tick and returns 1, or logs why not and returns 0.
+static int check_loading(ResolveFn resolve, uint8_t **tick)
+{
+    *tick = (uint8_t *)resolve(HASH_LAYER_TICK);
+    const char *why = NULL;
+    if (!fg.sbsVar) why = "the SBSDebug var wasn't found";
+    else if (!fg.flagOrig) why = "FlagCompute isn't hooked";
+    else if (!in_exe((uintptr_t)*tick, LAYER_TICK_SIZE)) why = "the layer tick didn't resolve into the game exe";
+    else if (aob_find_unique(*tick, LAYER_TICK_SIZE, AOB_LAYER_TICK) != 0) why = "the layer tick: start doesn't match";
+    if (why) {
+        plugin_log(1, "loading: %s (game update?): not hooked, loading screens stay as the game draws them", why);
+        return 0;
+    }
+    return 1;
+}
+
+// The loading screen group: not with a 3D monitor's own output (no side by side). Returns 1 when attached.
+static int attach_loading(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
+{
+    if (output.monitor) return 0;
+    uint8_t *tick;
+    if (!check_loading(resolve, &tick)) return 0;
+    InitializeSRWLock(&loading.lock);
+    if (!h->Attach(pluginHandle, tick, (void *)bd3d_thunk_layer_tick, (void **)&loading.tickOrig)) {
+        loading.tickOrig = NULL;
+        plugin_log(1, "loading: couldn't hook the layer tick: loading screens stay as the game draws them");
+        return 0;
+    }
+    plugin_log(1, "loading: layer tick hooked; in a window wider than 16:9 loading screens are drawn flat (while "
+                  "[Odyssey3D] SBSDebug is on and the menu squeeze runs)");
+    return 1;
+}
+
 // RED4ext's address lookup, or NULL if this RED4ext has none.
 static ResolveFn red4ext_resolver(void)
 {
@@ -2084,6 +2260,7 @@ int framegen_load(void *pluginHandle, const R4eSdk *sdk)
     int attached = attach_hooks(pluginHandle, sdk->hooking, resolve);
     attach_gun(pluginHandle, sdk->hooking, resolve);
     attach_full_sbs(pluginHandle, sdk->hooking, resolve);
+    attach_loading(pluginHandle, sdk->hooking, resolve);
     attach_stereo(pluginHandle, sdk->hooking, resolve);
     return attached;
 }

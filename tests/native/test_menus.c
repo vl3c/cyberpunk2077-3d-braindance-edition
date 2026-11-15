@@ -23,6 +23,10 @@ int framegen_full_sbs(unsigned width, unsigned height)
     return f_full_sbs_aspect > 0.0f && height && (float)width >= f_full_sbs_aspect * (float)height;
 }
 
+// And whether a loading screen is drawn flat in a wide window now.
+static int f_loading_flat;
+int framegen_loading_flat(void) { return f_loading_flat; }
+
 static LONG64 fake_device_calls(int slot) { return slot >= 0 ? 0 : -1; }
 
 // Puts the plugin's globals back to a freshly loaded auto mode, with the stand-in's counters "found".
@@ -38,6 +42,7 @@ static void mt_begin(void)
     g.deviceCalls = fake_device_calls;
     g.stereo = STEREO_UNKNOWN;
     f_side_by_side = 1;
+    f_loading_flat = 0;
 }
 
 // Frame patterns measured on the PC (2.5, 2026-10-29): what the game asks the stand-in per frame.
@@ -277,6 +282,41 @@ TEST(an_interrupted_run_of_2d_frames_does_not_switch_3d_off)
         menu_frame();
     }
     CHECK_EQ_INT(g.stereo, STEREO_ON);
+}
+
+TEST(a_loading_screen_drawn_flat_is_squeezed_like_a_menu)
+{
+    mt_begin();
+    stereo_frame();
+    f_loading_flat = 1; // the frame was made flat after the stand-in was asked for the eyes
+    stereo_frame();
+    CHECK_EQ_INT(want_squeeze(), 1);
+    frames(flat_2d_frame, 2 * STEREO_OFF_FRAMES); // FlagCompute still asks IsAvailable once
+    CHECK_EQ_INT(g.stereo, STEREO_ON);             // not 2D gameplay
+    CHECK_EQ_INT(want_squeeze(), 1);
+    f_loading_flat = 0;
+    stereo_frame();
+    CHECK_EQ_INT(want_squeeze(), 0); // the game's 3D again
+}
+
+TEST(the_window_size_is_known_only_while_the_squeeze_runs)
+{
+    mt_begin();
+    unsigned w, h;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 0); // nothing presented yet
+    g.bbWidth = 5120;
+    g.bbHeight = 1440;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 1);
+    CHECK_EQ_INT((int)w, 5120);
+    CHECK_EQ_INT((int)h, 1440);
+    g.failed = 1;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 0);
+    g.failed = 0;
+    g.mode = MODE_OFF;
+    CHECK_EQ_INT(menus_window_size(&w, &h), 0);
+    g.mode = MODE_ON;
+    g.gameFrames = 42;
+    CHECK_EQ_INT((int)menus_game_frame(), 42);
 }
 
 TEST(stereo_frames_switch_3d_back_on)

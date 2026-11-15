@@ -20,6 +20,16 @@ static int f_noted3d = -1; // what the menu squeeze was last told
 
 void menus_note_3d_mode(int on) { f_noted3d = on; }
 void menus_notice(int on) { (void)on; }
+// The menu squeeze's game frame count and back buffer, as braindance3d_menus.c would answer.
+static long long f_gameFrame;
+static unsigned f_winW, f_winH;
+long long menus_game_frame(void) { return f_gameFrame; }
+int menus_window_size(unsigned *width, unsigned *height)
+{
+    *width = f_winW;
+    *height = f_winH;
+    return f_winW && f_winH;
+}
 
 void plugin_log(int level, const char *fmt, ...)
 {
@@ -3305,6 +3315,163 @@ TEST(full_sbs_thunk_has_unwind_info)
 {
     DWORD64 base = 0;
     CHECK(RtlLookupFunctionEntry((DWORD64)(uintptr_t)(void *)bd3d_thunk_camera_build, &base, NULL) != NULL);
+}
+
+
+// ===================================================================================== loading screens
+
+// ink's layer tick (start only) and its classes: a fake GetNativeType in slot 0 of each fake vtable, returning a fake
+// class (name and parent at the game's offsets).
+static uint8_t f_tickCode[LAYER_TICK_SIZE];
+static _Alignas(16) uint8_t f_clsLayer[0x40], f_clsLoading[0x40], f_clsHud[0x40], f_clsOdd[0x40];
+static const uint8_t *fake_native_loading(const void *o) { (void)o; return f_clsLoading; }
+static const uint8_t *fake_native_hud(const void *o) { (void)o; return f_clsHud; }
+static const uint8_t *fake_native_odd(const void *o) { (void)o; return f_clsOdd; }
+static void *f_vtLoading[4] = { (void *)fake_native_loading }, *f_vtHud[4] = { (void *)fake_native_hud },
+            *f_vtOdd[4] = { (void *)fake_native_odd };
+static _Alignas(16) uint8_t f_layerLoading[0x200], f_layerHud[0x200], f_layerOdd[0x200];
+static int f_ticks;
+static int64_t fake_tick(uint8_t *layer, const void *tick, void *jobs) { (void)layer; (void)tick; (void)jobs; f_ticks++; return 7; }
+
+static void set_class(uint8_t *cls, const char *name, const uint8_t *parent)
+{
+    memset(cls, 0, 0x40);
+    *(uint64_t *)(cls + CLASS_NAME) = cname(name);
+    *(const uint8_t **)(cls + CLASS_PARENT) = parent;
+}
+
+static uintptr_t loading_resolve(uint32_t hash) { return hash == HASH_LAYER_TICK ? (uintptr_t)f_tickCode : fake_resolve(hash); }
+
+// A side-by-side session with the loading group checked (the original is the fake above), a 32:9 window at frame 100.
+static void ld_begin(void)
+{
+    ft_begin();
+    memset(&loading, 0, sizeof(loading));
+    InitializeSRWLock(&loading.lock);
+    memset(f_tickCode, 0xCC, sizeof(f_tickCode));
+    put(f_tickCode, AOB_LAYER_TICK);
+    fg.sbsVar = (const uint8_t *)f_sbsVar;
+    set_sbs_debug(1);
+    set_class(f_clsLayer, "inkLayer", NULL);
+    set_class(f_clsLoading, "inkLoadingLayer", f_clsLayer);
+    set_class(f_clsHud, "inkHUDLayer", f_clsLayer);
+    set_class(f_clsOdd, "somethingElse", NULL);
+    *(void ***)f_layerLoading = f_vtLoading;
+    *(void ***)f_layerHud = f_vtHud;
+    *(void ***)f_layerOdd = f_vtOdd;
+    uint8_t *tick;
+    CHECK_EQ_INT(check_loading(loading_resolve, &tick), 1);
+    CHECK_EQ_PTR(tick, f_tickCode);
+    loading.tickOrig = fake_tick;
+    f_ticks = 0;
+    f_gameFrame = 100;
+    f_winW = 5120;
+    f_winH = 1440;
+}
+
+static void tick_layer(uint8_t *layer, int active)
+{
+    layer[LAYER_ACTIVE] = (uint8_t)active;
+    CHECK_EQ_INT((int)hook_layer_tick(layer, NULL, NULL), 7);
+}
+
+static uint64_t stereo_bits(void) { return FEATURE_BIT(FEATURE_STEREO) | FEATURE_BIT(FEATURE_STEREO_TOO); }
+
+TEST(check_loading_finds_the_layer_tick_or_says_why_not)
+{
+    ld_begin();
+    f_tickCode[1] = 0x54; // a game update changed the start
+    uint8_t *tick;
+    CHECK_EQ_INT(check_loading(loading_resolve, &tick), 0);
+    CHECK(strstr(ft_log, "loading: the layer tick: start doesn't match (game update?): not hooked") != NULL);
+    ld_begin();
+    fg.flagOrig = NULL;
+    CHECK_EQ_INT(check_loading(loading_resolve, &tick), 0);
+    CHECK(strstr(ft_log, "loading: FlagCompute isn't hooked") != NULL);
+}
+
+TEST(loading_isnt_hooked_for_a_3d_monitor)
+{
+    ld_begin();
+    framegen_set_output(OUTPUT_MONITOR);
+    CHECK_EQ_INT(attach_loading(NULL, &f_hooking, loading_resolve), 0);
+    CHECK_EQ_INT(f_attached, 0);
+}
+
+TEST(the_layer_tick_finds_the_loading_layer_by_its_class)
+{
+    ld_begin();
+    CHECK_EQ_INT(layer_kind(f_layerLoading), LAYER_LOADING);
+    CHECK_EQ_INT(layer_kind(f_layerHud), LAYER_OTHER);
+    CHECK_EQ_INT(layer_kind(f_layerOdd), LAYER_UNKNOWN);
+    CHECK(strstr(ft_log, "loading: found the loading layer") != NULL);
+    CHECK(strstr(ft_log, "doesn't read as one of ink's") != NULL);
+    CHECK_EQ_INT(loading.count, 3);
+    CHECK_EQ_INT(layer_kind(f_layerLoading), LAYER_LOADING); // remembered, not asked again
+    CHECK_EQ_INT(loading.count, 3);
+    // A layer class two steps under inkLayer counts as ink's too, but isn't the loading layer.
+    set_class(f_clsHud, "inkHUDLayer", f_clsLoading);
+    memset(&loading, 0, sizeof(loading));
+    InitializeSRWLock(&loading.lock);
+    CHECK_EQ_INT(layer_kind(f_layerHud), LAYER_OTHER);
+}
+
+TEST(a_loading_screen_up_in_a_wide_window_is_drawn_flat)
+{
+    ld_begin();
+    f_flagsAfterOrig[1] = stereo_bits() | FEATURE_BIT(FEATURE_DLSSG);
+    CHECK_EQ_INT(framegen_loading_flat(), 0); // not ticked yet
+    CHECK(run_flags() & FEATURE_BIT(FEATURE_STEREO));
+    tick_layer(f_layerLoading, 1);
+    CHECK_EQ_INT(f_ticks, 1);
+    CHECK(strstr(ft_log, "loading: the loading screen is up") != NULL);
+    CHECK_EQ_INT(framegen_loading_flat(), 1);
+    uint64_t bits = run_flags();
+    CHECK_EQ_INT((int)((bits & stereo_bits()) != 0), 0);
+    CHECK(bits & FEATURE_BIT(FEATURE_DLSSG)); // everything else as the game has it
+    CHECK(strstr(ft_log, "loading: loading screen in a 5120x1440 window: drawn flat") != NULL);
+    // The layer goes down: 3D again at once.
+    tick_layer(f_layerLoading, 0);
+    CHECK(strstr(ft_log, "loading: the loading screen is gone") != NULL);
+    CHECK(run_flags() & FEATURE_BIT(FEATURE_STEREO));
+    CHECK(strstr(ft_log, "loading: drawn as the game has it again (1 view frames made flat)") != NULL);
+}
+
+TEST(a_loading_screen_counts_as_up_for_a_while_after_its_last_tick)
+{
+    ld_begin();
+    tick_layer(f_layerLoading, 1);
+    f_gameFrame += LOADING_TICK_FRAMES - 1;
+    CHECK_EQ_INT(framegen_loading_flat(), 1); // a load skips some ticks
+    f_gameFrame += 2;
+    CHECK_EQ_INT(framegen_loading_flat(), 0); // not ticked any more: gone
+}
+
+TEST(other_layers_and_other_windows_keep_the_games_3d)
+{
+    ld_begin();
+    tick_layer(f_layerHud, 1);
+    tick_layer(f_layerOdd, 1);
+    CHECK_EQ_INT(framegen_loading_flat(), 0);
+    tick_layer(f_layerLoading, 1);
+    f_winW = 3840; f_winH = 2160; // 16:9: the game's 3D draws it right
+    CHECK_EQ_INT(framegen_loading_flat(), 0);
+    f_winW = 3440; f_winH = 1440; // 21:9
+    CHECK_EQ_INT(framegen_loading_flat(), 1);
+    f_winW = 0; // the squeeze isn't running (off, or it failed): it couldn't show the flat frame in each eye
+    CHECK_EQ_INT(framegen_loading_flat(), 0);
+    f_winW = 5120;
+    set_sbs_debug(0); // 3D Mode isn't side by side
+    CHECK_EQ_INT(framegen_loading_flat(), 0);
+    set_sbs_debug(1);
+    loading.tickOrig = NULL; // not hooked
+    CHECK_EQ_INT(framegen_loading_flat(), 0);
+}
+
+TEST(loading_thunk_has_unwind_info)
+{
+    DWORD64 base = 0;
+    CHECK(RtlLookupFunctionEntry((DWORD64)(uintptr_t)(void *)bd3d_thunk_layer_tick, &base, NULL) != NULL);
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }

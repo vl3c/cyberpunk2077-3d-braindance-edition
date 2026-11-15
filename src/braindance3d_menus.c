@@ -116,6 +116,7 @@ static struct {
     volatile LONG noticeOn;    //   and what it says: FIXED ON, or FIXED OFF
     LONG64 lastNoticeFrame;    //   game frame it was last drawn on
     LONG64 gameFrames;
+    volatile LONG bbWidth, bbHeight; // the game's back buffer, as last presented
     int lastSqueeze;  // for logging changes
     LONG64 frames, squeezed;
     DWORD lastSummary;
@@ -913,7 +914,9 @@ static int find_device_calls(void)
 // What one game frame's stand-in calls say: dEye eye positions and dAvail IsAvailable calls since the last frame.
 static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
 {
-    LONG flat = dEye == 0;
+    // A loading screen drawn flat in a wide window (framegen_loading_flat) is a menu too, whatever the stand-in saw.
+    int loadingFlat = framegen_loading_flat();
+    LONG flat = dEye == 0 || loadingFlat;
     InterlockedExchange(&g.flatFrame, flat);
     if (!flat) {
         // Only a frame rendered in stereo asks for eye positions.
@@ -921,7 +924,7 @@ static void note_frame_calls(LONG64 dEye, LONG64 dAvail)
         set_stereo(STEREO_ON, "a frame rendered in stereo");
         return;
     }
-    if (dAvail == 1) {
+    if (dAvail == 1 && !loadingFlat) {
         // 2D gameplay asks IsAvailable once per frame (stereo asks twice); a few such frames also turn up while
         // the settings menu re-checks the display, so it takes a run of them.
         if (++g.flatStreak == STEREO_OFF_FRAMES) set_stereo(STEREO_OFF, "2D gameplay frames");
@@ -949,6 +952,15 @@ void menus_note_3d_mode(int on)
     // render thread's next frame counts from there either way).
     g.flatStreak = 0;
     set_stereo(on ? STEREO_ON : STEREO_OFF, "the game's 3D Mode handler");
+}
+
+long long menus_game_frame(void) { return (long long)g.gameFrames; }
+
+int menus_window_size(unsigned *width, unsigned *height)
+{
+    *width = (unsigned)g.bbWidth;
+    *height = (unsigned)g.bbHeight;
+    return g.mode != MODE_OFF && !g.failed && *width && *height;
 }
 
 static int menu_open(void) { return g.deviceCalls && g.flatFrame && g.stereo == STEREO_ON; }
@@ -995,6 +1007,11 @@ static void before_present(IDXGISwapChain *sc, const char *which)
     if (!is_game_swap_chain(sc)) return;
     if (InterlockedCompareExchange(&g.busy, 1, 0) != 0) return;
     g.frames++;
+    DXGI_SWAP_CHAIN_DESC desc;
+    if (SUCCEEDED(IDXGISwapChain_GetDesc(sc, &desc))) {
+        InterlockedExchange(&g.bbWidth, (LONG)desc.BufferDesc.Width);
+        InterlockedExchange(&g.bbHeight, (LONG)desc.BufferDesc.Height);
+    }
     int want = !g.failed && want_squeeze();
     if (want != g.lastSqueeze) {
         mlog("%s: squeeze %s (frame %lld)", which, want ? "ON" : "off", (long long)g.frames);
