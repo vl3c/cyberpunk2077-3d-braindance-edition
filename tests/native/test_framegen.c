@@ -3187,7 +3187,14 @@ TEST(full_sbs_window_needs_the_output_sbsdebug_and_the_width)
     CHECK(!framegen_full_sbs(3840, 2160));
 }
 
-TEST(the_cameras_of_a_full_sbs_window_are_built_for_one_eye_then_put_back)
+// A camera of the main view carries the view's size.
+static void view_size(uint8_t *camera, int32_t width, int32_t height)
+{
+    ((int32_t *)(camera + CAMERA_VIEW_SIZE))[0] = width;
+    ((int32_t *)(camera + CAMERA_VIEW_SIZE))[1] = height;
+}
+
+TEST(the_cameras_of_a_full_sbs_window_are_built_for_one_eye_and_stay_so)
 {
     fs_begin();
     for (int kind = 0; kind <= 2; kind++) {
@@ -3195,7 +3202,7 @@ TEST(the_cameras_of_a_full_sbs_window_are_built_for_one_eye_then_put_back)
         CHECK(hook_camera_build(camera) == 7);
         CHECK_NEAR(f_builtAspect, 1920.0f / 1080.0f, 1e-5);
         CHECK(f_builtFov == 60.0f); // the vertical field of view is the window's
-        CHECK(*(float *)(camera + CAMERA_ASPECT) == 3840.0f / 1080.0f); // put back
+        CHECK_NEAR(*(float *)(camera + CAMERA_ASPECT), 1920.0f / 1080.0f, 1e-5); // left halved for the frame
         CHECK(*(float *)(camera + CAMERA_FOV) == 60.0f);
     }
     CHECK_EQ_INT(f_builds, 3);
@@ -3203,9 +3210,27 @@ TEST(the_cameras_of_a_full_sbs_window_are_built_for_one_eye_then_put_back)
                          "field of view 60.00 kept)") != NULL);
     CHECK(strstr(ft_log, "fullsbs: first left eye camera built for one eye of the window (aspect 3.5556 -> 1.7778, "
                          "field of view 60.00 kept)") != NULL);
-    CHECK(strstr(ft_log, "fullsbs: TEST new centre camera #0 at") != NULL);
+    CHECK(strstr(ft_log, "fullsbs: centre camera: field of view 60.00") != NULL);
     hook_camera_build(camera_of(2, 3840.0f / 1080.0f, 60.0f)); // each logged once
     CHECK(strstr(ft_log, "right eye camera built") == NULL);
+}
+
+TEST(a_copy_of_a_halved_camera_isnt_halved_again)
+{
+    fs_begin();
+    framegen_set_output(OUTPUT_FULL_SBS); // from 2:1, so a 6:1 window halved (3:1) would still count as full SBS
+    uint8_t *camera = camera_of(0, 6.0f, 60.0f);
+    view_size(camera, 6480, 1080);
+    hook_camera_build(camera);
+    CHECK_NEAR(f_builtAspect, 3.0f, 1e-5);
+    CHECK(strstr(ft_log, "fullsbs: the window is 6480x1080 (aspect 6.0000, from a camera's view size)") != NULL);
+    hook_camera_build(camera); // the game builds the copy again
+    CHECK_NEAR(f_builtAspect, 3.0f, 1e-5);
+    CHECK_NEAR(*(float *)(camera + CAMERA_ASPECT), 3.0f, 1e-5);
+    uint8_t *eye = camera_of(1, 3.0f, 60.0f); // an eye cloned from the halved centre, no view size of its own
+    hook_camera_build(eye);
+    CHECK_NEAR(f_builtAspect, 3.0f, 1e-5);
+    CHECK(strstr(ft_log, "kept the window's aspect") == NULL);
 }
 
 TEST(other_cameras_and_half_sbs_cameras_are_built_as_the_game_has_them)

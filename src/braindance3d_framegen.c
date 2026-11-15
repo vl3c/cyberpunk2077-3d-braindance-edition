@@ -88,9 +88,11 @@
 // Full side by side (Output = Full SBS, or Auto in a window from 3:1), for XR glasses whose 3D mode takes a window two
 // eyes wide (3840x1080: 1920x1080 per eye). The game gives each eye half the window but builds its cameras with the
 // whole window's aspect, then squeezes the picture into each half: right for half SBS, where the viewer stretches each
-// half back out, squashed for full SBS. One detour fixes the world: the camera build builds every camera of the 3D
-// frame (the centre one with eyes and its two eye cameras) with half the window's aspect, then puts the aspect back so
-// whatever reads the descriptor later sees the game's value. The camera's field of view is vertical, so each eye is a
+// half back out, squashed for full SBS. One detour fixes the world: the camera build gives every camera of the 3D
+// frame (the centre one with eyes and its two eye cameras) half the window's aspect and leaves it so. The game copies
+// built cameras into new ones within the frame and works from their aspect again, so it has to stay halved: put back
+// after the build (test 2), the lighting flipped between two looks once or twice a second, in raster and path tracing
+// alike. The game sets the window's aspect afresh each frame. The camera's field of view is vertical, so each eye is a
 // 16:9 picture with the window's vertical view, and the centre camera, which the game's shared screen effects (AO,
 // reflections, shadows, fog, the denoisers) and the world markers work from, has the same shape as the eyes: the frame
 // is laid out exactly as half SBS on a 16:9 screen, with twice the pixels across. Found with the Cyberpunk VR port
@@ -261,6 +263,7 @@ static const char AOB_WEAPON_SEP[] =
 #define CAMERA_EYE_KIND 0x398        // uint8: 1 left eye, 2 right eye
 #define CAMERA_IS_EYE 0x02           // CAMERA_FLAGS bit 1: an eye camera, built off-axis for its eye
 #define FULL_SBS_MAX_ASPECT 8.0f     // a window wider than this isn't two eyes (or the descriptor isn't what we think)
+#define CAMERA_VIEW_SIZE 0x378       // int32 width, height: the view's size in pixels (the jitter's); 0 or 1 if not set
 // The camera build's start, and its eye branch: test byte [rsi+399h],2; jz; cmp byte [rsi+398h],1.
 static const char AOB_CAMERA_BUILD[] =
     "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 55 41 55 41 56 48 8D A8 58 FF FF FF 48 81 EC 90 01 00 00 "
@@ -419,6 +422,10 @@ static struct {
 static struct {
     CameraBuildFn buildOrig;
     volatile LONG builtLogged[2], leftLogged;     // centre, eye
+    volatile float window;     // the window's aspect, from a camera's view size (0 until one has it)
+    volatile LONG windowLogged;
+    volatile LONG centreKey;   // the centre camera last logged (field of view and aspect, rounded)
+    volatile DWORD centreTick;
 } full;
 
 // Read by name from bd3d_stub_stereo_update.
@@ -1188,118 +1195,68 @@ static int full_sbs_window(float width, float height)
     return aspect >= output.fullSbsAspect && aspect <= FULL_SBS_MAX_ASPECT;
 }
 
-// TEST ONLY (test 3): every centre camera with eyes the game builds, by its descriptor's address: logged when first
-// seen (and its flags, size, field of view, aspect), and every 10 s each one's builds in that time, to find a camera
-// built now and then (once or twice a second) that could make the lighting flip.
-#define TEST_CAMS 16
-static struct { uint8_t *camera; volatile LONG builds; float fov, aspect; } testCams[TEST_CAMS];
-static volatile LONG testCamCount, testCamTick;
+// Logs a centre camera's field of view and aspect (with eyes: the frame's main ones) as the game set them, when they
+// change, at most once a second: what the game gives a window this wide, which full SBS builds every eye from.
 static void log_centre_camera(const uint8_t *camera)
 {
     float fov = *(const float *)(camera + CAMERA_FOV), aspect = *(const float *)(camera + CAMERA_ASPECT);
-    LONG n = testCamCount, i;
-    for (i = 0; i < n && testCams[i].camera != camera; i++) {}
-    if (i == n) {
-        if (n >= TEST_CAMS) return;
-        LONG slot = InterlockedIncrement(&testCamCount) - 1;
-        if (slot >= TEST_CAMS) return;
-        testCams[slot].camera = (uint8_t *)camera;
-        i = slot;
-        const int32_t *size = (const int32_t *)(camera + 0x378);
-        plugin_log(1, "fullsbs: TEST new centre camera #%ld at %p: flags 0x%02X, view %dx%d, field of view %.2f, aspect "
-                      "%.4f",
-                   (long)i, (const void *)camera, camera[CAMERA_FLAGS], (int)size[0], (int)size[1], fov, aspect);
-    }
-    InterlockedIncrement(&testCams[i].builds);
-    testCams[i].fov = fov;
-    testCams[i].aspect = aspect;
-    LONG now = (LONG)GetTickCount(), last = testCamTick;
-    if (!last) InterlockedCompareExchange(&testCamTick, now, 0);
-    else if ((DWORD)(now - last) >= 10000 && InterlockedCompareExchange(&testCamTick, now, last) == last) {
-        char line[1024];
-        int len = 0;
-        for (LONG j = 0; j < testCamCount && j < TEST_CAMS && len < 900; j++)
-            len += snprintf(line + len, sizeof(line) - len, " #%ld %ld (%.2f, %.4f)", (long)j,
-                            (long)InterlockedExchange(&testCams[j].builds, 0), testCams[j].fov, testCams[j].aspect);
-        plugin_log(1, "fullsbs: TEST centre camera builds in the last 10 s:%s", line);
-    }
+    LONG key = (LONG)(fov * 100.0f + 0.5f) * 1000 + (LONG)(aspect * 100.0f + 0.5f);
+    DWORD now = GetTickCount();
+    if (key == full.centreKey || now - full.centreTick < 1000) return;
+    full.centreKey = key; // from several threads: at worst a line too many, harmless
+    full.centreTick = now;
+    float t = tanf(fov * 0.00872664626f);
+    plugin_log(1, "fullsbs: centre camera: field of view %.2f (vertical, tan %.4f), aspect %.4f, horizontal tan %.4f",
+               fov, t, aspect, t * aspect);
 }
 
-// TEST ONLY (full SBS test 3, never released): Ctrl+F9 cycles how the cameras are built, to find which one makes the
-// lighting flip. 0 the game's (half SBS shapes), 1 eye cameras only, 2 centre and eyes with the aspect put back after
-// the build (test 2), 3 centre and eyes with the aspect kept halved for the frame (the game makes the cameras again
-// each frame). The picture shows FIX 0..3 for two seconds; the log says which.
-static volatile LONG fullVariant = 2, fullKeyTick, fullKeyDown;
-static void full_variant_key(void)
+// Whether a camera's aspect is still the window's (not halved yet): the window's aspect is learnt from the view size
+// that cameras of the main view carry (logged once, and again if it changes); before any has, an aspect wide enough
+// for full SBS counts as the window's.
+static int window_aspect(const uint8_t *camera, float aspect)
 {
-    LONG now = (LONG)GetTickCount(), last = fullKeyTick;
-    if ((DWORD)(now - last) < 30 || InterlockedCompareExchange(&fullKeyTick, now, last) != last) return;
-    DWORD err = GetLastError();
-    DWORD pid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    LONG down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_F9) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
-    if (InterlockedExchange(&fullKeyDown, down) != down && down) {
-        LONG v = (fullVariant + 1) % 4;
-        fullVariant = v;
-        static const char *const what[4] = { "the game's cameras (half SBS shapes)", "eye cameras only",
-                                             "centre and eyes, aspect put back after the build",
-                                             "centre and eyes, aspect kept halved for the frame" };
-        plugin_log(1, "fullsbs: TEST Ctrl+F9: variant %ld: %s", (long)v, what[v]);
-        menus_notice(2 + (int)v);
+    const int32_t *size = (const int32_t *)(camera + CAMERA_VIEW_SIZE);
+    if (size[0] > 1 && size[1] > 1) {
+        float w = (float)size[0] / (float)size[1];
+        if (w != full.window) {
+            full.window = w;
+            plugin_log(1, "fullsbs: the window is %dx%d (aspect %.4f, from a camera's view size)", (int)size[0],
+                       (int)size[1], w);
+        }
     }
-    SetLastError(err);
+    float w = full.window;
+    return w > 0.0f ? fabsf(aspect - w) <= 0.01f * w : 1;
 }
 
 // Builds a camera of the 3D frame in a full SBS window for one eye's picture: the centre camera with eyes, or one of
 // its eye cameras, with half the window's aspect (the field of view is vertical, so the vertical view stays the
 // window's). The centre gets it too because the game's shared screen effects and the world markers work from the
-// centre's projection over each eye's half, as they do in half SBS. Then the game's aspect is put back, so whatever
-// reads the descriptor afterwards sees what the game wrote; the cameras are rebuilt every frame from it, so this holds
-// for every build (the plane rebuild's and the gun hook's too). Logs the first centre and eye build it changed and the
-// first it left alone, so a run shows which case it was.
+// centre's projection over each eye's half, as they do in half SBS. The aspect stays halved: the game copies built
+// cameras within the frame and builds or reads them again (a copy of a halved camera is left as it is, since its
+// aspect isn't the window's any more). Logs the first centre and eye build it changed and the first it left alone.
 HOOK int64_t hook_camera_build(uint8_t *camera)
 {
-    float *aspect = NULL, window = 0.0f;
     int kind = -1; // 0 centre, 1 eye
-    full_variant_key();
-    LONG variant = fullVariant;
-    if (camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES)) {
-        log_centre_camera(camera);
-        kind = 0;
-    } else if (camera && (camera[CAMERA_FLAGS] & CAMERA_IS_EYE) &&
-               (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2)) {
+    if (camera && (camera[CAMERA_FLAGS] & CAMERA_HAS_EYES)) kind = 0;
+    else if (camera && (camera[CAMERA_FLAGS] & CAMERA_IS_EYE) &&
+             (camera[CAMERA_EYE_KIND] == 1 || camera[CAMERA_EYE_KIND] == 2))
         kind = 1;
-    }
-    if (variant == 0 || (variant == 1 && kind == 0)) kind = -1;
     if (kind >= 0) {
-        float a = *(float *)(camera + CAMERA_ASPECT);
-        const int32_t *size = (const int32_t *)(camera + 0x378); // the view's size, for the jitter
-        // Variant 3 keeps the halved aspect: halve only an aspect that is still the view's (not halved yet).
-        int fresh = variant != 3 || size[1] <= 0 || fabsf(a - (float)size[0] / (float)size[1]) < 0.02f * a;
-        if (full_sbs_window(a, 1.0f) && fresh) {
-            aspect = (float *)(camera + CAMERA_ASPECT);
-            window = a;
+        float *aspect = (float *)(camera + CAMERA_ASPECT), a = *aspect;
+        int fresh = window_aspect(camera, a);
+        if (fresh && kind == 0) log_centre_camera(camera);
+        if (fresh && full_sbs_window(a, 1.0f)) {
             *aspect = 0.5f * a;
-        } else if (!fresh) {
-            // already halved this frame
-        } else if (!full.leftLogged && !InterlockedExchange(&full.leftLogged, 1)) {
+            if (!full.builtLogged[kind] && !InterlockedExchange(&full.builtLogged[kind], 1))
+                plugin_log(1, "fullsbs: first %s camera built for one eye of the window (aspect %.4f -> %.4f, field of "
+                              "view %.2f kept)",
+                           kind ? (camera[CAMERA_EYE_KIND] == 1 ? "left eye" : "right eye") : "centre", a, 0.5f * a,
+                           *(const float *)(camera + CAMERA_FOV));
+        } else if (fresh && !full.leftLogged && !InterlockedExchange(&full.leftLogged, 1)) {
             plugin_log(1, "fullsbs: %s camera kept the window's aspect %.4f: half SBS", kind ? "an eye" : "a centre", a);
         }
-        static volatile LONG sizeLogged;
-        if (!sizeLogged && !InterlockedExchange(&sizeLogged, 1))
-            plugin_log(1, "fullsbs: TEST a %s camera's view size %dx%d, aspect %.4f", kind ? "eye" : "centre",
-                       (int)size[0], (int)size[1], a);
     }
-    int64_t r = full.buildOrig(camera);
-    if (aspect) {
-        if (variant != 3) *aspect = window;
-        if (!full.builtLogged[kind] && !InterlockedExchange(&full.builtLogged[kind], 1))
-            plugin_log(1, "fullsbs: first %s camera built for one eye of the window (aspect %.4f -> %.4f, field of view "
-                          "%.2f kept)",
-                       kind ? (camera[CAMERA_EYE_KIND] == 1 ? "left eye" : "right eye") : "centre", window,
-                       0.5f * window, *(const float *)(camera + CAMERA_FOV));
-    }
-    return r;
+    return full.buildOrig(camera);
 }
 
 // A float from an ini file, or fallback (logged) if it's missing, malformed or outside lo..hi.

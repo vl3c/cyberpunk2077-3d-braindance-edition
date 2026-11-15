@@ -732,12 +732,7 @@ static const uint8_t *notice_glyph(char c)
     static const uint8_t x[] = { 17, 17, 10, 4, 10, 17, 17 }, e[] = { 31, 16, 16, 30, 16, 16, 31 };
     static const uint8_t d[] = { 30, 17, 17, 17, 17, 17, 30 }, o[] = { 14, 17, 17, 17, 17, 17, 14 };
     static const uint8_t n[] = { 17, 25, 21, 19, 17, 17, 17 }, three[] = { 14, 17, 1, 6, 1, 17, 14 };
-    static const uint8_t zero[] = { 14, 17, 19, 21, 25, 17, 14 }, one[] = { 4, 12, 4, 4, 4, 4, 14 }; // TEST ONLY
-    static const uint8_t two[] = { 14, 17, 1, 2, 4, 8, 31 };                                          // TEST ONLY
     switch (c) {
-    case '0': return zero;
-    case '1': return one;
-    case '2': return two;
     case 'F': return f;
     case 'I': return i;
     case 'X': return x;
@@ -791,9 +786,7 @@ static int draw_notice(ID3D12Resource *bb, int on)
     static const float dark[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     static const float green[4] = { 0.25f, 1.0f, 0.35f, 1.0f }, amber[4] = { 1.0f, 0.7f, 0.1f, 1.0f };
     D3D12_RESOURCE_DESC desc = ID3D12Resource_GetDesc(bb);
-    static const char *const variants[4] = { "FIX 0", "FIX 1", "FIX 2", "FIX 3" }; // TEST ONLY: full SBS camera variant
-    int n = notice_rects(on >= 2 && on <= 5 ? variants[on - 2] : on ? "FIXED 3D ON" : "FIXED 3D OFF", (UINT)desc.Width,
-                         desc.Height, eyes, panel, dots, NOTICE_RECTS);
+    int n = notice_rects(on ? "FIXED 3D ON" : "FIXED 3D OFF", (UINT)desc.Width, desc.Height, eyes, panel, dots, NOTICE_RECTS);
     int slot = begin_commands();
     if (slot < 0) return 0;
     ID3D12GraphicsCommandList *cl = g.list;
@@ -833,7 +826,7 @@ static void notice(IDXGISwapChain *sc)
     UINT index;
     ID3D12Resource *bb = current_back_buffer(sc, &index);
     if (!bb) return;
-    draw_notice(bb, g.noticeOn);
+    draw_notice(bb, g.noticeOn != 0);
     ID3D12Resource_Release(bb);
 }
 
