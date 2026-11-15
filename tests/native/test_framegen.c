@@ -3267,7 +3267,7 @@ TEST(a_copy_of_a_halved_camera_isnt_halved_again)
     view_size(camera, 6480, 1080);
     hook_camera_build(camera);
     CHECK_NEAR(f_builtAspect, 3.0f, 1e-5);
-    CHECK(strstr(ft_log, "fullsbs: the window is 6480x1080 (aspect 6.0000, from a camera's view size)") != NULL);
+    CHECK(strstr(ft_log, "fullsbs: the 3D view renders at 6480x1080 (aspect 6.0000): the window's shape") != NULL);
     hook_camera_build(camera); // the game builds the copy again
     CHECK_NEAR(f_builtAspect, 3.0f, 1e-5);
     CHECK_NEAR(*(float *)(camera + CAMERA_ASPECT), 3.0f, 1e-5);

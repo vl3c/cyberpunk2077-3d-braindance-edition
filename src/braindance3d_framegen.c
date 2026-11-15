@@ -1246,17 +1246,18 @@ static void log_centre_camera(const uint8_t *camera)
                fov, t, aspect, t * aspect);
 }
 
-// Whether a camera's aspect is still the window's (not halved yet): the window's aspect is learnt from the view size
-// that cameras of the main view carry (logged once, and again if it changes); before any has, an aspect wide enough
-// for full SBS counts as the window's.
+// Whether a camera's aspect is still the window's (not halved yet): the window's aspect is learnt from the size the
+// main view renders at, which its cameras carry (the upscaler's input size: the window's shape, within rounding; logged
+// when it first changes by more than 1%, so dynamic resolution doesn't fill the log); before any camera has it, an
+// aspect wide enough for full SBS counts as the window's.
 static int window_aspect(const uint8_t *camera, float aspect)
 {
     const int32_t *size = (const int32_t *)(camera + CAMERA_VIEW_SIZE);
     if (size[0] > 1 && size[1] > 1) {
-        float w = (float)size[0] / (float)size[1];
-        if (w != full.window) {
+        float w = (float)size[0] / (float)size[1], known = full.window;
+        if (fabsf(w - known) > 0.01f * w) {
             full.window = w;
-            plugin_log(1, "fullsbs: the window is %dx%d (aspect %.4f, from a camera's view size)", (int)size[0],
+            plugin_log(1, "fullsbs: the 3D view renders at %dx%d (aspect %.4f): the window's shape", (int)size[0],
                        (int)size[1], w);
         }
     }
