@@ -3491,11 +3491,8 @@ TEST(loading_thunk_has_unwind_info)
 // ===================================================================================== the HUD in a full SBS window
 
 static uint8_t f_resizeCode[LAYER_RESIZE_SIZE], f_targetCode[LAYER_TARGET_SIZE], f_uploadCode[CB_UPLOAD_SIZE];
-static uint8_t f_constsCode[CAMERA_CONSTS_SIZE], f_sysProjCode[SYSTEM_PROJECT_SIZE];
-static uint8_t f_viewProj[2][UI_VIEW_PROJECT_SIZE], f_viewUnproj[UI_VIEW_UNPROJECT_SIZE];
-static void *f_viewVt[UI_VIEW_SLOTS], *f_sysVt[SYSTEM_SLOT_PROJECT + 1];
-static _Alignas(16) uint8_t f_system[0x300];      // a camera system: its vtable, its camera at +0x60
-static void *f_gameView[2] = { f_viewVt, f_system }; // the UI view a tick comes with
+static uint8_t f_constsCode[CAMERA_CONSTS_SIZE];
+static void *f_gameView[2] = { (void *)1, (void *)2 }; // the UI view a tick comes with
 static _Alignas(16) uint8_t f_stereoSetting[0x80];  // the 3D Mode setting
 static int f_resizes, f_targets, f_uploads;
 static int32_t f_lastWidth;
@@ -3543,8 +3540,6 @@ static int64_t fake_tick_seen(uint8_t *layer, const LayerTick *tick, void *jobs)
     if (tick) f_tickSeen = *tick;
     return 7;
 }
-static float *fake_project(void *view, float *ndc, const float *world) { (void)view; ndc[0] = world[0]; ndc[1] = world[1]; return ndc; }
-static void *fake_unproject(void *view, void *world, const float *ndc) { (void)view; memcpy(world, ndc, 8); return world; }
 
 static uintptr_t hud_resolve(uint32_t hash)
 {
@@ -3553,19 +3548,8 @@ static uintptr_t hud_resolve(uint32_t hash)
     case HASH_LAYER_TARGET: return (uintptr_t)f_targetCode;
     case HASH_CB_UPLOAD: return (uintptr_t)f_uploadCode;
     case HASH_CAMERA_CONSTS: return (uintptr_t)f_constsCode;
-    case HASH_SYSTEM_PROJECT: return (uintptr_t)f_sysProjCode;
-    case HASH_UI_VIEW_VTABLE: return (uintptr_t)f_viewVt;
-    case HASH_CAMERA_SYSTEM_VTABLE: return (uintptr_t)f_sysVt;
     }
     return loading_resolve(hash);
-}
-
-// The game camera that places markers: vertical field of view 60 degrees, this aspect.
-static void set_marker_camera(float aspect)
-{
-    float p11 = 1.0f / tanf(30.0f * 3.14159265f / 180.0f);
-    *(float *)(f_system + SYSTEM_CAMERA + CAMERA_P11) = p11;
-    *(float *)(f_system + SYSTEM_CAMERA + CAMERA_P00) = p11 / aspect;
 }
 
 static void fake_hud_game(void)
@@ -3574,7 +3558,6 @@ static void fake_hud_game(void)
     memset(f_targetCode, 0xCC, sizeof(f_targetCode));
     memset(f_uploadCode, 0xCC, sizeof(f_uploadCode));
     memset(f_constsCode, 0xCC, sizeof(f_constsCode));
-    memset(f_sysProjCode, 0xCC, sizeof(f_sysProjCode));
     put(f_resizeCode, AOB_LAYER_RESIZE);
     put(f_resizeCode + 0x5D, AOB_LAYER_RESIZE_SAME);
     put(f_targetCode, AOB_LAYER_TARGET);
@@ -3582,21 +3565,6 @@ static void fake_hud_game(void)
     put(f_uploadCode, AOB_CB_UPLOAD);
     put(f_constsCode + 0xB7C, AOB_CONSTS_CANVAS);
     put_rel32(put(f_constsCode + 0xBA9, AOB_CONSTS_UPLOAD) + 4, f_uploadCode);
-    put(f_sysProjCode, AOB_SYSTEM_PROJECT);
-    for (int i = 0; i < 2; i++) {
-        memset(f_viewProj[i], 0xCC, sizeof(f_viewProj[i]));
-        put(f_viewProj[i], AOB_UI_VIEW_PROJECT);
-    }
-    memset(f_viewUnproj, 0xCC, sizeof(f_viewUnproj));
-    put(f_viewUnproj, AOB_UI_VIEW_UNPROJECT);
-    for (int i = 0; i < UI_VIEW_SLOTS; i++) f_viewVt[i] = f_viewUnproj;
-    f_viewVt[UI_VIEW_PROJECT] = f_viewProj[0];
-    f_viewVt[UI_VIEW_PROJECT_OTHER] = f_viewProj[1];
-    f_viewVt[UI_VIEW_UNPROJECT] = f_viewUnproj;
-    for (int i = 0; i <= SYSTEM_SLOT_PROJECT; i++) f_sysVt[i] = f_sysProjCode;
-    memset(f_system, 0, sizeof(f_system));
-    *(void **)f_system = f_sysVt;
-    set_marker_camera(32.0f / 9.0f);
 }
 
 // A full SBS session (Output Auto) in a 5120x1440 window with 3D Mode on and the HUD group checked; the originals are
@@ -3605,7 +3573,6 @@ static void hd_begin(void)
 {
     ld_begin();
     memset(&hud, 0, sizeof(hud));
-    InitializeSRWLock(&hud.viewsLock);
     fake_hud_game();
     framegen_set_output(OUTPUT_SBS);
     fg.boolVar = fake_stereo_var;
@@ -3619,8 +3586,6 @@ static void hd_begin(void)
     hud.resizeOrig = fake_resize_orig;
     hud.targetOrig = fake_target_orig;
     hud.uploadOrig = fake_upload;
-    hud.project = hud.projectOther = fake_project;
-    hud.unproject = fake_unproject;
     loading.tickOrig = fake_tick_seen;
     f_vtHud[LAYER_SLOT_RESIZE] = (void *)slot_resize;
     f_vtHud[LAYER_SLOT_TARGET] = (void *)slot_target;
@@ -3637,23 +3602,15 @@ static LayerTick tick_of(float w, float h) { LayerTick t = { (void *)1, f_gameVi
 TEST(check_hud_finds_its_functions_or_says_why_not)
 {
     hd_begin();
-    CHECK_EQ_PTR(hud.gameViewVtable, f_viewVt);
-    CHECK_EQ_PTR(hud.viewVtable[UI_VIEW_PROJECT], (void *)ui_view_project);
-    CHECK_EQ_PTR(hud.viewVtable[UI_VIEW_UNPROJECT], (void *)ui_view_unproject);
-    CHECK_EQ_PTR(hud.viewVtable[0], f_viewVt[0]); // the rest is the game's
     uint8_t *t[3];
     f_constsCode[0xBA9 + aob_len(AOB_CONSTS_UPLOAD)] ^= 1; // the block goes somewhere else
     CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
     CHECK(strstr(ft_log, "hud: the camera constants: the camera block isn't uploaded where expected (game update?): "
                          "not hooked") != NULL);
     hd_begin();
-    f_sysVt[SYSTEM_SLOT_PROJECT] = f_resizeCode;
+    f_uploadCode[3] = 0x90;
     CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
-    CHECK(strstr(ft_log, "hud: the UI view or camera system vtable doesn't look right") != NULL);
-    hd_begin();
-    f_viewProj[1][2] = 0x90;
-    CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
-    CHECK(strstr(ft_log, "hud: the UI view's projections don't match") != NULL);
+    CHECK(strstr(ft_log, "hud: the constant upload: start doesn't match") != NULL);
     hd_begin();
     loading.tickOrig = NULL;
     CHECK_EQ_INT(check_hud(hud_resolve, t), 0);
@@ -3760,7 +3717,7 @@ TEST(a_layout_that_doesnt_take_isnt_tried_every_frame)
     CHECK(strstr(strstr(ft_log, "it stayed") + 1, "it stayed") == NULL); // not tried again yet
 }
 
-TEST(a_one_eye_hud_is_ticked_with_its_own_size_and_a_narrowed_view)
+TEST(a_one_eye_hud_is_ticked_with_its_own_size)
 {
     hd_begin();
     LayerTick t = tick_of(5120.0f, 1440.0f);
@@ -3768,38 +3725,8 @@ TEST(a_one_eye_hud_is_ticked_with_its_own_size_and_a_narrowed_view)
     CHECK(f_lastTick != &t);
     CHECK_NEAR(f_tickSeen.size[0], 2560.0f, 0);
     CHECK_NEAR(f_tickSeen.size[1], 1440.0f, 0);
-    CHECK(f_tickSeen.time == t.time);
-    // The marker camera is the window's shape (32:9): a view of ours, narrowed 2x.
-    UiView *v = (UiView *)f_tickSeen.view;
-    CHECK(v != (UiView *)f_gameView);
-    CHECK_EQ_PTR(v->vtable, (void *const *)hud.viewVtable);
-    CHECK_EQ_PTR(v->cameraSystem, f_system);
-    CHECK_NEAR(v->narrow, 2.0f, 1e-4);
-    CHECK(strstr(ft_log, "hud: the camera that places markers has aspect 3.5556, the one-eye layer 1.7778: markers placed "
-                         "through our narrowed view") != NULL);
-    float world[3] = { 0.25f, -0.5f, 3.0f }, ndc[2];
-    CHECK(ui_view_project(v, ndc, world) == ndc);
-    CHECK_NEAR(ndc[0], 0.5f, 1e-6);
-    CHECK_NEAR(ndc[1], -0.5f, 1e-6);
-    ui_view_project_other(v, ndc, world);
-    CHECK_NEAR(ndc[0], 0.5f, 1e-6);
-    float back[2];
-    ui_view_unproject(v, back, ndc);
-    CHECK_NEAR(back[0], 0.25f, 1e-6);
-    // The same view again next tick; with a 16:9 marker camera, the game's own.
-    hook_layer_tick(f_layerHud, &t, NULL);
-    CHECK(f_tickSeen.view == v);
-    set_marker_camera(16.0f / 9.0f);
-    hook_layer_tick(f_layerHud, &t, NULL);
-    CHECK(f_tickSeen.view == (void *)f_gameView);
-    CHECK(strstr(ft_log, "markers placed as the game does") != NULL);
-    // A view that isn't the game's UI view is passed on as it is.
-    set_marker_camera(32.0f / 9.0f);
-    void *odd[2] = { f_sysVt, f_system };
-    t.view = odd;
-    hook_layer_tick(f_layerHud, &t, NULL);
-    CHECK(f_tickSeen.view == (void *)odd);
-    CHECK(strstr(ft_log, "isn't the game's UI view") != NULL);
+    CHECK(f_tickSeen.time == t.time && f_tickSeen.view == t.view); // the rest as the game has it
+    CHECK_NEAR(t.size[0], 5120.0f, 0);                              // the game's tick isn't changed
 }
 
 TEST(a_hud_laid_out_over_the_window_is_ticked_as_the_game_has_it)

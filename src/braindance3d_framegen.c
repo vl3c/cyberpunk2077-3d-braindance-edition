@@ -115,10 +115,9 @@
 // HUD (inkHUDLayer) and the game's notifications (inkGameNotificationsLayer). The game lays them out over the whole
 // window and draws that whole canvas into each half, so the HUD came out squashed to half its width in each eye. Here
 // the two are laid out one eye wide instead: the layer resize and the layer target (ink's own, slots 30 and 36) get
-// half the window's width for them, and the shared layer tick hands their controllers the layer's own size, plus a UI
-// view that narrows its world-to-screen projection when the game camera that places markers is still the window's
-// shape (read from that camera's projection, so it follows whatever the camera build hook did). The layer tick also
-// lays them out again when that should change (Output, 3D Mode). And the canvas camera of each eye's UI pass, which
+// half the window's width for them, and the shared layer tick hands their controllers the layer's own size (world
+// markers need nothing more: the game camera that places them is built one eye wide by the camera build hook). The
+// layer tick also lays them out again when that should change (Output, 3D Mode). And the canvas camera of each eye's UI pass, which
 // maps the window's width to the eye's half (clip x = 2x / width - 1), maps half of it there instead: it is changed
 // where the camera constants builder uploads it (the generic constant upload, only a 0x360-byte block that is ink's
 // flat canvas camera, an eye's, in a full SBS window while these layers are laid out one eye wide; every copy of the
@@ -312,35 +311,20 @@ static const char AOB_LAYER_TICK[] =
     "8A 42 18";
 
 // The HUD in a full SBS window: ink's layer resize and layer target (layer, width, height[, target]), shared by the
-// layer classes, the UI view a layer tick hands its controllers ({vtable, camera system}), the game camera system it
-// projects through, and the generic constant upload (slot, size, data) the camera constants builder sends its block to.
+// layer classes, and the generic constant upload (slot, size, data) the camera constants builder sends its block to.
 #define HASH_LAYER_RESIZE 376311189u
 #define HASH_LAYER_TARGET 915085273u
-#define HASH_UI_VIEW_VTABLE 189861301u
-#define HASH_CAMERA_SYSTEM_VTABLE 2058684661u // gameCameraSystem's
-#define HASH_SYSTEM_PROJECT 1624249292u       // its world to screen (vtable +0x2D0): through its camera at +0x60
 #define HASH_CB_UPLOAD 1939541892u
 #define HASH_CAMERA_CONSTS 2806991262u        // the camera constants builder (camera shader constants, uploads 0x360)
 #define LAYER_RESIZE_SIZE 0x1FF      // pdata 0x132654C-0x132674B
 #define LAYER_TARGET_SIZE 0xA0       // pdata 0x399094-0x399134
 #define CB_UPLOAD_SIZE 0x4B          // pdata 0x334328-0x334373
 #define CAMERA_CONSTS_SIZE 0xC44     // pdata 0x228C9A0-0x228D5E4
-#define SYSTEM_PROJECT_SIZE 0x9A     // pdata 0x54AD6C-0x54AE06
 #define LAYER_SLOT_RESIZE 30         // vtable slots (+0xF0, +0x108, +0x120)
 #define LAYER_SLOT_TICK 33
 #define LAYER_SLOT_TARGET 36
 #define LAYER_SIZE 0x30              // float width, height: the layer's own size (what resize and target set)
 #define LAYER_TARGET 0x38            // the layer's own target, NULL if it has none (what the layer target sets)
-#define UI_VIEW_SLOTS 17             // the UI view's vtable (the next class's starts right after)
-#define UI_VIEW_PROJECT 13           // (view, float out[2], const float world[3]): world to screen NDC (system +0x2D0)
-#define UI_VIEW_UNPROJECT 14         // (view, out world, const float ndc[2]): back (system +0x2D8)
-#define UI_VIEW_PROJECT_OTHER 16     // as 13, through system +0x2C8
-#define UI_VIEW_PROJECT_SIZE 0x51
-#define UI_VIEW_UNPROJECT_SIZE 0x3B
-#define SYSTEM_SLOT_PROJECT 90       // gameCameraSystem's vtable +0x2D0
-#define SYSTEM_CAMERA 0x60           // its camera: a built camera, projection matrix at +0x190
-#define CAMERA_P00 0x190             //   x scale: 1 / (tan(vfov / 2) * aspect)
-#define CAMERA_P11 0x1A4             //   y scale: 1 / tan(vfov / 2)
 #define INK_CAMERA_BYTES 0x360       // the camera block (CameraShaderConsts, 852 bytes, rounded up)
 #define INK_CAMERA_CANVAS 188        // floats: the canvas width, height
 #define INK_CAMERA_EYE 848           // int32: the eye the pass draws, 0 a flat frame, 1 left, 2 right
@@ -353,13 +337,6 @@ static const char AOB_LAYER_RESIZE_SAME[] = "F3 48 0F 2C 43 30 41 3B C7 75 0E F3
 static const char AOB_LAYER_TARGET[] =
     "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 8B C2 0F 57 C9 0F 57 C0 4C 89 49 38 48 8B F9";
 static const char AOB_LAYER_TARGET_SIZE[] = "F3 0F 11 49 30 F3 0F 11 4C 24 30 F3 0F 11 41 34";
-// The UI view's world to screen (both): the point's z into xmm2, the camera system from [rcx+8]; and back.
-static const char AOB_UI_VIEW_PROJECT[] =
-    "40 53 48 83 EC 40 F3 41 0F 10 50 08 48 8B DA F2 41 0F 10 18 48 8D 54 24 30 48 8B 49 08";
-static const char AOB_UI_VIEW_UNPROJECT[] =
-    "40 53 48 83 EC 20 F3 41 0F 10 00 48 8B DA F3 41 0F 10 48 04 4C 8D 44 24 30 48 8B 49 08";
-// The camera system's world to screen: through its camera at +0x60.
-static const char AOB_SYSTEM_PROJECT[] = "48 8B C4 53 48 83 EC 30 F3 41 0F 10 00 48 83 C1 60";
 // The constant upload's start: (slot, size, data) kept in ecx / ebx / rdi.
 static const char AOB_CB_UPLOAD[] = "48 89 5C 24 10 89 4C 24 08 57 48 83 EC 20 49 8B F8 8B DA 45 33 C0 48 8D 4C 24 30";
 // In the camera constants builder: the canvas size stored at block float 188 (movaps [rbp+340h], xmm2, the block at
@@ -449,8 +426,6 @@ typedef struct {
 typedef int64_t (*LayerTickFn)(uint8_t *layer, const LayerTick *tick, void *jobs);
 typedef int64_t (*LayerResizeFn)(uint8_t *layer, int32_t width, int32_t height);
 typedef int64_t (*LayerTargetFn)(uint8_t *layer, int32_t width, int32_t height, void *target);
-typedef float *(*ViewProjectFn)(void *view, float *ndc, const float *world);
-typedef void *(*ViewUnprojectFn)(void *view, void *world, const float *ndc);
 typedef void (*CbUploadFn)(uint32_t slot, uint32_t size, const void *data);
 typedef const uint8_t *(*NativeTypeFn)(const void *object);
 typedef float (*WeaponSepFn)(void *settings);
@@ -557,33 +532,15 @@ static struct {
 } loading;
 enum { LAYER_OTHER = 1, LAYER_LOADING = 2, LAYER_UNKNOWN = 3, LAYER_PER_EYE = 4 };
 
-// A UI view of ours: the game's two fields, then how much narrower the layer is than the camera that places markers.
-// Controllers keep the pointer for the tick's jobs, so these live as long as the game.
-typedef struct {
-    void *const *vtable;       // hud.viewVtable
-    void *cameraSystem;
-    volatile float narrow;
-} UiView;
-
 // The HUD laid out one eye wide in a full SBS window (check_hud).
 static struct {
     LayerResizeFn resizeOrig;
     LayerTargetFn targetOrig;
     CbUploadFn uploadOrig;
-    const void *gameViewVtable;                  // the game's UI view vtable
-    const void *systemVtable;                    // gameCameraSystem's
-    void *viewVtable[UI_VIEW_SLOTS];             // ours: a copy with the three projections narrowed
-    ViewProjectFn project, projectOther;         // the game's
-    ViewUnprojectFn unproject;
-    UiView views[4];                             // one per camera system (one in practice)
-    volatile LONG nextView;
-    SRWLOCK viewsLock;
     uint8_t *volatile stereoVar;                 // the 3D Mode setting, NULL until found
     volatile LONG stereoSearched;
     volatile LONG oneEye;                        // the per-eye layers were last laid out one eye wide
     volatile DWORD relayoutTick;                 // GetTickCount of the last layout of ours
-    volatile LONG narrowKey;                     // the narrowing last logged, in hundredths (0: none yet)
-    volatile LONG viewLogged, viewsFullLogged;
     volatile LONG64 widened;                     // canvas cameras changed (for the log)
     volatile LONG widenedLogged;
 } hud;
@@ -1402,7 +1359,7 @@ static void log_centre_camera(const uint8_t *camera)
     full.centreKey = key; // from several threads: at worst a line too many, harmless
     full.centreTick = now;
     float t = tanf(fov * 0.00872664626f);
-    plugin_log(1, "fullsbs: centre camera: field of view %.2f (vertical, tan %.4f), aspect %.4f, horizontal tan %.4f",
+    plugin_log(2, "fullsbs: centre camera: field of view %.2f (vertical, tan %.4f), aspect %.4f, horizontal tan %.4f",
                fov, t, aspect, t * aspect);
 }
 
@@ -1610,90 +1567,6 @@ HOOK int64_t hook_layer_target(uint8_t *layer, int32_t width, int32_t height, vo
     return hud.targetOrig(layer, layer_width(layer, width, height, "drawn into its target at"), height, target);
 }
 
-// Our view's world to screen: the game's, then x times the narrowing (the camera's frustum across one eye's picture).
-static float *ui_view_project(void *view, float *ndc, const float *world)
-{
-    float *out = hud.project(view, ndc, world);
-    if (out) out[0] *= ((const UiView *)view)->narrow;
-    return out;
-}
-
-static float *ui_view_project_other(void *view, float *ndc, const float *world)
-{
-    float *out = hud.projectOther(view, ndc, world);
-    if (out) out[0] *= ((const UiView *)view)->narrow;
-    return out;
-}
-
-// And back: x divided by it first.
-static void *ui_view_unproject(void *view, void *world, const float *ndc)
-{
-    float camera[2] = { ndc[0] / ((const UiView *)view)->narrow, ndc[1] };
-    return hud.unproject(view, world, camera);
-}
-
-// Our view for a camera system (made the first time, after checking it is the game's camera system), or NULL. Four
-// entries; if a fifth camera system turns up the oldest is reused (logged once).
-static UiView *system_view(void *cameraSystem)
-{
-    UiView *own = NULL;
-    AcquireSRWLockShared(&hud.viewsLock);
-    for (int i = 0; i < 4 && !own; i++)
-        if (hud.views[i].vtable && hud.views[i].cameraSystem == cameraSystem) own = &hud.views[i];
-    ReleaseSRWLockShared(&hud.viewsLock);
-    if (own) return own;
-    if (!readable(cameraSystem, SYSTEM_CAMERA + CAMERA_P11 + sizeof(float)) ||
-        *(const void *const *)cameraSystem != hud.systemVtable) {
-        if (!InterlockedExchange(&hud.viewLogged, 1))
-            plugin_log(1, "hud: a per-eye layer's view projects through something that isn't the game's camera system "
-                          "(%p): markers keep the game's placement",
-                       cameraSystem);
-        return NULL;
-    }
-    AcquireSRWLockExclusive(&hud.viewsLock);
-    for (int i = 0; i < 4 && !own; i++)
-        if (hud.views[i].vtable && hud.views[i].cameraSystem == cameraSystem) own = &hud.views[i];
-    if (!own) {
-        LONG n = hud.nextView++;
-        own = &hud.views[n % 4];
-        if (n == 4 && !InterlockedExchange(&hud.viewsFullLogged, 1)) plugin_log(1, "hud: a fifth camera system: the oldest view is reused");
-        own->vtable = (void *const *)hud.viewVtable;
-        own->cameraSystem = cameraSystem;
-        own->narrow = 1.0f;
-        plugin_log(1, "hud: UI view for camera system %p", cameraSystem);
-    }
-    ReleaseSRWLockExclusive(&hud.viewsLock);
-    return own;
-}
-
-// The view a per-eye layer laid out one eye wide (aspect: its width / height) is ticked with: the game's, or ours,
-// whose projections are narrowed by how much wider the camera that places markers is than the layer (that camera's
-// aspect from its projection matrix: P11 / P00). Logged when the narrowing changes.
-static void *one_eye_view(void *view, float aspect)
-{
-    void *const *game = (void *const *)view;
-    if (!game || game[0] != hud.gameViewVtable || !game[1]) {
-        if (!InterlockedExchange(&hud.viewLogged, 1))
-            plugin_log(1, "hud: a per-eye layer's tick came with a view that isn't the game's UI view: markers keep the "
-                          "game's placement");
-        return view;
-    }
-    UiView *own = system_view(game[1]);
-    if (!own) return view;
-    const uint8_t *camera = (const uint8_t *)game[1] + SYSTEM_CAMERA;
-    float p00 = fabsf(*(const volatile float *)(camera + CAMERA_P00));
-    float p11 = fabsf(*(const volatile float *)(camera + CAMERA_P11));
-    float narrow = p00 > 0.0f && aspect > 0.0f ? p11 / p00 / aspect : 1.0f;
-    if (!(narrow >= 0.5f && narrow <= 4.0f)) narrow = 1.0f; // also NaN
-    LONG key = (LONG)(narrow * 100.0f + 0.5f);
-    if (InterlockedExchange(&hud.narrowKey, key) != key)
-        plugin_log(1, "hud: the camera that places markers has aspect %.4f, the one-eye layer %.4f: %s", p11 / p00, aspect,
-                   key == 100 ? "markers placed as the game does" : "markers placed through our narrowed view");
-    if (key == 100) return view;
-    own->narrow = narrow;
-    return own;
-}
-
 // Lays a per-eye layer out again for this window (through its own resize and target, so the hooks pick the width), when
 // its width is the other of the window's and one eye's. A layout that doesn't take isn't tried again for a while.
 static void relayout(uint8_t *layer, float width, float height)
@@ -1716,7 +1589,7 @@ static void relayout(uint8_t *layer, float width, float height)
 }
 
 // A per-eye layer's tick: laid out again if the window, the output or 3D Mode changed (relayout), then, laid out one eye
-// wide, ticked with its own size and a view for one eye instead of the window's.
+// wide, ticked with its own size instead of the window's (where its controllers place things, world markers too).
 static int64_t hud_tick(uint8_t *layer, const LayerTick *tick, void *jobs)
 {
     float w = tick->size[0], h = tick->size[1];
@@ -1726,7 +1599,6 @@ static int64_t hud_tick(uint8_t *layer, const LayerTick *tick, void *jobs)
     if (ow > 0.0f && oh == h && fabsf(w - 2.0f * ow) <= 2.0f) {
         LayerTick one = *tick;
         one.size[0] = ow;
-        one.view = one_eye_view(tick->view, ow / oh);
         return loading.tickOrig(layer, &one, jobs);
     }
     return loading.tickOrig(layer, tick, jobs);
@@ -2503,10 +2375,9 @@ static int attach_loading(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     return 1;
 }
 
-// The HUD group (see the top): the layer resize and target (their starts and where they store the size), that both
-// are slots 30 and 36 of the layer tick's class, the UI view's vtable and its three projections, the camera system
-// those go through, and the constant upload the camera constants builder sends the canvas camera to (the canvas size
-// and the eye where the block layout above has them). Fills in t[0..2] (resize, target, upload) and returns 1, or logs
+// The HUD group (see the top): the layer resize and target (their starts and where they store the size), and the
+// constant upload the camera constants builder sends the canvas camera to (the canvas size and the eye where the block
+// layout above has them). Fills in t[0..2] (resize, target, upload) and returns 1, or logs
 // why not and returns 0.
 static int check_hud(ResolveFn resolve, uint8_t **t)
 {
@@ -2514,16 +2385,12 @@ static int check_hud(ResolveFn resolve, uint8_t **t)
     t[1] = (uint8_t *)resolve(HASH_LAYER_TARGET);
     t[2] = (uint8_t *)resolve(HASH_CB_UPLOAD);
     const uint8_t *consts = (const uint8_t *)resolve(HASH_CAMERA_CONSTS);
-    const uint8_t *systemProject = (const uint8_t *)resolve(HASH_SYSTEM_PROJECT);
-    void *const *view = (void *const *)resolve(HASH_UI_VIEW_VTABLE);
-    void *const *system = (void *const *)resolve(HASH_CAMERA_SYSTEM_VTABLE);
     const char *why = NULL;
     long at;
     if (!loading.tickOrig) why = "the layer tick isn't hooked";
     else if (!fg.boolVar) why = "the settings lookup wasn't found (for 3D Mode)";
     else if (!in_exe((uintptr_t)t[0], LAYER_RESIZE_SIZE) || !in_exe((uintptr_t)t[1], LAYER_TARGET_SIZE) ||
-             !in_exe((uintptr_t)t[2], CB_UPLOAD_SIZE) || !in_exe((uintptr_t)consts, CAMERA_CONSTS_SIZE) ||
-             !in_exe((uintptr_t)systemProject, SYSTEM_PROJECT_SIZE))
+             !in_exe((uintptr_t)t[2], CB_UPLOAD_SIZE) || !in_exe((uintptr_t)consts, CAMERA_CONSTS_SIZE))
         why = "a function didn't resolve into the game exe";
     else if (aob_find_unique(t[0], LAYER_RESIZE_SIZE, AOB_LAYER_RESIZE) != 0) why = "the layer resize: start doesn't match";
     else if (aob_find_unique(t[0], LAYER_RESIZE_SIZE, AOB_LAYER_RESIZE_SAME) < 0)
@@ -2537,32 +2404,10 @@ static int check_hud(ResolveFn resolve, uint8_t **t)
     else if ((at = aob_find_unique(consts, CAMERA_CONSTS_SIZE, AOB_CONSTS_UPLOAD)) < 0 ||
              call_target(consts + at + aob_len(AOB_CONSTS_UPLOAD) - 1) != (uintptr_t)t[2])
         why = "the camera constants: the camera block isn't uploaded where expected";
-    else if (aob_find_unique(systemProject, SYSTEM_PROJECT_SIZE, AOB_SYSTEM_PROJECT) != 0)
-        why = "the camera system's projection: start doesn't match";
-    else if (!in_exe((uintptr_t)view, UI_VIEW_SLOTS * sizeof(void *)) ||
-             !in_exe((uintptr_t)system, (SYSTEM_SLOT_PROJECT + 1) * sizeof(void *)) ||
-             system[SYSTEM_SLOT_PROJECT] != (void *)systemProject)
-        why = "the UI view or camera system vtable doesn't look right";
-    else if (!in_exe((uintptr_t)view[UI_VIEW_PROJECT], UI_VIEW_PROJECT_SIZE) ||
-             !in_exe((uintptr_t)view[UI_VIEW_PROJECT_OTHER], UI_VIEW_PROJECT_SIZE) ||
-             !in_exe((uintptr_t)view[UI_VIEW_UNPROJECT], UI_VIEW_UNPROJECT_SIZE) ||
-             aob_find_unique((const uint8_t *)view[UI_VIEW_PROJECT], UI_VIEW_PROJECT_SIZE, AOB_UI_VIEW_PROJECT) != 0 ||
-             aob_find_unique((const uint8_t *)view[UI_VIEW_PROJECT_OTHER], UI_VIEW_PROJECT_SIZE, AOB_UI_VIEW_PROJECT) != 0 ||
-             aob_find_unique((const uint8_t *)view[UI_VIEW_UNPROJECT], UI_VIEW_UNPROJECT_SIZE, AOB_UI_VIEW_UNPROJECT) != 0)
-        why = "the UI view's projections don't match";
     if (why) {
         plugin_log(1, "hud: %s (game update?): not hooked, the HUD stays laid out over the whole window in full SBS", why);
         return 0;
     }
-    hud.gameViewVtable = view;
-    hud.systemVtable = system;
-    memcpy(hud.viewVtable, view, sizeof(hud.viewVtable));
-    hud.project = (ViewProjectFn)view[UI_VIEW_PROJECT];
-    hud.projectOther = (ViewProjectFn)view[UI_VIEW_PROJECT_OTHER];
-    hud.unproject = (ViewUnprojectFn)view[UI_VIEW_UNPROJECT];
-    hud.viewVtable[UI_VIEW_PROJECT] = (void *)ui_view_project;
-    hud.viewVtable[UI_VIEW_PROJECT_OTHER] = (void *)ui_view_project_other;
-    hud.viewVtable[UI_VIEW_UNPROJECT] = (void *)ui_view_unproject;
     return 1;
 }
 
@@ -2573,7 +2418,6 @@ static int attach_hud(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     if (output.monitor || !full.buildOrig) return 0;
     uint8_t *t[3];
     if (!check_hud(resolve, t)) return 0;
-    InitializeSRWLock(&hud.viewsLock);
     void *thunks[3] = { (void *)bd3d_thunk_layer_resize, (void *)bd3d_thunk_layer_target, (void *)bd3d_thunk_cb_upload };
     void **origs[3] = { (void **)&hud.resizeOrig, (void **)&hud.targetOrig, (void **)&hud.uploadOrig };
     int n = 0;

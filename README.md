@@ -30,17 +30,19 @@ monitor's software. This mod:
 7. Adds **[Fixed 3D](#fixed-3d)**, off by default, for VR headsets, 3D glasses and 3D depth enthusiasts: one real eye
    gap and one screen distance instead of stereo that re-aims every frame, so the world keeps its scale. On a headset
    it's much closer to VR.
+8. Adds **[Full SBS](#full-sbs)** for ultrawide virtual displays, such as 3D glasses that take 3840x1080: each eye
+   gets a whole, undistorted 16:9 picture, HUD, menus and loading screens included.
 
 No game files are modified: the game loads the stand-in DLL through its own 3D support. The menu fix, frame
-generation, weapon depth, effects switch and Fixed 3D hook a few game functions through RED4ext.
+generation, weapon depth, effects switch, Fixed 3D and Full SBS hook a few game functions through RED4ext.
 
 ## Requirements
 
 - Cyberpunk 2077 **2.5** on Windows 10 or 11. Tested on Epic; Steam and GOG untested.
 - [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380), or the setup script
   ([No RED4ext](#no-red4ext)): then only 3D Mode and side by side work.
-- A headset with **half-SBS support**, or a 3D TV or monitor with an SBS mode. Tested: Quest 3 with Virtual
-  Desktop.
+- A headset with **half-SBS support**, a 3D TV or monitor with an SBS mode, or 3D glasses that take **full SBS**
+  (3840x1080). Tested: Quest 3 with Virtual Desktop; full SBS on a 5120x1440 screen, not on glasses yet.
 - For Fixed 3D's settings page: [Mod Settings](https://www.nexusmods.com/cyberpunk2077/mods/4885), which also needs
   redscript. Optional: without it, Ctrl+F8 still switches Fixed 3D, with the default settings.
 - For frame generation: DLSS on an RTX 40 (up to 2x) or RTX 50 (up to 6x), tested on RTX 50 (RTX 40 should work);
@@ -63,13 +65,14 @@ The mod sets itself up at every game start. For 2D, turn 3D Mode off in the game
 - In game: **Depth** (0.5 to 1.0 suits a headset), **Weapon Depth**, **Motion Comfort** and **Preset**.
 - **More 3D depth:** lower the game's **Field of View** (Graphics settings), e.g. 90 to 80 (step 7 of the
   recommended setup).
-- **Output** (Mod Settings, 3D Braindance Edition): Auto, or Half SBS to keep side by side on a PC with a glasses-free
-  3D monitor's software. Without that software both are side by side. Applies when the game starts.
+- **Output** (Mod Settings, 3D Braindance Edition): **Auto** (full SBS in a window at least 3 times as wide as high,
+  half SBS otherwise), **Half SBS** or **Full SBS**. Switches at once. On a PC with a glasses-free 3D monitor's
+  software, Auto keeps the monitor's own 3D, and changing to or from it needs a game restart.
 - `bin\x64\Braindance3D\Braindance3D-Settings.ini`: log level, 3D monitor (`Monitor = primary` on
   multi-monitor PCs), output (`[Display] Output`), menu fix (`[Menus] Squeeze = auto` or `off`) and where Fixed 3D's flat weapon sits
   (`[Stereo] WeaponDistance`).
-- Each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice lowers
-  the frame rate versus 2D.
+- In half SBS each eye gets half the horizontal resolution, so **higher resolution looks sharper**. Rendering twice
+  lowers the frame rate versus 2D.
 - Stereo 3D can strain your eyes: take breaks or lower Depth.
 
 ## Fixed 3D
@@ -99,6 +102,24 @@ break. On a 3D TV or a small screen the world comes far out of the screen: Fixed
 
 While aiming, the game fades to flat, as it does without Fixed 3D. The HUD stays at the screen's depth, so close things
 come in front of it.
+
+## Full SBS
+
+Some 3D glasses (Viture's, for example) show 3D only from **full SBS**: a 3840x1080 picture holding two whole
+1920x1080 eyes. In half SBS each eye is squeezed to half width and stretched back by the viewer; in full SBS each eye
+is a normal 16:9 picture, so nothing is stretched.
+
+- **Turn it on:** run the game at the glasses' full SBS resolution (3840x1080) with 3D Mode on. Output = Auto picks
+  full SBS in a window at least 3 times as wide as high; Output = Full SBS picks it from twice as wide (and half SBS
+  below that, so 1920x1080 in 2D stays as it is).
+- **Each eye** sees the world, the HUD and the markers as in a normal 16:9 game. Menus and the map show the middle of
+  the window in each eye, 1:1. The game's own ultrawide view is narrowed to one eye's, so the vertical field of view
+  stays the game's.
+- **Loading screens and the intro** are drawn flat in a window wider than 16:9, so each eye shows them whole. The
+  game's own 3D swaps their halves there, with or without this mod.
+- **Virtual Desktop** can't show full SBS: it treats the wide picture as one screen. Keep half SBS there.
+- Overlays drawn over the whole window (FPS counters and the like) land off the middle of each eye.
+- Tested at 5120x1440 (the same shape as 3840x1080) by screenshots, not on glasses yet: please report how it looks.
 
 ## Recommended setup (Quest 3 + Virtual Desktop)
 
@@ -170,8 +191,8 @@ Logs contain folder paths, which can include your Windows user name.
 - **Uninstall:** remove the mod in Vortex, or delete its files including `red4ext\plugins\Braindance3D`. The
   leftover registry key points at a missing folder, so the stand-in is no longer found. To remove the key, run
   `Uninstall-Braindance3D.bat` (full zip) after removing the plugin.
-- **Real 3D monitor owners:** with RED4ext, 3D Mode keeps the monitor's own output (Output = Half SBS for side by
-  side); without RED4ext, the engine ini switches it to side by side. After `Install-Braindance3D.bat -Force`, run the uninstaller before deleting the mod to restore the monitor
+- **Real 3D monitor owners:** with RED4ext, 3D Mode keeps the monitor's own output (Output = Half SBS or Full SBS for
+  side by side); without RED4ext, the engine ini switches it to side by side. After `Install-Braindance3D.bat -Force`, run the uninstaller before deleting the mod to restore the monitor
   software's setting.
 - **Mod Organizer 2** isn't supported yet: the game needs the DLL in a real folder.
 - **Other games:** the registry key isn't per game. The stand-in only works in `Cyberpunk2077.exe`; if another
