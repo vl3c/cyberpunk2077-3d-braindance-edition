@@ -4,7 +4,8 @@
 // Output is read once, when the game starts (braindance3d_autosetup.c); Mod Settings saves it by the value's name.
 enum BraindanceOutput {
     Auto = 0,
-    HalfSBS = 1
+    HalfSBS = 1,
+    FullSBS = 2
 }
 
 public class BraindanceFixedStereo {
@@ -32,8 +33,9 @@ public class BraindanceFixedStereo {
 
     @runtimeProperty("ModSettings.mod", "3D Braindance Edition")
     @runtimeProperty("ModSettings.displayName", "Output")
-    @runtimeProperty("ModSettings.description", "Auto: a glasses-free 3D monitor's own 3D when its software is installed, else half SBS. Half SBS: always side by side. Restart the game after Apply.")
+    @runtimeProperty("ModSettings.description", "Auto: a glasses-free 3D monitor's own 3D when its software is installed, else full SBS in a window 3x as wide as high (3840x1080), half SBS otherwise. Restart the game after Apply.")
     @runtimeProperty("ModSettings.displayValues.Auto", "Auto")
     @runtimeProperty("ModSettings.displayValues.HalfSBS", "Half SBS")
+    @runtimeProperty("ModSettings.displayValues.FullSBS", "Full SBS")
     let Output: BraindanceOutput = BraindanceOutput.Auto;
 }

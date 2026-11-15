@@ -605,28 +605,36 @@ TEST(choose_output_is_the_monitors_own_only_for_another_sdk)
         CHECK_MSG(choose_output((AutoResult)r, L"", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
         CHECK_MSG(choose_output((AutoResult)r, L"", L"") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
         CHECK_MSG(choose_output((AutoResult)r, L"", L"Something") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs"), OUTPUT_SBS);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"SBS"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs"), OUTPUT_HALF_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"SBS"), OUTPUT_HALF_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"fullsbs"), OUTPUT_FULL_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"FullSBS ; XR glasses"), OUTPUT_FULL_SBS);
         CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"monitor"), OUTPUT_MONITOR);
         CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"Monitor"), OUTPUT_MONITOR);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs ; for the headset"), OUTPUT_SBS);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs;"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs ; for the headset"), OUTPUT_HALF_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"sbs;"), OUTPUT_HALF_SBS);
         CHECK_EQ_INT(choose_output((AutoResult)r, L"", L"monitor # testing"), OUTPUT_MONITOR);
         CHECK_MSG(choose_output((AutoResult)r, L"", L"sbsx") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
     }
 }
 
-TEST(mod_settings_half_sbs_keeps_side_by_side_and_auto_leaves_it_to_the_ini)
+TEST(mod_settings_half_or_full_sbs_keeps_side_by_side_and_auto_leaves_it_to_the_ini)
 {
     for (int r = AUTO_ALREADY; r <= AUTO_ERROR; r++) {
         int monitor = r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT;
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"auto"), OUTPUT_SBS);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"halfsbs", L"auto"), OUTPUT_SBS);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"1", L"auto"), OUTPUT_SBS); // the enum's number
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"monitor"), OUTPUT_SBS); // the page wins
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"auto"), OUTPUT_HALF_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"halfsbs", L"auto"), OUTPUT_HALF_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"1", L"auto"), OUTPUT_HALF_SBS); // the enum's number
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"monitor"), OUTPUT_HALF_SBS); // the page wins
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"FullSBS", L"auto"), OUTPUT_FULL_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"2", L"auto"), OUTPUT_FULL_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"FullSBS", L"sbs"), OUTPUT_FULL_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"HalfSBS", L"fullsbs"), OUTPUT_HALF_SBS);
         CHECK_MSG(choose_output((AutoResult)r, L"Auto", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
         CHECK_MSG(choose_output((AutoResult)r, L"0", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
-        CHECK_EQ_INT(choose_output((AutoResult)r, L"Auto", L"sbs"), OUTPUT_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"Auto", L"sbs"), OUTPUT_HALF_SBS);
+        CHECK_EQ_INT(choose_output((AutoResult)r, L"Auto", L"fullsbs"), OUTPUT_FULL_SBS);
+        CHECK_MSG(choose_output((AutoResult)r, L"20", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
         CHECK_EQ_INT(choose_output((AutoResult)r, L"Auto", L"monitor"), OUTPUT_MONITOR);
         CHECK_MSG(choose_output((AutoResult)r, L"10", L"auto") == (monitor ? OUTPUT_MONITOR : OUTPUT_SBS), "result %d", r);
     }
@@ -1670,7 +1678,7 @@ TEST(plugin_main_keeps_side_by_side_with_a_foreign_sdk_when_mod_settings_says_ha
     REQUIRE(tu_write_text(ini, "[BraindanceFixedStereo]\r\nFixed = false\r\nOutput = HalfSBS\r\n"));
     CHECK_EQ_INT(game_run(g, 0), 0);
     char *text = tu_read_file(g->log, NULL);
-    CHECK(text && strstr(text, "Output (Mod Settings' Output = HalfSBS, [Display] Output = auto): side by side") != NULL);
+    CHECK(text && strstr(text, "Output (Mod Settings' Output = HalfSBS, [Display] Output = auto): half side by side") != NULL);
     free(text);
 }
 

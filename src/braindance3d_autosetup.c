@@ -388,11 +388,12 @@ static AutoResult auto_register(const wchar_t *subkey, const wchar_t *target, co
 // ---------------------------------------------------------------- the output
 
 // Which picture 3D Mode sends out, from Mod Settings' Output, [Display] Output and what the registration found.
-// Mod Settings' Half SBS (FixedStereo.reds' BraindanceOutput.HalfSBS, saved by name; its number is taken too): always side
-// by side. Otherwise [Display] Output decides. auto (or anything else): the game's stock output when another SDK is the
-// one the game loads (Samsung's software for its glasses-free 3D monitor, registered or in its default folder: the plugin
-// never replaces it), else side by side. sbs: always side by side. monitor: always the stock output, even with this
-// mod's stand-in (whose weaver draws nothing: for testing only).
+// Mod Settings' Half SBS or Full SBS (FixedStereo.reds' BraindanceOutput.HalfSBS / FullSBS, saved by name; their numbers
+// are taken too): always that side by side. Otherwise [Display] Output decides. auto (or anything else): the game's stock
+// output when another SDK is the one the game loads (Samsung's software for its glasses-free 3D monitor, registered or in
+// its default folder: the plugin never replaces it), else side by side, full SBS in a window from 3:1. sbs: always half
+// side by side. fullsbs: always full side by side. monitor: always the stock output, even with this mod's stand-in (whose
+// weaver draws nothing: for testing only).
 // Whether an ini value is word (any case), alone or followed by a space or a comment (the menu squeeze's rule).
 static int output_is(const wchar_t *v, const wchar_t *word)
 {
@@ -402,8 +403,10 @@ static int output_is(const wchar_t *v, const wchar_t *word)
 
 static int choose_output(AutoResult r, const wchar_t *modSetting, const wchar_t *setting)
 {
-    if (output_is(modSetting, L"HalfSBS") || output_is(modSetting, L"1")) return OUTPUT_SBS;
-    if (output_is(setting, L"sbs")) return OUTPUT_SBS;
+    if (output_is(modSetting, L"HalfSBS") || output_is(modSetting, L"1")) return OUTPUT_HALF_SBS;
+    if (output_is(modSetting, L"FullSBS") || output_is(modSetting, L"2")) return OUTPUT_FULL_SBS;
+    if (output_is(setting, L"sbs")) return OUTPUT_HALF_SBS;
+    if (output_is(setting, L"fullsbs")) return OUTPUT_FULL_SBS;
     if (output_is(setting, L"monitor")) return OUTPUT_MONITOR;
     return r == AUTO_FOREIGN_SDK || r == AUTO_SAMSUNG_DEFAULT ? OUTPUT_MONITOR : OUTPUT_SBS;
 }
@@ -454,7 +457,10 @@ static void set_output(AutoResult r, const wchar_t *dir)
     int o = choose_output(r, modSetting, setting);
     alog("Output (Mod Settings' Output = %s, [Display] Output = %s): %s",
          modSetting[0] ? utf8(modSetting, m, sizeof(m)) : "not applied yet", utf8(setting, b, sizeof(b)),
-         o == OUTPUT_MONITOR ? "the game's own output for a 3D monitor (SBSDebug goes off)" : "side by side");
+         o == OUTPUT_MONITOR    ? "the game's own output for a 3D monitor (SBSDebug goes off)"
+         : o == OUTPUT_HALF_SBS ? "half side by side"
+         : o == OUTPUT_FULL_SBS ? "full side by side (half in a window less than twice as wide as tall)"
+                                : "side by side: full in a window at least 3 times as wide as tall, else half");
     framegen_set_output(o);
 }
 

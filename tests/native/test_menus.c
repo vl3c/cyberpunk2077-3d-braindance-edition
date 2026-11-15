@@ -16,6 +16,12 @@
 // braindance3d_framegen.c's answer: side by side unless a test says otherwise.
 static int f_side_by_side = 1;
 int framegen_side_by_side(void) { return f_side_by_side; }
+// And whether a frame is full side by side: from this width-over-height, 0 = never (half SBS).
+static float f_full_sbs_aspect = 0.0f;
+int framegen_full_sbs(unsigned width, unsigned height)
+{
+    return f_full_sbs_aspect > 0.0f && height && (float)width >= f_full_sbs_aspect * (float)height;
+}
 
 static LONG64 fake_device_calls(int slot) { return slot >= 0 ? 0 : -1; }
 
