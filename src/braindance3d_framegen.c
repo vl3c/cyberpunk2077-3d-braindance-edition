@@ -91,7 +91,7 @@
 // half back out, squashed for full SBS. One detour fixes the world: the camera build gives every camera of the 3D
 // frame (the centre one with eyes and its two eye cameras) half the window's aspect and leaves it so. The game copies
 // built cameras into new ones within the frame and works from their aspect again, so it has to stay halved: put back
-// after the build (test 2), the lighting flipped between two looks once or twice a second, in raster and path tracing
+// after the build, the lighting flipped between two looks once or twice a second, in raster and path tracing
 // alike. The game sets the window's aspect afresh each frame. The camera's field of view is vertical, so each eye is a
 // 16:9 picture with the window's vertical view, and the centre camera, which the game's shared screen effects (AO,
 // reflections, shadows, fog, the denoisers) and the world markers work from, has the same shape as the eyes: the frame
@@ -117,11 +117,14 @@
 // the two are laid out one eye wide instead: the layer resize and the layer target (ink's own, slots 30 and 36) get
 // half the window's width for them, and the shared layer tick hands their controllers the layer's own size (world
 // markers need nothing more: the game camera that places them is built one eye wide by the camera build hook). The
-// layer tick also lays them out again when that should change (Output, 3D Mode). And the canvas camera of each eye's UI pass, which
-// maps the window's width to the eye's half (clip x = 2x / width - 1), maps half of it there instead: it is changed
-// where the camera constants builder uploads it (the generic constant upload, only a 0x360-byte block that is ink's
-// flat canvas camera, an eye's, in a full SBS window while these layers are laid out one eye wide; every copy of the
-// canvas matrix in it, as the VR port's ShiftInkCamera does). Menus and loading screens are drawn flat, by the centre.
+// layer tick also lays them out again when that should change (Output, 3D Mode), through the layer's own resize and
+// target slots, only while those are the hooked functions. The tick runs on the game's job threads, not where the game
+// itself resizes layers; the resize takes the layer's own lock, and this happens only when Output or 3D Mode changes.
+// And the canvas camera of each eye's UI pass, which maps the window's width to the eye's half (clip x = 2x / width -
+// 1), maps half of it there instead: it is changed where the camera constants builder uploads it (the generic constant
+// upload, only a 0x360-byte block that is ink's flat canvas camera, an eye's, in a full SBS window while these layers
+// are laid out one eye wide; every copy of the canvas matrix in it, as the VR port's ShiftInkCamera does). Menus and
+// loading screens are drawn flat, by the centre.
 //
 // License: MIT (see LICENSE).
 
@@ -320,8 +323,7 @@ static const char AOB_LAYER_TICK[] =
 #define LAYER_TARGET_SIZE 0xA0       // pdata 0x399094-0x399134
 #define CB_UPLOAD_SIZE 0x4B          // pdata 0x334328-0x334373
 #define CAMERA_CONSTS_SIZE 0xC44     // pdata 0x228C9A0-0x228D5E4
-#define LAYER_SLOT_RESIZE 30         // vtable slots (+0xF0, +0x108, +0x120)
-#define LAYER_SLOT_TICK 33
+#define LAYER_SLOT_RESIZE 30         // vtable slots (+0xF0, +0x120)
 #define LAYER_SLOT_TARGET 36
 #define LAYER_SIZE 0x30              // float width, height: the layer's own size (what resize and target set)
 #define LAYER_TARGET 0x38            // the layer's own target, NULL if it has none (what the layer target sets)
@@ -483,6 +485,7 @@ static struct {
     volatile LONG calls;       // separation reads since the last log line
     volatile LONG logTick;     // GetTickCount of the last log line
     volatile LONG busy;        // a thread is in the tick or the keys (they share what's below with no lock)
+    volatile LONG reloadTick;  // GetTickCount of the last settings check from ink's layer tick (settings_tick)
     int fadeChecked;           // the weapon's fields are the fade's (else only "faded right out" is seen)
     wchar_t ini[MAX_PATH];     // Braindance3D-Settings.ini ("" without a folder)
     FILETIME iniTime;          // when it was last read
@@ -537,10 +540,13 @@ static struct {
     LayerResizeFn resizeOrig;
     LayerTargetFn targetOrig;
     CbUploadFn uploadOrig;
+    const void *resizeFn, *targetFn;             // the game's layer resize and target (what a layer's slots hold)
+    volatile LONG on;                            // all three hooks are attached
+    struct { const uint8_t *layer; DWORD tick; } stuck[4]; // per-eye layers whose layout didn't take, and when
+    volatile LONG slotsLogged;
     uint8_t *volatile stereoVar;                 // the 3D Mode setting, NULL until found
     volatile LONG stereoSearched;
     volatile LONG oneEye;                        // the per-eye layers were last laid out one eye wide
-    volatile DWORD relayoutTick;                 // GetTickCount of the last layout of ours
     volatile LONG64 widened;                     // canvas cameras changed (for the log)
     volatile LONG widenedLogged;
 } hud;
@@ -1472,10 +1478,13 @@ static int loading_up(void)
 }
 
 static int64_t hud_tick(uint8_t *layer, const LayerTick *tick, void *jobs);
+static void settings_tick(void);
 
-// Notes whether the loading layer is up, each time ink ticks it. A layer drawn per eye goes to hud_tick.
+// Notes whether the loading layer is up, each time ink ticks it. A layer drawn per eye goes to hud_tick. Also checks the
+// settings files once a second (settings_tick), so Output switches in menus too and without the Fixed 3D hooks.
 HOOK int64_t hook_layer_tick(uint8_t *layer, const LayerTick *tick, void *jobs)
 {
+    settings_tick();
     int kind = layer ? layer_kind(layer) : 0;
     if (kind == LAYER_LOADING) {
         LONG active = layer[LAYER_ACTIVE] != 0;
@@ -1483,7 +1492,7 @@ HOOK int64_t hook_layer_tick(uint8_t *layer, const LayerTick *tick, void *jobs)
         if (InterlockedExchange(&loading.up, active) != active)
             plugin_log(1, "loading: the loading screen is %s (game frame %lld)", active ? "up" : "gone",
                        (long long)menus_game_frame());
-    } else if (kind == LAYER_PER_EYE && hud.resizeOrig && tick) {
+    } else if (kind == LAYER_PER_EYE && hud.on && tick) {
         return hud_tick(layer, tick, jobs);
     }
     return loading.tickOrig(layer, tick, jobs);
@@ -1541,12 +1550,15 @@ static int three_d_mode_on(void)
 static int hud_one_eye(float width, float height) { return full_sbs_window(width, height) && three_d_mode_on(); }
 
 // The width a layer is laid out at: one eye's for a per-eye layer when hud_one_eye says so, else the window's. Logged
-// each time a per-eye layer is sized (when the window, its target, the output or 3D Mode changes, not every frame).
+// each time a per-eye layer is sized (when the window, its target, the output or 3D Mode changes, not every frame), but
+// not for a layer whose layout didn't take, which relayout retries once a second.
 static int32_t layer_width(uint8_t *layer, int32_t width, int32_t height, const char *how)
 {
-    if (!layer || layer_kind(layer) != LAYER_PER_EYE) return width;
+    if (!hud.on || !layer || layer_kind(layer) != LAYER_PER_EYE) return width;
     int wide = full_sbs_window((float)width, (float)height), on = wide && three_d_mode_on();
     InterlockedExchange(&hud.oneEye, on);
+    for (int i = 0; i < 4; i++)
+        if (hud.stuck[i].layer == layer) return on ? width / 2 : width; // retried quietly (relayout)
     if (!on) {
         plugin_log(1, "hud: per-eye layer %p %s %dx%d (the window's: %s)", (void *)layer, how, (int)width, (int)height,
                    wide ? "3D Mode is off" : "not full SBS");
@@ -1575,17 +1587,35 @@ static void relayout(uint8_t *layer, float width, float height)
     int have = (int)own[0], wanted = hud_one_eye(width, height) ? (int)width / 2 : (int)width;
     if (have == wanted || !(own[1] == height) || (have != (int)width && have != (int)width / 2)) return;
     DWORD now = GetTickCount();
-    if (now - hud.relayoutTick < HUD_RELAYOUT_MS) return;
+    int slot = -1, empty = -1;
+    for (int i = 0; i < 4; i++) {
+        if (hud.stuck[i].layer == layer) slot = i;
+        else if (!hud.stuck[i].layer && empty < 0) empty = i;
+    }
+    if (slot >= 0 && now - hud.stuck[slot].tick < HUD_RELAYOUT_MS) return;
     void *const *slots = *(void *const *const *)layer;
-    void *target = *(void *const *)(layer + LAYER_TARGET);
-    plugin_log(1, "hud: per-eye layer %p is %d wide, should be %d: laying it out again%s", (void *)layer, have, wanted,
-               target ? " (and its target)" : "");
+    if (slots[LAYER_SLOT_RESIZE] != hud.resizeFn) {
+        if (!InterlockedExchange(&hud.slotsLogged, 1))
+            plugin_log(1, "hud: a per-eye layer's class (vtable %p) has another resize: it isn't laid out again here",
+                       (const void *)slots);
+        return;
+    }
+    void *target = slots[LAYER_SLOT_TARGET] == hud.targetFn ? *(void *const *)(layer + LAYER_TARGET) : NULL;
+    if (slot < 0)
+        plugin_log(1, "hud: per-eye layer %p is %d wide, should be %d: laying it out again%s", (void *)layer, have,
+                   wanted, target ? " (and its target)" : "");
     ((LayerResizeFn)slots[LAYER_SLOT_RESIZE])(layer, (int32_t)width, (int32_t)height);
     if (target) ((LayerTargetFn)slots[LAYER_SLOT_TARGET])(layer, (int32_t)width, (int32_t)height, target);
-    if ((int)own[0] != wanted) {
-        hud.relayoutTick = now;
-        plugin_log(1, "hud: it stayed %d wide: not tried again for %d ms", (int)own[0], HUD_RELAYOUT_MS);
+    if ((int)own[0] == wanted) {
+        if (slot >= 0) hud.stuck[slot].layer = NULL;
+        return;
     }
+    if (slot < 0 && empty >= 0) {
+        slot = empty;
+        hud.stuck[slot].layer = layer;
+        plugin_log(1, "hud: it stayed %d wide: tried again once a second, without logging", (int)own[0]);
+    }
+    if (slot >= 0) hud.stuck[slot].tick = now;
 }
 
 // A per-eye layer's tick: laid out again if the window, the output or 3D Mode changed (relayout), then, laid out one eye
@@ -1716,6 +1746,19 @@ static void stereo_reload(void)
     int changed = stereo_file_changed(stereo.ini, &stereo.iniTime);
     changed |= stereo_file_changed(stereo.modIni, &stereo.modIniTime);
     if (changed) stereo_read_settings();
+}
+
+// Reads the settings again if a file changed, at most once a second, from ink's layer tick (which runs in menus too).
+// Shares stereo.busy with stereo_tick, so the two never read at once.
+static void settings_tick(void)
+{
+    LONG now = (LONG)GetTickCount(), last = stereo.reloadTick;
+    if ((DWORD)(now - last) < 1000 || InterlockedCompareExchange(&stereo.reloadTick, now, last) != last) return;
+    if (InterlockedCompareExchange(&stereo.busy, 1, 0) != 0) return;
+    DWORD err = GetLastError(); // the game's code around the hooks may use it
+    stereo_reload();
+    stereo.busy = 0;
+    SetLastError(err);
 }
 
 void stereo_settings_load(const wchar_t *installDir)
@@ -2408,6 +2451,8 @@ static int check_hud(ResolveFn resolve, uint8_t **t)
         plugin_log(1, "hud: %s (game update?): not hooked, the HUD stays laid out over the whole window in full SBS", why);
         return 0;
     }
+    hud.resizeFn = t[0];
+    hud.targetFn = t[1];
     return 1;
 }
 
@@ -2423,16 +2468,13 @@ static int attach_hud(void *pluginHandle, R4eHooking *h, ResolveFn resolve)
     int n = 0;
     while (n < 3 && h->Attach(pluginHandle, t[n], thunks[n], origs[n])) n++;
     if (n < 3) {
-        while (n-- > 0) {
-            h->Detach(pluginHandle, t[n]);
-            *origs[n] = NULL;
-        }
-        hud.resizeOrig = NULL;
-        hud.targetOrig = NULL;
-        hud.uploadOrig = NULL;
+        // A hook that can't be taken off keeps its original, so it passes everything on (hud.on stays 0).
+        while (n-- > 0)
+            if (h->Detach(pluginHandle, t[n])) *origs[n] = NULL;
         plugin_log(1, "hud: couldn't hook the layers or the constant upload: the HUD stays laid out over the whole window");
         return 0;
     }
+    hud.on = 1;
     plugin_log(1, "hud: layer resize, layer target and constant upload hooked; in full SBS with 3D Mode on the HUD and "
                   "notifications are laid out one eye wide");
     return 1;

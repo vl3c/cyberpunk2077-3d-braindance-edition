@@ -43,6 +43,7 @@ static void mt_begin(void)
     g.stereo = STEREO_UNKNOWN;
     f_side_by_side = 1;
     f_loading_flat = 0;
+    f_full_sbs_aspect = 0.0f;
 }
 
 // Frame patterns measured on the PC (2.5, 2026-10-29): what the game asks the stand-in per frame.
@@ -417,6 +418,35 @@ TEST(set_stereo_logs_only_changes)
     set_stereo(STEREO_UNKNOWN, "third");
     CHECK(log_has("3D Mode now unknown (third"));
     CHECK_EQ_INT(g.stereo, STEREO_UNKNOWN);
+}
+
+TEST(each_half_shows_the_flat_frame_squeezed_or_its_middle_16_9_block)
+{
+    mt_begin();
+    log_to_file();
+    float m[4];
+    menus_half_map(3840, 2160, m); // half SBS: the whole frame in each half
+    CHECK_NEAR(m[0], 2.0f, 1e-6f);
+    CHECK_NEAR(m[1], 0.0f, 1e-6f);
+    CHECK_NEAR(m[2], 1.0f, 1e-6f);
+    CHECK_NEAR(m[3], 0.0f, 1e-6f);
+    CHECK(log_has("half side by side: each half shows the whole flat frame squeezed"));
+    f_full_sbs_aspect = 2.0f;
+    menus_half_map(5120, 1440, m); // 32:9: the middle 16:9 block 1:1
+    CHECK_NEAR(m[0], 1.0f, 1e-6f);
+    CHECK_NEAR(m[1], 0.25f, 1e-6f);
+    CHECK_NEAR(m[2], 1.0f, 1e-6f);
+    CHECK_NEAR(m[3], 0.0f, 1e-6f);
+    CHECK(log_has("full side by side (5120x1440): each half shows the middle of the flat frame 1:1"));
+    menus_half_map(3840, 1200, m); // narrower than two 16:9 eyes: the block made smaller, bars above and below
+    float b = 16.0f / 9.0f * 1200.0f / 3840.0f;
+    CHECK_NEAR(m[0], 2.0f * b, 1e-5f);
+    CHECK_NEAR(m[1], 0.5f - 0.5f * b, 1e-5f);
+    CHECK_NEAR(m[2], 2.0f * b, 1e-5f);
+    CHECK_NEAR(m[3], 0.5f - b, 1e-5f);
+    CHECK(log_has("full side by side (3840x1200): each half shows the frame's middle 16:9 block at 90% of its size"));
+    menus_half_map(3840, 1200, m); // logged once per size
+    CHECK_EQ_INT(log_count("(3840x1200)"), 1);
 }
 
 static LONG64 m_eye, m_avail;

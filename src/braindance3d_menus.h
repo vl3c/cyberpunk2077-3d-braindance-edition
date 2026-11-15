@@ -71,6 +71,10 @@ int framegen_full_sbs(unsigned width, unsigned height);
 // running (braindance3d_framegen.c clears the frame's stereo for it). The menu squeeze then treats the frame as a menu.
 int framegen_loading_flat(void);
 
+// How each half of a width x height window shows a flat frame (menus): x' = x * map[0] + map[1], y' = y * map[2] +
+// map[3] in 0..1 frame coordinates, black outside. For braindance3d_menus.c's squeeze and the tests.
+void menus_half_map(unsigned width, unsigned height, float map[4]);
+
 // The game frames presented so far (GpuApi::Present calls), for braindance3d_framegen.c.
 long long menus_game_frame(void);
 

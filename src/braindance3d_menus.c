@@ -124,7 +124,7 @@ static struct {
     ID3D12Device *device;
     ID3D12CommandQueue *queue;
     ID3D12RootSignature *rootSig;
-    int fullLogged;                // the half map last logged: 1 half SBS, 2 full SBS (0: none yet)
+    int fullLogged;                // the half map last logged: 1 half SBS, 2 + 1000 x the block's share in full SBS
     ID3D12PipelineState *pso;
     DXGI_FORMAT psoFormat;
     ID3D12DescriptorHeap *rtvHeap, *srvHeap;
@@ -334,13 +334,15 @@ static const char g_hlsl[] =
     "    uv = float2((id << 1) & 2, id & 2);\n"
     "    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
     "}\n"
-    "float2 halfMap : register(b0);\n"
+    "float4 halfMap : register(b0);\n"
     "float4 ps(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target\n"
     "{\n"
-    "    // Each half of the screen shows the frame from halfMap: half SBS (2, 0) the whole frame at half the width,\n"
-    "    // full SBS (1, 0.25) its middle half 1:1.\n"
+    "    // Each half of the screen shows the frame from halfMap (x scale and offset, y scale and offset; black outside\n"
+    "    // the frame): half SBS the whole frame at half the width, full SBS the 16:9 block in its middle (half_map).\n"
     "    float x = (uv.x < 0.5 ? uv.x : uv.x - 0.5) * halfMap.x + halfMap.y;\n"
-    "    return frame.Sample(linearClamp, float2(x, uv.y));\n"
+    "    float y = uv.y * halfMap.z + halfMap.w;\n"
+    "    if (y < 0 || y > 1) return float4(0, 0, 0, 1);\n"
+    "    return frame.Sample(linearClamp, float2(x, y));\n"
     "}\n";
 
 // Compiles one entry point of g_hlsl; logs the compiler's message on failure.
@@ -382,7 +384,7 @@ static int create_root_signature(void)
     param[0].DescriptorTable.pDescriptorRanges = &range;
     param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    param[1].Constants.Num32BitValues = 2; // b0
+    param[1].Constants.Num32BitValues = 4; // b0
     param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_STATIC_SAMPLER_DESC sampler = { 0 };
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -618,17 +620,31 @@ static ID3D12Resource *current_back_buffer(IDXGISwapChain *sc, UINT *index)
     return bb;
 }
 
-// How each half of the screen maps to the frame (x * scale + offset): the whole frame squeezed, or in a full side by side
-// window its middle half 1:1 (the game draws menus in the middle of so wide a window). Logged when it changes.
-static void half_map(const D3D12_RESOURCE_DESC *desc, float map[2])
+// How each half of the screen maps to the frame: x' = x * map[0] + map[1], y' = y * map[2] + map[3] (black where y' is
+// outside the frame). Half SBS: the whole frame squeezed. Full SBS: the game draws menus and loading screens in a 16:9
+// block in the middle of so wide a window; a half at least that wide shows the frame's middle half 1:1 (the block,
+// and the game's black bars beside it in a window wider than two 16:9 eyes), a narrower half shows the whole block
+// scaled down to its width, with black bars above and below. Logged when it changes.
+void menus_half_map(unsigned width, unsigned height, float map[4])
 {
-    int full = framegen_full_sbs((unsigned)desc->Width, (unsigned)desc->Height);
-    map[0] = full ? 1.0f : 2.0f;
-    map[1] = full ? 0.25f : 0.0f;
-    if (full + 1 != g.fullLogged) {
-        g.fullLogged = full + 1;
-        mlog("%s", full ? "full side by side: each half shows the middle of the flat frame 1:1"
-                        : "half side by side: each half shows the whole flat frame squeezed");
+    int full = framegen_full_sbs(width, height);
+    float block = full && width ? 16.0f / 9.0f * (float)height / (float)width : 1.0f; // the block's share of the width
+    if (!full) {
+        map[0] = 2.0f, map[1] = 0.0f, map[2] = 1.0f, map[3] = 0.0f;
+    } else if (block <= 0.5f) {
+        map[0] = 1.0f, map[1] = 0.25f, map[2] = 1.0f, map[3] = 0.0f;
+    } else {
+        map[0] = 2.0f * block, map[1] = 0.5f - 0.5f * block, map[2] = 2.0f * block, map[3] = 0.5f - block;
+    }
+    int key = full ? 2 + (int)(block * 1000.0f + 0.5f) : 1;
+    if (key != g.fullLogged) {
+        g.fullLogged = key;
+        if (!full) mlog("half side by side: each half shows the whole flat frame squeezed");
+        else if (block <= 0.5f) mlog("full side by side (%ux%u): each half shows the middle of the flat frame 1:1", width, height);
+        else
+            mlog("full side by side (%ux%u): each half shows the frame's middle 16:9 block at %.0f%% of its size, with bars "
+                 "above and below",
+                 width, height, 50.0f / block);
     }
 }
 
@@ -636,8 +652,8 @@ static void half_map(const D3D12_RESOURCE_DESC *desc, float map[2])
 // half.
 static void record_squeeze(ID3D12GraphicsCommandList *cl, ID3D12Resource *bb, const D3D12_RESOURCE_DESC *desc)
 {
-    float map[2];
-    half_map(desc, map);
+    float map[4];
+    menus_half_map((unsigned)desc->Width, (unsigned)desc->Height, map);
     D3D12_RESOURCE_BARRIER b[2];
     barrier(&b[0], bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
     ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, b);
@@ -656,7 +672,7 @@ static void record_squeeze(ID3D12GraphicsCommandList *cl, ID3D12Resource *bb, co
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(cl, g.rootSig);
     ID3D12GraphicsCommandList_SetDescriptorHeaps(cl, 1, &g.srvHeap);
     ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(cl, 0, ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(g.srvHeap));
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(cl, 1, 2, map, 0);
+    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(cl, 1, 4, map, 0);
     ID3D12GraphicsCommandList_IASetPrimitiveTopology(cl, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D12GraphicsCommandList_DrawInstanced(cl, 3, 1, 0, 0);
 

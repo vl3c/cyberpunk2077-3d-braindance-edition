@@ -398,8 +398,9 @@ Full SBS puts two whole 16:9 eyes in a window two eyes wide (3840x1080 for glass
 side by side always draws each eye into its half of the window with the window's projection, which is right for half
 SBS (the viewer stretches each half back) and squashes each eye 2x in full SBS. Four groups of hooks in
 `src/braindance3d_framegen.c` fix that; each checks the game's code first and turns itself off if a game update changed
-it. They are attached unless the output is a 3D monitor's own, and act only while `framegen_full_sbs` says so: side by
-side, `SBSDebug` on, Output allowing it and the window wide enough (3:1 for Auto, 2:1 for Full SBS).
+it. They are attached unless the output is a 3D monitor's own. The cameras, menus and HUD act only while
+`framegen_full_sbs` says so: side by side, `SBSDebug` on, Output allowing it and the window wide enough (3:1 for Auto,
+2:1 for Full SBS). The loading screen fix acts in any 3D window wider than 16:9 (1.8:1).
 
 - **Cameras** (the camera build, `hook_camera_build`): the 3D frame's centre camera and its eye cameras are built with
   half the window's aspect. The field of view at `+0x20` is vertical, so the vertical view stays the game's and each eye
@@ -407,12 +408,13 @@ side, `SBSDebug` on, Output allowing it and the window wide enough (3:1 for Auto
   projection. The aspect stays halved, because the game copies built cameras within a frame and builds them again; a
   camera is halved only while its aspect is still the window's, learnt from the view size it carries.
 - **Menus** (the menu squeeze): in full SBS each half shows the middle 16:9 block of the flat frame 1:1, which is where
-  the game puts menus in so wide a window.
+  the game puts menus in so wide a window. In a window narrower than two 16:9 eyes (3840x1200, say) that block is wider
+  than an eye, so it's shown smaller, whole, with black bars above and below (`menus_half_map`).
 - **Loading screens:** in a window wider than 16:9 the game's own 3D draws them in stereo with its black bars across the
   whole window, which hides the outer half of each eye's screen and shows the world between (white at start). It happens
   without the mod too. While the loading layer (`inkLoadingLayer`, found by class in ink's shared layer tick) is up in
   such a window, FlagCompute's stereo features (98 and 99) are cleared, so the frame is flat and the squeeze shows it in
-  each eye like a menu.
+  each eye like a menu (with `Squeeze = off` the flat frame is split across the eyes instead).
 - **The HUD:** a 3D frame draws two ink layers once per eye, the HUD (`inkHUDLayer`) and notifications
   (`inkGameNotificationsLayer`), each laid out over the whole window, so they came out squashed. In full SBS with 3D Mode
   on, the layer resize and layer target give them one eye's width; the layer tick hands their controllers the layer's

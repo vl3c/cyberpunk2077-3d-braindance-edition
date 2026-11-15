@@ -12,7 +12,9 @@
   `[Display] Output = fullsbs`.
 - Loading screens and the intro are drawn flat in a window wider than 16:9 in 3D Mode, so each eye shows them whole. The
   game's own 3D swapped their halves there and showed the world between them (white at start), with or without this
-  mod; 16:9 windows are unchanged.
+  mod; 16:9 windows are unchanged. This needs the menu squeeze (on by default).
+- Menus in a full SBS window narrower than two 16:9 eyes (3840x1200, say) are shown whole and a little smaller in each
+  eye, with black bars above and below.
 - Virtual Desktop can't show full SBS (it shows the wide picture as one screen): keep half SBS there.
 - README, Nexus page and TECHNICAL.md: full SBS.
 

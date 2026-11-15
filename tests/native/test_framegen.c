@@ -3583,6 +3583,11 @@ static void hd_begin(void)
     CHECK_EQ_PTR(t[0], f_resizeCode);
     CHECK_EQ_PTR(t[1], f_targetCode);
     CHECK_EQ_PTR(t[2], f_uploadCode);
+    CHECK_EQ_PTR(hud.resizeFn, f_resizeCode);
+    CHECK_EQ_PTR(hud.targetFn, f_targetCode);
+    hud.resizeFn = (const void *)slot_resize; // the layer's slots hold the hooked functions (here: these stand-ins)
+    hud.targetFn = (const void *)slot_target;
+    hud.on = 1;
     hud.resizeOrig = fake_resize_orig;
     hud.targetOrig = fake_target_orig;
     hud.uploadOrig = fake_upload;
@@ -3627,15 +3632,36 @@ TEST(the_hud_is_hooked_whole_or_not_at_all)
     full.buildOrig = (CameraBuildFn)(void *)fake_tick; // any
     f_attached = f_detached = 0;
     f_attachFails = 3;
+    hud.on = 0;
     CHECK_EQ_INT(attach_hud(NULL, &f_hooking, hud_resolve), 0);
     CHECK_EQ_INT(f_detached, 2);
-    CHECK(hud.resizeOrig == NULL && hud.targetOrig == NULL && hud.uploadOrig == NULL);
+    CHECK(hud.resizeOrig == NULL && hud.targetOrig == NULL);
+    CHECK_EQ_INT((int)hud.on, 0);
+    // A hook that can't be taken off keeps its original and passes everything on as it is.
+    hd_begin();
+    full.buildOrig = (CameraBuildFn)(void *)fake_tick;
+    hud.resizeOrig = NULL;
+    hud.on = 0;
+    f_attached = 0;
+    f_attachFails = 3;
+    R4eHooking stuck = { fake_attach, fake_detach_fails };
+    CHECK_EQ_INT(attach_hud(NULL, &stuck, hud_resolve), 0);
+    CHECK(hud.resizeOrig != NULL && hud.targetOrig != NULL);
+    CHECK_EQ_INT((int)hud.on, 0);
+    hud.resizeOrig = fake_resize_orig;
+    hook_layer_resize(f_layerHud, 5120, 1440);
+    CHECK_EQ_INT(f_lastWidth, 5120);
+    LayerTick t = tick_of(5120.0f, 1440.0f);
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(f_lastTick == &t);
     f_attachFails = 0;
     hd_begin();
     full.buildOrig = (CameraBuildFn)(void *)fake_tick;
     f_attached = 0;
+    hud.on = 0;
     CHECK_EQ_INT(attach_hud(NULL, &f_hooking, hud_resolve), 1);
     CHECK_EQ_INT(f_attached, 3);
+    CHECK_EQ_INT((int)hud.on, 1);
     CHECK(strstr(ft_log, "hud: layer resize, layer target and constant upload hooked") != NULL);
 }
 
@@ -3710,11 +3736,75 @@ TEST(a_layout_that_doesnt_take_isnt_tried_every_frame)
     *(void **)(f_layerHud + LAYER_TARGET) = NULL;
     LayerTick t = tick_of(5120.0f, 1440.0f);
     hook_layer_tick(f_layerHud, &t, NULL);
-    CHECK(strstr(ft_log, "hud: it stayed 5120 wide: not tried again") != NULL);
+    CHECK(strstr(ft_log, "hud: it stayed 5120 wide: tried again once a second, without logging") != NULL);
     int before = f_ticks;
+    ft_log[0] = 0;
     hook_layer_tick(f_layerHud, &t, NULL);
     CHECK(f_ticks == before + 1);
-    CHECK(strstr(strstr(ft_log, "it stayed") + 1, "it stayed") == NULL); // not tried again yet
+    CHECK(strstr(ft_log, "hud:") == NULL); // not tried again yet
+    hud.stuck[0].tick -= HUD_RELAYOUT_MS;  // a second later: tried again, quietly
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK(strstr(ft_log, "hud:") == NULL);
+    hud.resizeOrig = fake_resize_orig;     // and when it takes, the layer is forgotten
+    hud.stuck[0].tick -= HUD_RELAYOUT_MS;
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK_NEAR(((float *)(f_layerHud + LAYER_SIZE))[0], 2560.0f, 0);
+    CHECK(hud.stuck[0].layer == NULL);
+}
+
+TEST(a_layer_is_laid_out_again_only_through_the_hooked_functions)
+{
+    hd_begin();
+    LayerTick t = tick_of(5120.0f, 1440.0f);
+    f_vtHud[LAYER_SLOT_RESIZE] = (void *)fake_tick; // a class with a resize of its own (or a game update moved the slot)
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK_EQ_INT(f_resizes + f_targets, 0);
+    CHECK(strstr(ft_log, "has another resize: it isn't laid out again here") != NULL);
+    hd_begin();
+    f_vtHud[LAYER_SLOT_TARGET] = (void *)fake_tick; // a target of its own: only the resize
+    hook_layer_tick(f_layerHud, &t, NULL);
+    CHECK_EQ_INT(f_resizes, 1);
+    CHECK_EQ_INT(f_targets, 0);
+    CHECK_NEAR(((float *)(f_layerHud + LAYER_SIZE))[0], 2560.0f, 0);
+    f_vtHud[LAYER_SLOT_TARGET] = (void *)slot_target;
+}
+
+TEST(the_layer_tick_reads_the_settings_again_so_output_switches_anywhere)
+{
+    hd_begin();
+    wchar_t dir[MAX_PATH], mod[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    wcscat(dir, L"bd3d-tick-output-test");
+    CreateDirectoryW(dir, NULL);
+    _snwprintf(mod, MAX_PATH, L"%ls\\user.ini", dir);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = Auto\r\n");
+    wcscpy(stereo.modIni, mod);
+    stereo.ini[0] = 0;
+    stereo.busy = 0;
+    framegen_set_output_auto(OUTPUT_SBS);
+    stereo_read_settings(); // what start-up read
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = HalfSBS\r\n");
+    touch_later(mod, &stereo.modIniTime);
+    stereo.reloadTick = (LONG)GetTickCount() - 2000;
+    hook_layer_tick(f_layerMenu, NULL, NULL); // any layer, in a menu too
+    CHECK(output.fullSbsAspect == 0.0f);
+    CHECK(strstr(ft_log, "output: Mod Settings' Output is now 'HalfSBS'") != NULL);
+    write_stereo_ini(mod, "[BraindanceFixedStereo]\r\nOutput = FullSBS\r\n");
+    touch_later(mod, &stereo.modIniTime);
+    hook_layer_tick(f_layerMenu, NULL, NULL); // within a second: not yet
+    CHECK(output.fullSbsAspect == 0.0f);
+    stereo.reloadTick = (LONG)GetTickCount() - 2000;
+    stereo.busy = 1; // the Fixed 3D tick is reading: not now
+    hook_layer_tick(f_layerMenu, NULL, NULL);
+    CHECK(output.fullSbsAspect == 0.0f);
+    stereo.busy = 0;
+    stereo.reloadTick = (LONG)GetTickCount() - 2000;
+    hook_layer_tick(f_layerMenu, NULL, NULL);
+    CHECK(output.fullSbsAspect == FULL_SBS_FORCED);
+    framegen_set_output(OUTPUT_SBS);
+    stereo.modIni[0] = 0;
+    DeleteFileW(mod);
+    RemoveDirectoryW(dir);
 }
 
 TEST(a_one_eye_hud_is_ticked_with_its_own_size)
@@ -3737,7 +3827,7 @@ TEST(a_hud_laid_out_over_the_window_is_ticked_as_the_game_has_it)
     hook_layer_tick(f_layerHud, &t, NULL);
     CHECK(f_lastTick == &t);
     CHECK_EQ_INT(f_resizes, 0);
-    hud.resizeOrig = NULL; // not hooked: the tick doesn't look at it
+    hud.on = 0; // not hooked: the tick doesn't look at it
     f_stereoSetting[BOOL_SETTING_VALUE] = 1;
     hook_layer_tick(f_layerHud, &t, NULL);
     CHECK(f_lastTick == &t);

@@ -113,10 +113,11 @@ is a normal 16:9 picture, so nothing is stretched.
   full SBS in a window at least 3 times as wide as high; Output = Full SBS picks it from twice as wide (and half SBS
   below that, so 1920x1080 in 2D stays as it is).
 - **Each eye** sees the world, the HUD and the markers as in a normal 16:9 game. Menus and the map show the middle of
-  the window in each eye, 1:1. The game's own ultrawide view is narrowed to one eye's, so the vertical field of view
+  the window in each eye, 1:1 (a little smaller, with bars above and below, in a window narrower than two 16:9 eyes,
+  like 3840x1200). The game's own ultrawide view is narrowed to one eye's, so the vertical field of view
   stays the game's.
-- **Loading screens and the intro** are drawn flat in a window wider than 16:9, so each eye shows them whole. The
-  game's own 3D swaps their halves there, with or without this mod.
+- **Loading screens and the intro** are drawn flat in a window wider than 16:9, so each eye shows them whole (with the
+  menu squeeze on, the default). The game's own 3D swaps their halves there, with or without this mod.
 - **Virtual Desktop** can't show full SBS: it treats the wide picture as one screen. Keep half SBS there.
 - Overlays drawn over the whole window (FPS counters and the like) land off the middle of each eye.
 - Tested at 5120x1440 (the same shape as 3840x1080) by screenshots, not on glasses yet: please report how it looks.
