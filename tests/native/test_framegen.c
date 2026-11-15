@@ -3203,8 +3203,7 @@ TEST(the_cameras_of_a_full_sbs_window_are_built_for_one_eye_then_put_back)
                          "field of view 60.00 kept)") != NULL);
     CHECK(strstr(ft_log, "fullsbs: first left eye camera built for one eye of the window (aspect 3.5556 -> 1.7778, "
                          "field of view 60.00 kept)") != NULL);
-    CHECK(strstr(ft_log, "fullsbs: centre camera: field of view 60.00 (vertical, tan 0.5774), aspect 3.5556, "
-                         "horizontal tan 2.0528") != NULL);
+    CHECK(strstr(ft_log, "fullsbs: TEST new centre camera #0 at") != NULL);
     hook_camera_build(camera_of(2, 3840.0f / 1080.0f, 60.0f)); // each logged once
     CHECK(strstr(ft_log, "right eye camera built") == NULL);
 }

@@ -419,8 +419,6 @@ static struct {
 static struct {
     CameraBuildFn buildOrig;
     volatile LONG builtLogged[2], leftLogged;     // centre, eye
-    volatile LONG centreKey;   // the centre camera last logged (field of view and aspect, rounded)
-    volatile DWORD centreTick;
 } full;
 
 // Read by name from bd3d_stub_stereo_update.
@@ -1190,19 +1188,41 @@ static int full_sbs_window(float width, float height)
     return aspect >= output.fullSbsAspect && aspect <= FULL_SBS_MAX_ASPECT;
 }
 
-// Logs a centre camera's field of view and aspect (with eyes: the frame's main ones) as the game set them, when they
-// change, at most once a second: what the game gives a window this wide, which full SBS builds every eye from.
+// TEST ONLY (test 3): every centre camera with eyes the game builds, by its descriptor's address: logged when first
+// seen (and its flags, size, field of view, aspect), and every 10 s each one's builds in that time, to find a camera
+// built now and then (once or twice a second) that could make the lighting flip.
+#define TEST_CAMS 16
+static struct { uint8_t *camera; volatile LONG builds; float fov, aspect; } testCams[TEST_CAMS];
+static volatile LONG testCamCount, testCamTick;
 static void log_centre_camera(const uint8_t *camera)
 {
     float fov = *(const float *)(camera + CAMERA_FOV), aspect = *(const float *)(camera + CAMERA_ASPECT);
-    LONG key = (LONG)(fov * 100.0f + 0.5f) * 1000 + (LONG)(aspect * 100.0f + 0.5f);
-    DWORD now = GetTickCount();
-    if (key == full.centreKey || now - full.centreTick < 1000) return;
-    full.centreKey = key; // from several threads: at worst a line too many, harmless
-    full.centreTick = now;
-    float t = tanf(fov * 0.00872664626f);
-    plugin_log(1, "fullsbs: centre camera: field of view %.2f (vertical, tan %.4f), aspect %.4f, horizontal tan %.4f",
-               fov, t, aspect, t * aspect);
+    LONG n = testCamCount, i;
+    for (i = 0; i < n && testCams[i].camera != camera; i++) {}
+    if (i == n) {
+        if (n >= TEST_CAMS) return;
+        LONG slot = InterlockedIncrement(&testCamCount) - 1;
+        if (slot >= TEST_CAMS) return;
+        testCams[slot].camera = (uint8_t *)camera;
+        i = slot;
+        const int32_t *size = (const int32_t *)(camera + 0x378);
+        plugin_log(1, "fullsbs: TEST new centre camera #%ld at %p: flags 0x%02X, view %dx%d, field of view %.2f, aspect "
+                      "%.4f",
+                   (long)i, (const void *)camera, camera[CAMERA_FLAGS], (int)size[0], (int)size[1], fov, aspect);
+    }
+    InterlockedIncrement(&testCams[i].builds);
+    testCams[i].fov = fov;
+    testCams[i].aspect = aspect;
+    LONG now = (LONG)GetTickCount(), last = testCamTick;
+    if (!last) InterlockedCompareExchange(&testCamTick, now, 0);
+    else if ((DWORD)(now - last) >= 10000 && InterlockedCompareExchange(&testCamTick, now, last) == last) {
+        char line[1024];
+        int len = 0;
+        for (LONG j = 0; j < testCamCount && j < TEST_CAMS && len < 900; j++)
+            len += snprintf(line + len, sizeof(line) - len, " #%ld %ld (%.2f, %.4f)", (long)j,
+                            (long)InterlockedExchange(&testCams[j].builds, 0), testCams[j].fov, testCams[j].aspect);
+        plugin_log(1, "fullsbs: TEST centre camera builds in the last 10 s:%s", line);
+    }
 }
 
 // TEST ONLY (full SBS test 3, never released): Ctrl+F9 cycles how the cameras are built, to find which one makes the
