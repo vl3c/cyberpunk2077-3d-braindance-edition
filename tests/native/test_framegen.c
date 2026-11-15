@@ -36,7 +36,7 @@ void plugin_log(int level, const char *fmt, ...)
 static uint8_t f_o3d[O3D_SIZE], f_setFg[SET_FG_SIZE], f_other[16], f_flag[FLAG_COMPUTE_SIZE], f_dlssg[16], f_lookup[3][16];
 static uint8_t f_fsrCode[FSR_ENABLED_SIZE]; // IsFsrFgEnabled's bytes (never run: the hook tests call fake_fsr_enabled)
 static uint64_t f_cnames[2];
-static uint8_t f_override[PLANE_OVERRIDE_SIZE], f_rebuild[PLANE_REBUILD_SIZE], f_buildCode[16], f_sep[WEAPON_SEP_SIZE];
+static uint8_t f_override[PLANE_OVERRIDE_SIZE], f_rebuild[PLANE_REBUILD_SIZE], f_buildCode[CAMERA_BUILD_SIZE], f_sep[WEAPON_SEP_SIZE];
 static uint8_t f_boolVarCode[16], f_boolSetCode[16], f_listSetCode[16];
 static uint64_t f_effectSlots[4]; // the handler's CNames: its two settings and their group, twice
 static const char *f_sbsVar[8];
@@ -3026,6 +3026,447 @@ TEST(the_stub_notes_the_tangent_and_goes_on)
     bd3d_stub_test_call(0.75f);
     CHECK(bd3d_stereo_tan == 0.75f);
     CHECK(f_rax == 0x1234);
+}
+
+// ===================================================================================== full side by side
+
+// The full SBS group's game code and data, laid out the way the 2.5 exe has them (f_buildCode is the camera build).
+static uint8_t f_resizeCode[LAYER_RESIZE_SIZE], f_targetCode[LAYER_TARGET_SIZE], f_tickCode[LAYER_TICK_SIZE];
+static uint8_t f_notifTick[0x40], f_projCode[2][UI_VIEW_PROJECT_SIZE], f_unprojCode[UI_VIEW_UNPROJECT_SIZE];
+static void *f_hudVt[40], *f_notifVt[40], *f_viewVt[UI_VIEW_SLOTS];
+static uint8_t f_3dMode[SETTING_SIZE]; // /video/display Odyssey3D_StereoEnabled
+static int f_3dModeMissing;
+
+static void fake_full_game(void)
+{
+    memset(f_buildCode, 0xCC, sizeof(f_buildCode));
+    put(f_buildCode, AOB_CAMERA_BUILD);
+    put(f_buildCode + 587, AOB_CAMERA_EYE);
+    put(f_buildCode + 708, AOB_CAMERA_EYE_ASPECT);
+    memset(f_resizeCode, 0xCC, sizeof(f_resizeCode));
+    put(f_resizeCode, AOB_LAYER_RESIZE);
+    put(f_resizeCode + 93, AOB_LAYER_RESIZE_SAME);
+    memset(f_targetCode, 0xCC, sizeof(f_targetCode));
+    put(f_targetCode, AOB_LAYER_TARGET);
+    put(f_targetCode + 51, AOB_LAYER_TARGET_SIZE);
+    memset(f_tickCode, 0xCC, sizeof(f_tickCode));
+    put(f_tickCode, AOB_LAYER_TICK);
+    memset(f_notifTick, 0xCC, sizeof(f_notifTick));
+    f_notifTick[0x20] = 0xE8;
+    put_rel32(f_notifTick + 0x25, f_tickCode);
+    for (int i = 0; i < 2; i++) {
+        memset(f_projCode[i], 0xCC, sizeof(f_projCode[i]));
+        put(f_projCode[i], AOB_UI_VIEW_PROJECT);
+    }
+    memset(f_unprojCode, 0xCC, sizeof(f_unprojCode));
+    put(f_unprojCode, AOB_UI_VIEW_UNPROJECT);
+    for (int i = 0; i < 40; i++) f_hudVt[i] = f_notifVt[i] = f_lookup[0];
+    f_hudVt[LAYER_SLOT_RESIZE] = f_notifVt[LAYER_SLOT_RESIZE] = f_resizeCode;
+    f_hudVt[LAYER_SLOT_TARGET] = f_notifVt[LAYER_SLOT_TARGET] = f_targetCode;
+    f_hudVt[LAYER_SLOT_TICK] = f_tickCode;
+    f_notifVt[LAYER_SLOT_TICK] = f_notifTick;
+    for (int i = 0; i < UI_VIEW_SLOTS; i++) f_viewVt[i] = f_lookup[1];
+    f_viewVt[UI_VIEW_PROJECT] = f_projCode[0];
+    f_viewVt[UI_VIEW_PROJECT_OTHER] = f_projCode[1];
+    f_viewVt[UI_VIEW_UNPROJECT] = f_unprojCode;
+}
+
+static uintptr_t full_resolve(uint32_t hash)
+{
+    switch (hash) {
+    case HASH_CAMERA_BUILD: return (uintptr_t)f_buildCode;
+    case HASH_LAYER_RESIZE: return (uintptr_t)f_resizeCode;
+    case HASH_LAYER_TARGET: return (uintptr_t)f_targetCode;
+    case HASH_LAYER_TICK: return (uintptr_t)f_tickCode;
+    case HASH_HUD_LAYER_VTABLE: return (uintptr_t)f_hudVt;
+    case HASH_NOTIFICATIONS_LAYER_VTABLE: return (uintptr_t)f_notifVt;
+    case HASH_UI_VIEW_VTABLE: return (uintptr_t)f_viewVt;
+    }
+    return fake_resolve(hash);
+}
+
+static uint8_t *full_bool_var(uint64_t group, uint64_t name)
+{
+    if (group == cname("/video/display") && name == cname("Odyssey3D_StereoEnabled"))
+        return f_3dModeMissing ? NULL : f_3dMode;
+    return fake_bool_var(group, name);
+}
+
+// Fake originals: what the game's functions were handed.
+static float f_builtAspect, f_builtFov;
+static int f_builds, f_resizedWidth, f_resizedHeight, f_targetWidth;
+static void *f_targetGiven;
+static LayerTick f_ticked;
+static const void *f_tickedLayer;
+
+static int64_t fake_build(uint8_t *camera)
+{
+    f_builds++;
+    if (!camera) return 7;
+    f_builtAspect = *(float *)(camera + CAMERA_ASPECT);
+    f_builtFov = *(float *)(camera + CAMERA_FOV);
+    return 7;
+}
+
+static int64_t fake_resize(uint8_t *layer, int32_t width, int32_t height)
+{
+    f_resizedWidth = width;
+    f_resizedHeight = height;
+    ((float *)(layer + LAYER_SIZE))[0] = (float)width;
+    ((float *)(layer + LAYER_SIZE))[1] = (float)height;
+    return 8;
+}
+
+static int64_t fake_target(uint8_t *layer, int32_t width, int32_t height, void *target)
+{
+    f_targetWidth = width;
+    f_targetGiven = target;
+    ((float *)(layer + LAYER_SIZE))[0] = (float)width;
+    ((float *)(layer + LAYER_SIZE))[1] = (float)height;
+    return 9;
+}
+
+static int64_t fake_tick(uint8_t *layer, const LayerTick *tick, void *jobs)
+{
+    f_tickedLayer = layer;
+    f_ticked = *tick;
+    return 10;
+}
+
+// The game's projections: the camera system's x = 0.25, y = -0.5; back: world x = the NDC x it was given.
+static float *fake_project(void *view, float *ndc, const float *world)
+{
+    ndc[0] = 0.25f;
+    ndc[1] = -0.5f;
+    return ndc;
+}
+
+static void *fake_unproject(void *view, void *world, const float *ndc)
+{
+    ((float *)world)[0] = ndc[0];
+    ((float *)world)[1] = ndc[1];
+    return world;
+}
+
+// A full SBS session: Auto output, the group checked (not attached: the originals are the fakes above), SBSDebug and
+// 3D Mode on.
+static void fs_begin(void)
+{
+    ft_begin();
+    memset(&full, 0, sizeof(full));
+    fake_full_game();
+    framegen_set_output(OUTPUT_SBS);
+    fg.sbsVar = (const uint8_t *)f_sbsVar;
+    fg.boolVar = full_bool_var;
+    memset(f_3dMode, 0, sizeof(f_3dMode));
+    f_3dMode[BOOL_SETTING_VALUE] = 1;
+    f_3dModeMissing = 0;
+    uint8_t *t[4];
+    fg.cameraBuild = (CameraBuildFn)(void *)f_buildCode;  // the plane rebuild calls the same camera build
+    CHECK_EQ_INT(check_full_sbs(full_resolve, &t[0], &t[1], &t[2], &t[3]), 1);
+    full.buildOrig = fake_build;
+    full.resizeOrig = fake_resize;
+    full.targetOrig = fake_target;
+    full.tickOrig = fake_tick;
+    full.project = full.projectOther = fake_project;
+    full.unproject = fake_unproject;
+    f_builds = f_resizedWidth = f_resizedHeight = f_targetWidth = 0;
+    f_targetGiven = NULL;
+    f_tickedLayer = NULL;
+    memset(&f_ticked, 0, sizeof(f_ticked));
+}
+
+// An eye camera (kind 1 left, 2 right) or a centre camera (kind 0) of a window with this aspect.
+static uint8_t f_camera[0x400];
+static uint8_t *camera_of(int kind, float aspect, float fov)
+{
+    memset(f_camera, 0, sizeof(f_camera));
+    f_camera[CAMERA_FLAGS] = kind ? CAMERA_IS_EYE : CAMERA_HAS_EYES;
+    f_camera[CAMERA_EYE_KIND] = (uint8_t)kind;
+    *(float *)(f_camera + CAMERA_ASPECT) = aspect;
+    *(float *)(f_camera + CAMERA_FOV) = fov;
+    return f_camera;
+}
+
+TEST(the_output_sets_the_full_sbs_aspect)
+{
+    framegen_set_output(OUTPUT_SBS);
+    CHECK(output.fullSbsAspect == FULL_SBS_AUTO && !output.monitor);
+    framegen_set_output(OUTPUT_FULL_SBS);
+    CHECK(output.fullSbsAspect == FULL_SBS_FORCED && !output.monitor);
+    framegen_set_output(OUTPUT_HALF_SBS);
+    CHECK(output.fullSbsAspect == 0.0f && !output.monitor);
+    framegen_set_output(OUTPUT_MONITOR);
+    CHECK(output.fullSbsAspect == 0.0f && output.monitor);
+}
+
+TEST(check_full_sbs_finds_the_camera_build_the_layers_and_the_ui_view)
+{
+    fs_begin();
+    CHECK_EQ_PTR(full.hudVtable, f_hudVt);
+    CHECK_EQ_PTR(full.notificationsVtable, f_notifVt);
+    CHECK_EQ_PTR(full.gameViewVtable, f_viewVt);
+    // Our view vtable: the game's, with the three projections ours.
+    for (int i = 0; i < UI_VIEW_SLOTS; i++) {
+        if (i == UI_VIEW_PROJECT || i == UI_VIEW_UNPROJECT || i == UI_VIEW_PROJECT_OTHER) continue;
+        CHECK_EQ_PTR(full.viewVtable[i], f_viewVt[i]);
+    }
+    CHECK_EQ_PTR(full.viewVtable[UI_VIEW_PROJECT], (void *)ui_view_project);
+    CHECK_EQ_PTR(full.viewVtable[UI_VIEW_UNPROJECT], (void *)ui_view_unproject);
+    CHECK_EQ_PTR(full.viewVtable[UI_VIEW_PROJECT_OTHER], (void *)ui_view_project_other);
+}
+
+TEST(full_sbs_isnt_hooked_when_the_game_code_changed)
+{
+    static const char *const logs[] = {
+        "the SBSDebug var wasn't found",
+        "the camera build: start doesn't match",
+        "the camera build: the eye branch isn't there",
+        "the eye's aspect isn't read where expected",
+        "the layer resize: start doesn't match",
+        "the layer's size isn't at +0x30",
+        "the layer target: start doesn't match",
+        "the layer's size isn't set at +0x30",
+        "the layer tick: start doesn't match",
+        "the HUD layer's vtable doesn't hold",
+        "the notifications layer's vtable doesn't hold",
+        "the notifications layer's vtable doesn't hold",
+        "the UI view's projections don't match",
+        "the UI view's projections don't match",
+        "the camera build isn't the one the plane rebuild calls",
+    };
+    for (int c = 0; c < (int)(sizeof(logs) / sizeof(logs[0])); c++) {
+        fs_begin();
+        memset(&full, 0, sizeof(full));
+        ft_log[0] = 0;
+        switch (c) {
+        case 0: fg.sbsVar = NULL; break;
+        case 1: f_buildCode[0] = 0x90; break;
+        case 2: f_buildCode[587] = 0x90; break;
+        case 3: f_buildCode[708] = 0x90; break;
+        case 4: f_resizeCode[0] = 0x90; break;
+        case 5: f_resizeCode[93 + 5] = 0x34; break;
+        case 6: f_targetCode[0] = 0x90; break;
+        case 7: f_targetCode[51 + 4] = 0x34; break;
+        case 8: f_tickCode[0] = 0x90; break;
+        case 9: f_hudVt[LAYER_SLOT_TICK] = f_notifTick; break;
+        case 10: f_notifVt[LAYER_SLOT_TARGET] = f_resizeCode; break;
+        case 11: f_notifTick[0x20] = 0x90; break;
+        case 12: f_projCode[1][0] = 0x90; break;
+        case 13: f_unprojCode[0] = 0x90; break;
+        case 14: fg.cameraBuild = (CameraBuildFn)(void *)f_rebuild; break;
+        }
+        uint8_t *t[4];
+        CHECK_MSG(check_full_sbs(full_resolve, &t[0], &t[1], &t[2], &t[3]) == 0, "case %d", c);
+        CHECK_MSG(strstr(ft_log, logs[c]) != NULL, "case %d: %s", c, ft_log);
+        CHECK_MSG(strstr(ft_log, "not hooked, side by side stays half SBS in any window") != NULL, "case %d", c);
+        CHECK_MSG(full.hudVtable == NULL, "case %d", c);
+    }
+}
+
+TEST(full_sbs_attaches_all_four_or_none)
+{
+    fs_begin();
+    memset(&full, 0, sizeof(full));
+    CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 1);
+    CHECK_EQ_INT(f_attached, 4);
+    CHECK(full.buildOrig == (CameraBuildFn)(void *)f_buildCode);
+    CHECK(full.tickOrig == (LayerTickFn)(void *)f_tickCode);
+    CHECK(strstr(ft_log, "fullsbs: hooks attached; side by side is full SBS in a window at least 3 times") != NULL);
+    for (int fails = 1; fails <= 4; fails++) {
+        fs_begin();
+        memset(&full, 0, sizeof(full));
+        f_attachFails = fails;
+        CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 0);
+        CHECK_EQ_INT(f_detached, fails - 1);
+        CHECK(!full.buildOrig && !full.resizeOrig && !full.targetOrig && !full.tickOrig);
+        CHECK(!framegen_full_sbs(3840, 1080));
+    }
+}
+
+TEST(full_sbs_isnt_hooked_for_half_sbs_or_a_3d_monitor)
+{
+    fs_begin();
+    memset(&full, 0, sizeof(full));
+    framegen_set_output(OUTPUT_HALF_SBS);
+    CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 0);
+    CHECK_EQ_INT(f_attached, 0);
+    CHECK(strstr(ft_log, "fullsbs: not hooked: the output is half SBS") != NULL);
+    framegen_set_output(OUTPUT_MONITOR);
+    CHECK_EQ_INT(attach_full_sbs(NULL, &f_hooking, full_resolve), 0);
+    CHECK(strstr(ft_log, "fullsbs: not hooked: the output is a 3D monitor's own") != NULL);
+}
+
+TEST(full_sbs_window_needs_the_output_sbsdebug_and_the_width)
+{
+    fs_begin();
+    CHECK(full_sbs_window(3840, 1080));                   // 3.56: Auto from 3
+    CHECK(full_sbs_window(5120, 1440));
+    CHECK(!full_sbs_window(3840, 2160));                  // 16:9: half SBS
+    CHECK(!full_sbs_window(2560, 1080));                  // 21:9 ultrawide: half SBS under Auto
+    CHECK(!full_sbs_window(3840, 0));
+    CHECK(!full_sbs_window(10000, 1000));                 // wider than two eyes can be
+    framegen_set_output(OUTPUT_FULL_SBS);
+    CHECK(full_sbs_window(2560, 1080));                   // forced: from 2
+    CHECK(!full_sbs_window(1920, 1080));                  // glasses in 2D mode: half SBS
+    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 0;
+    CHECK(!full_sbs_window(3840, 1080));                  // SBSDebug off (a 3D monitor's output)
+    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 1;
+    framegen_set_output(OUTPUT_HALF_SBS);
+    CHECK(!full_sbs_window(3840, 1080));
+    CHECK(!framegen_full_sbs(3840, 1080));
+    framegen_set_output(OUTPUT_SBS);
+    CHECK(framegen_full_sbs(3840, 1080));
+    CHECK(!framegen_full_sbs(3840, 2160));
+}
+
+TEST(an_eye_camera_of_a_full_sbs_window_is_built_for_one_eye_then_put_back)
+{
+    fs_begin();
+    uint8_t *eye = camera_of(2, 3840.0f / 1080.0f, 100.0f);
+    CHECK(hook_camera_build(eye) == 7);
+    CHECK_EQ_INT(f_builds, 1);
+    CHECK_NEAR(f_builtAspect, 1920.0f / 1080.0f, 1e-5);
+    // The middle half's field of view: tan(eye / 2) = tan(50 deg) / 2, so the vertical view stays the window's.
+    CHECK_NEAR(tanf(f_builtFov * 0.00872664626f), tanf(50.0f * 0.0174532925f) / 2.0f, 1e-4);
+    CHECK_NEAR(tanf(f_builtFov * 0.00872664626f) / f_builtAspect, tanf(50.0f * 0.0174532925f) / (3840.0f / 1080.0f), 1e-4);
+    CHECK(*(float *)(eye + CAMERA_ASPECT) == 3840.0f / 1080.0f); // put back
+    CHECK(*(float *)(eye + CAMERA_FOV) == 100.0f);
+    CHECK(strstr(ft_log, "fullsbs: first eye camera built for one eye of the window (right eye: aspect 3.5556 -> 1.7778, "
+                         "field of view 100.00 -> 61.58)") != NULL);
+    hook_camera_build(camera_of(1, 3840.0f / 1080.0f, 100.0f)); // logged once
+    CHECK(strstr(strstr(ft_log, "first eye camera") + 1, "first eye camera") == NULL);
+}
+
+TEST(other_cameras_and_half_sbs_eyes_are_built_as_the_game_has_them)
+{
+    fs_begin();
+    hook_camera_build(camera_of(2, 16.0f / 9.0f, 80.0f)); // a 16:9 window: half SBS
+    CHECK(f_builtAspect == 16.0f / 9.0f && f_builtFov == 80.0f);
+    CHECK(strstr(ft_log, "fullsbs: an eye camera kept the window's aspect 1.7778 and field of view 80.00: half SBS") != NULL);
+    hook_camera_build(camera_of(0, 3840.0f / 1080.0f, 100.0f)); // the centre camera
+    CHECK(f_builtAspect == 3840.0f / 1080.0f && f_builtFov == 100.0f);
+    CHECK(strstr(ft_log, "fullsbs: centre camera: field of view 100.00 (horizontal, tan 1.1918), aspect 3.5556") != NULL);
+    uint8_t *odd = camera_of(3, 3840.0f / 1080.0f, 100.0f); // not an eye kind the game uses
+    hook_camera_build(odd);
+    CHECK(f_builtAspect == 3840.0f / 1080.0f);
+    ((uint8_t *)f_sbsVar)[VAR_VALUE] = 0; // SBSDebug off
+    hook_camera_build(camera_of(1, 3840.0f / 1080.0f, 100.0f));
+    CHECK(f_builtAspect == 3840.0f / 1080.0f && f_builtFov == 100.0f);
+    CHECK(hook_camera_build(NULL) == 7);
+}
+
+// A layer object: its vtable, then its size at +0x30.
+static uint8_t f_layer[0x60];
+static uint8_t *layer_of(void *vtable)
+{
+    memset(f_layer, 0, sizeof(f_layer));
+    *(void **)f_layer = vtable;
+    return f_layer;
+}
+
+TEST(the_hud_and_notifications_are_laid_out_one_eye_wide_in_full_sbs_with_3d_on)
+{
+    fs_begin();
+    CHECK(hook_layer_resize(layer_of(f_hudVt), 3840, 1080) == 8);
+    CHECK_EQ_INT(f_resizedWidth, 1920);
+    CHECK_EQ_INT(f_resizedHeight, 1080);
+    CHECK(strstr(ft_log, "fullsbs: HUD layer laid out at 1920x1080, one eye of the 3840x1080 window") != NULL);
+    int target = 0;
+    CHECK(hook_layer_target(layer_of(f_notifVt), 3840, 1080, &target) == 9);
+    CHECK_EQ_INT(f_targetWidth, 1920);
+    CHECK_EQ_PTR(f_targetGiven, &target);
+    CHECK(strstr(ft_log, "fullsbs: notifications layer drawn into its target at 1920x1080, one eye") != NULL);
+    hook_layer_resize(layer_of(f_viewVt), 3840, 1080); // any other layer (a menu) keeps the window
+    CHECK_EQ_INT(f_resizedWidth, 3840);
+}
+
+TEST(the_hud_keeps_the_window_in_half_sbs_in_2d_or_without_the_3d_setting)
+{
+    fs_begin();
+    hook_layer_resize(layer_of(f_hudVt), 3840, 2160);
+    CHECK_EQ_INT(f_resizedWidth, 3840);
+    CHECK(strstr(ft_log, "fullsbs: HUD layer laid out at 3840x2160 (the window's: half SBS)") != NULL);
+    f_3dMode[BOOL_SETTING_VALUE] = 0;
+    hook_layer_resize(layer_of(f_hudVt), 3840, 1080);
+    CHECK_EQ_INT(f_resizedWidth, 3840);
+    CHECK(strstr(ft_log, "(the window's: 3D Mode is off)") != NULL);
+    fs_begin();
+    f_3dModeMissing = 1;
+    hook_layer_resize(layer_of(f_hudVt), 3840, 1080);
+    CHECK_EQ_INT(f_resizedWidth, 3840);
+    CHECK(strstr(ft_log, "couldn't find the 3D Mode setting") != NULL);
+    hook_layer_resize(layer_of(f_hudVt), 3840, 1080); // looked up once
+    CHECK(strstr(strstr(ft_log, "couldn't find") + 1, "couldn't find") == NULL);
+    fs_begin();
+    fg.boolVar = NULL; // the effects checks failed
+    hook_layer_resize(layer_of(f_hudVt), 3840, 1080);
+    CHECK_EQ_INT(f_resizedWidth, 3840);
+}
+
+// The game's UI view: its vtable and camera system.
+static void *f_gameView[2] = { f_viewVt, (void *)&f_camera };
+
+TEST(a_one_eye_layer_is_ticked_with_its_size_and_a_narrowed_view)
+{
+    fs_begin();
+    f_gameView[0] = f_viewVt;
+    uint8_t *layer = layer_of(f_hudVt);
+    fake_resize(layer, 1920, 1080); // laid out one eye wide
+    LayerTick tick = { (void *)1, f_gameView, { 3840.0f, 1080.0f }, 1, { 0 } };
+    CHECK(hook_layer_tick(layer, &tick, (void *)2) == 10);
+    CHECK_EQ_PTR(f_tickedLayer, layer);
+    CHECK(f_ticked.size[0] == 1920.0f && f_ticked.size[1] == 1080.0f && f_ticked.flag == 1 && f_ticked.time == (void *)1);
+    const UiView *view = (const UiView *)f_ticked.view;
+    CHECK(view != (const void *)f_gameView);
+    CHECK_EQ_PTR(view->vtable, full.viewVtable);
+    CHECK_EQ_PTR(view->cameraSystem, f_gameView[1]);
+    CHECK(view->narrow == 2.0f);
+    CHECK(tick.size[0] == 3840.0f && tick.view == f_gameView); // the game's tick is left as it was
+    // Its projections, through its vtable: x times 2 out, divided by 2 back.
+    float ndc[2], world[2];
+    {
+        ViewProjectFn project = (ViewProjectFn)view->vtable[UI_VIEW_PROJECT];
+        ViewProjectFn other = (ViewProjectFn)view->vtable[UI_VIEW_PROJECT_OTHER];
+        ViewUnprojectFn back = (ViewUnprojectFn)view->vtable[UI_VIEW_UNPROJECT];
+        CHECK(project((void *)view, ndc, world) == ndc && ndc[0] == 0.5f && ndc[1] == -0.5f);
+        CHECK(other((void *)view, ndc, world) == ndc && ndc[0] == 0.5f);
+        float in[2] = { 0.5f, 0.75f };
+        CHECK(back((void *)view, world, in) == world && world[0] == 0.25f && world[1] == 0.75f);
+    }
+    // The next tick gets the same view; a layer that isn't one eye wide gets the game's.
+    hook_layer_tick(layer, &tick, NULL);
+    CHECK_EQ_PTR(f_ticked.view, view);
+    fake_resize(layer, 3840, 1080);
+    hook_layer_tick(layer, &tick, NULL);
+    CHECK_EQ_PTR(f_ticked.view, f_gameView);
+    CHECK(f_ticked.size[0] == 3840.0f);
+    fake_resize(layer, 1920, 1080);
+    hook_layer_tick(layer_of(f_viewVt), &tick, NULL); // another layer class
+    CHECK_EQ_PTR(f_ticked.view, f_gameView);
+}
+
+TEST(a_tick_with_a_view_that_isnt_the_games_ui_view_keeps_it)
+{
+    fs_begin();
+    uint8_t *layer = layer_of(f_notifVt);
+    fake_resize(layer, 1920, 1080);
+    void *other[2] = { f_hudVt, (void *)1 };
+    LayerTick tick = { NULL, other, { 3840.0f, 1080.0f }, 0, { 0 } };
+    hook_layer_tick(layer, &tick, NULL);
+    CHECK_EQ_PTR(f_ticked.view, other);
+    CHECK(f_ticked.size[0] == 1920.0f);
+    CHECK(strstr(ft_log, "isn't the game's UI view") != NULL);
+}
+
+TEST(full_sbs_thunks_have_unwind_info)
+{
+    void *thunks[] = { (void *)bd3d_thunk_camera_build, (void *)bd3d_thunk_layer_resize, (void *)bd3d_thunk_layer_target,
+                       (void *)bd3d_thunk_layer_tick };
+    for (int i = 0; i < 4; i++) {
+        DWORD64 base = 0;
+        CHECK_MSG(RtlLookupFunctionEntry((DWORD64)(uintptr_t)thunks[i], &base, NULL) != NULL, "thunk %d", i);
+    }
 }
 
 int main(int argc, char **argv) { return tt_main(argc, argv); }
